@@ -1,0 +1,214 @@
+[package]
+name        = "bastion"
+version     = "0.1.0"
+edition     = "2021"
+default-run = "bastion"
+
+[[bin]]
+name = "bastion"
+path = "src/main.rs"
+
+# Minimal terminal client for the webhook+SSE API (same surface the mobile
+# companion pairs with) — no daemon code touched, no new dependencies.
+[[bin]]
+name = "pokedev-cli"
+path = "src/bin/pokedev_cli.rs"
+
+# Loop 3-C (docs/revamp/C3-extension-protocol-design.md §2/§6): the reference
+# `Subprocess`-kind extension child — a tiny, dependency-free helper that
+# speaks the versioned NDJSON protocol `src/extension/subprocess.rs`
+# implements the host side of. A `[[bin]]` in THIS package (rather than a
+# separate `examples/*` crate) so `env!("CARGO_BIN_EXE_reference-extension-echo")`
+# resolves automatically in this package's own tests — no cross-crate binary
+# path plumbing needed.
+[[bin]]
+name = "reference-extension-echo"
+path = "src/bin/reference_extension_echo.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+
+# M3-05: product feature flags. Default = everything on (today's exact
+# behavior). Gates live ONLY at composition points (src/main.rs,
+# src/channel/mod.rs, src/mcp/mod.rs) — never inside the substrate crates.
+#
+# - channels-extra: Discord, Slack, Email channel adapters + their heavy
+#   transport deps (serenity, slack-morphism, lettre, async-imap, mailparse).
+#   Also gates the WhatsApp runtime wiring in main.rs, but the whatsapp
+#   MODULE always compiles (its types are threaded through the webhook
+#   router's signature and it carries no heavy deps of its own).
+# - voice: local voice channel (cpal/hound/rustpotter + the `half` pin that
+#   exists solely for rustpotter's candle subtree).
+# - mcp-server: BastionMcpServer (MCP-over-HTTP routes + `bastion mcp-stdio`
+#   subcommand) + rmcp's server-side features. The MCP *client* (bastion-mcp
+#   crate) is always on — substrate, not product surface.
+# - mesh: deliberately NOT a flag — mesh types are threaded through the
+#   webhook router's signature and handlers (~90 references in
+#   src/channel/webhook.rs); gating it is a webhook refactor, not a
+#   composition-point cfg (M3-05 scope rule: skip gates needing >20-line
+#   module refactors).
+[features]
+default        = ["channels-extra", "voice", "mcp-server"]
+channels-extra = [
+  "dep:serenity",
+  "dep:slack-morphism",
+  "dep:rvstruct",
+  "dep:lettre",
+  "dep:async-imap",
+  "dep:async-native-tls",
+  "dep:mailparse",
+]
+voice          = ["dep:cpal", "dep:hound", "dep:rustpotter", "dep:half"]
+mcp-server     = [
+  "rmcp/server",
+  "rmcp/transport-streamable-http-server",
+  "rmcp/transport-io",
+]
+# A-09 (docs/revamp/BACKLOG.md): forwards to bastion-providers' feature of the same name.
+# OFF by default — the default `bastion` binary no longer links the deprecated
+# TerminalAgentProvider bridge (superseded by AgentRuntime, A-03/A-04). Not removed: an
+# operator who still needs the legacy bridge for one deprecation window can opt back in with
+# `cargo build --features legacy-terminal-agent`.
+legacy-terminal-agent = ["bastion-providers/legacy-terminal-agent"]
+
+[dependencies]
+bastion-types = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
+bastion-runtime = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
+bastion-memory = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
+bastion-providers = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
+bastion-mcp = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
+bastion-agent-runtime = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
+# Loop 3-C (docs/revamp/C3-extension-protocol-design.md): extension host +
+# package manager (src/extension/) — product code, not kernel, so it lives
+# here rather than in a substrate crate.
+bastion-extension-protocol = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
+# Loop 3-C: the Wasm mechanism's sandbox (src/extension/wasm.rs wraps it into
+# an ExtensionInstance/Capability) — the wasm runtime (wasmi) dependency
+# itself is isolated in this crate, never touching the kernel/protocol crates.
+bastion-extension-wasm = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
+bastion-cognition = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
+bastion-personas = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
+bastion-mesh = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
+tokio              = { version = "1",    features = ["full"] }
+async-openai       = { version = "0.38", features = ["chat-completion"] }
+reqwest            = { version = "0.13", features = ["json", "stream"] }
+rusqlite           = { version = "0.39", features = ["bundled"] }
+# M3-05: server-side rmcp features ("server", "transport-streamable-http-server",
+# "transport-io") moved to the `mcp-server` feature above — the base dependency
+# carries only the client-side features the always-on paths need.
+rmcp               = { version = "1.6",  features = [
+                         "client",
+                         "transport-child-process",
+                         "transport-streamable-http-client-reqwest",
+                       ] }
+ed25519-dalek      = { version = "2", features = ["rand_core"] }
+base64             = "0.22"
+sha2               = "0.10"
+# Loop 3-C: ExtensionManifest.version/compat comparisons in src/extension/host.rs
+# (upgrade compat-range + dependent-requirement checks).
+semver             = "1"
+chrono             = { version = "0.4", default-features = false, features = ["clock"] }
+serde              = { version = "1",    features = ["derive"] }
+serde_json         = "1"
+clap               = { version = "4",    features = ["derive", "env"] }
+thiserror          = "2"
+anyhow             = "1"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3",  features = ["env-filter", "json"] }
+async-trait        = "0.1"
+futures-util       = "0.3"
+dotenvy            = "0.15"
+config             = "0.14"
+serde_norway = "0.9.42"
+schemars = "0.8"
+frankenstein = { version = "0.50.0", features = ["client-reqwest"] }
+axum = "0.8.9"
+# Phase 6 — mesh connectivity layer (plan 06-01)
+age              = "0.11"
+jsonwebtoken     = "9"
+tokio-stream     = { version = "0.1", features = ["sync"] }
+# 06-07: SEC-01 TOML injection hardening (toml_edit) + SEC-02 SSRF validation (url)
+toml_edit        = "0.22"
+url              = "2"
+regex            = "1"
+# 06-08: CSPRNG for /connect-app one-time codes (CR-02 OTC generation)
+rand             = "0.8"
+# SEAM #4 — OTel GenAI observability (plan 05-05)
+opentelemetry        = { version = "0.32", features = ["trace"] }
+opentelemetry_sdk    = { version = "0.32", features = ["rt-tokio"] }
+opentelemetry-otlp   = { version = "0.32", features = ["grpc-tonic"] }
+opentelemetry-stdout = { version = "0.32" }
+tracing-opentelemetry = { version = "0.33" }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
+unicode-width = "0.2.2"
+# 07-04: src/eval/verifier.rs constructs a scratch SqliteMemory at RUNTIME (the
+# Reflector's merge gate, 07-05) — tempfile is no longer test-only.
+tempfile     = "3"
+# Phase 10 — channel transports (plan 10-01): Discord/Slack/Email/Voice deps.
+# M3-05: all optional, pulled in by the `channels-extra` / `voice` features.
+serenity       = { version = "0.12.5", optional = true, default-features = false, features = ["client", "gateway", "rustls_backend", "model", "cache"] }
+# NOTE (10-RESEARCH.md A3): "socket-mode" is not a real feature flag on this
+# crate (verified via crates.io Cargo.toml — features are default/signature-verifier/
+# hyper-base/axum-base/rustls-native-certs/hyper/axum). Socket Mode itself has no
+# gate; it needs an HTTP client feature to build SlackHyperClient. "hyper" is what
+# the crate's own `examples/socket_mode.rs` uses (SlackHyperClient) — use that.
+slack-morphism = { version = "2.22.0", optional = true, features = ["hyper"] }
+# rvstruct's ValueStruct trait is required to call .value() on slack-morphism's
+# newtype IDs (e.g. SlackUserId) — already a transitive dep via slack-morphism,
+# pinned here to the exact version already resolved in Cargo.lock (no new
+# supply-chain surface, just exposing it as a direct dependency).
+rvstruct       = { version = "0.3.2", optional = true }
+lettre         = { version = "0.11.22", optional = true, default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+async-imap     = { version = "0.11.2", optional = true, default-features = false, features = ["runtime-tokio"] }
+async-native-tls = { version = "0.5", optional = true, default-features = false, features = ["runtime-tokio"] }
+hmac           = "0.12"
+cpal           = { version = "0.18.1", optional = true }
+hound          = { version = "3.5.1", optional = true }
+mailparse      = { version = "0.16.1", optional = true }
+# Plan 10-07 Task 4 (VOICE-01/D-10): wake-word opt-in trigger. Approved via the
+# Task 3 package-legitimacy checkpoint (10-07-PLAN.md) despite the crate being
+# stale (no release since Oct 2023, ~199 dl/wk) — feature defaults OFF
+# (`wake_word_enabled: false`, VoiceChannelConfig), so nobody is exposed unless
+# they explicitly opt in.
+rustpotter     = { version = "3.0.2", optional = true }
+# rustpotter -> candle-nn -> candle-core 0.2.2 requires `half` (f16 support)
+# with its "rand_distr" feature enabled. half >= 2.5.0 upgraded that feature to
+# rand_distr 0.5.x (rand 0.9), while candle-core 0.2.2's own cpu_backend.rs
+# calls `rand_distr::Normal` from ITS pinned `rand_distr = "0.4.3"` (rand 0.8)
+# — two incompatible major versions of the same trait, so
+# `StandardNormal: Distribution<f16>` doesn't resolve (E0277) with a bare
+# `half = "2"` requirement. Pin the last `half` release whose "rand_distr"
+# feature still targets rand_distr ^0.4.3, matching candle-core's own
+# expectation. Real upstream breakage in a stale (no release since 2023)
+# transitive dependency — not a Bastion bug; `half` isn't used anywhere else
+# in this workspace (`cargo tree -i half` shows only the rustpotter subtree).
+half           = { version = "=2.4.1", optional = true }
+
+[dev-dependencies]
+tokio-test   = "0.4"
+tracing-test = "0.2"
+tower = { version = "0.5.3", features = ["util"] }
+http = "1.4.1"
+insta        = { version = "1", features = ["json"] }
+rstest       = "0.25"
+
+[[test]]
+name = "evals"
+path = "tests/evals/mod.rs"
+
+[profile.release]
+opt-level     = "z"   # size-optimize (not speed)
+lto           = true  # link-time optimization (fat LTO — best size)
+codegen-units = 1     # single codegen unit — slower build, better LTO
+# CR-03: panic = "unwind" (the default) is REQUIRED. Bastion is a long-running
+# daemon serving multiple owners; spawned cabinet/runner JoinSet tasks recover
+# from a panicking provider via their Err(join_err) arms (cabinet/orchestrator.rs,
+# persona/runner.rs). "abort" would kill the whole process on one provider panic,
+# making that recovery dead code in release. The ~10% binary-size saving is not
+# worth losing daemon resilience.
+panic         = "unwind"
+strip         = true  # strip symbols from final binary

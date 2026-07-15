@@ -1,0 +1,14 @@
+---
+source: tests/evals/mod.rs
+assertion_line: 267
+expression: verdict
+---
+{
+  "recommendation": "Adopt approach A with cost-mitigation measures from Finance.",
+  "dissents": [
+    {
+      "persona": "Finance",
+      "position": "Approach B is cheaper and should be prioritized."
+    }
+  ]
+}

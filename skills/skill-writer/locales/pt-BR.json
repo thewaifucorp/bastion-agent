@@ -1,0 +1,17 @@
+{
+  "known_cves": "CVEs conhecidos: {cves}",
+  "rating_insufficient": "Avaliação insuficiente: {rating} (mínimo 4.0)",
+  "reviews_insufficient": "Poucas avaliações: {count} (mínimo 50)",
+  "no_skills_found_criteria": "Nenhuma skill encontrada para os critérios fornecidos.",
+  "skills_found_header": "**Skills encontradas:**\n",
+  "no_rating": "sem avaliação",
+  "category_label": "Categoria: {category}",
+  "sage_blocked": "Sage bloqueou: {reason}",
+  "skills_json_corrupt": "[skill-writer] ERRO: skills.json corrompido em {path}. Recriando.",
+  "no_skills_for_persona": "Nenhuma skill encontrada para essa persona.",
+  "install_prompt": "Números das skills para instalar (ex: 1,3) ou 'todas' ou 'nenhuma': ",
+  "none_installed": "Nenhuma skill instalada.",
+  "invalid_selection": "Seleção inválida. Nenhuma skill instalada.",
+  "installed_label": "\nInstaladas: {names}",
+  "failed_label": "Falharam/bloqueadas: {names}"
+}

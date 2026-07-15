@@ -1,0 +1,8 @@
+{
+  "name": "bastion/calendar",
+  "version": "1.0.0",
+  "permissions": {
+    "tools": ["composio"],
+    "composio_toolkits": ["GOOGLECALENDAR", "GOOGLETASKS", "OUTLOOK"]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "bastion/proactive-engine",
+  "version": "1.0.0",
+  "permissions": {
+    "fs": {
+      "read": [
+        "~/.openclaw/workspace/**",
+        "./.env",
+        "./**"
+      ],
+      "write": [
+        "db/proactive-engine/**",
+        "~/.openclaw/workspace/**"
+      ]
+    },
+    "tools": ["exec", "read", "write"],
+    "network": ["openrouter.ai", "clawhub"]
+  }
+}

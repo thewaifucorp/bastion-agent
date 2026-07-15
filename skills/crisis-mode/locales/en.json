@@ -1,0 +1,11 @@
+{
+  "crisis_activated": "🚨 Crisis Mode activated for {persona}",
+  "weight_elevated": "Weight elevated: {old_weight} → {new_weight}",
+  "tasks_moved": "Tasks moved/cancelled to free up {hours}h of Deep Work:",
+  "task_item": "• {task} — {duration}h",
+  "deep_work_available": "You have {hours}h free to focus on the urgent problem.",
+  "fallback_title": "⚠️ Crisis Mode — insufficient hours",
+  "fallback_message": "Could not free up 2h of Deep Work with available tasks.",
+  "fallback_options": "Tasks that could be moved (total: {hours}h):",
+  "fallback_no_action": "No action was taken. What would you like to do?"
+}

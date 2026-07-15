@@ -1,0 +1,19 @@
+{
+  "title": "📊 Weekly Review — {start_date} to {end_date}",
+  "separator": "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+  "persona_header": "🧠 {name}",
+  "interactions": "Interactions: {count} this week",
+  "most_used_for": "Most used for: {intent}",
+  "favorite_tool": "Favorite tool: {tool}",
+  "peak_hours": "Peak hours: {hours}",
+  "current_weight": "Current weight: {weight}",
+  "suggestion": "💡 Suggestion: adjust weight to {new_weight} ({reason})",
+  "inactive_title": "😴 Personas without activity this week:",
+  "inactive_item": "• {name} (last used: {days} days ago)",
+  "suggestions_prompt": "I found {count} weight adjustment suggestion(s).\nWould you like me to apply the suggestions above? (yes / no / choose)",
+  "no_suggestions": "✅ Your personas' weights are well calibrated for this week.\nNo adjustments needed.",
+  "confirm_individual": "Adjust weight of {name} from {old_weight} to {new_weight}? (yes/no)",
+  "applied": "✅ Adjustments applied:\n{changes}\n\nWeights have been updated. See you next Monday! 👋",
+  "no_personas": "No personas configured. Run onboarding first.",
+  "insufficient_data": "Not enough data for analysis yet. The review will be more useful next week."
+}

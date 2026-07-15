@@ -1,0 +1,5 @@
+{
+  "no_personas": "No personas configured. Run onboarding first.",
+  "insufficient_data": "Not enough data for analysis yet. The review will be more useful next week.",
+  "no_interactions": "No interactions recorded for this persona in the specified period."
+}

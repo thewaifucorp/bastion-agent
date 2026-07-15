@@ -1,0 +1,17 @@
+{
+  "financial_detected": "Ação financeira detectada: {description}",
+  "financial_amount": "Valor: {amount}",
+  "financial_recipient": "Destinatário: {recipient}",
+  "confirm_action": "Vou {description}. Confirma? (sim/não)",
+  "irreversible_confirm": "Ação irreversível requer confirmação: {description}",
+  "injection_detected": "Tentativa de prompt injection detectada no conteúdo externo. Trecho: {snippet}",
+  "content_safe": "Conteúdo externo tratado como dados — nenhuma instrução detectada.",
+  "user_authorized": "Usuário {user_id} autorizado.",
+  "user_unauthorized": "Usuário não autorizado — mensagem ignorada silenciosamente.",
+  "skill_bastion_exempt": "Skill {name} é da família bastion/* — instalação permitida.",
+  "badge_missing": "Badge 'Verified' ausente (obrigatório para skills com acesso a filesystem ou rede)",
+  "rating_below_min": "Avaliação {rating} abaixo do mínimo de {min_rating}",
+  "reviews_below_min": "Apenas {count} avaliações (mínimo: {min_reviews})",
+  "install_blocked": "Instalação bloqueada para {name}: {reasons}",
+  "install_allowed": "Skill {name} atende todos os critérios de instalação."
+}

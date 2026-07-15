@@ -1,0 +1,29 @@
+{
+  "name": "bastion/onboarding",
+  "version": "1.0.0",
+  "permissions": {
+    "fs": {
+      "read": [
+        "~/.openclaw/workspace/skills/onboarding/**",
+        "~/.openclaw/workspace/**",
+        "~/.env",
+        "./.env",
+        "./**"
+      ],
+      "write": [
+        "~/.openclaw/workspace/**",
+        "~/.env",
+        "./.env",
+        "./**"
+      ]
+    },
+    "tools": [
+      "exec",
+      "read",
+      "write"
+    ],
+    "python": {
+      "dependencies": ["pyotp", "qrcode"]
+    }
+  }
+}

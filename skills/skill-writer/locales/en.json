@@ -1,0 +1,17 @@
+{
+  "known_cves": "Known CVEs: {cves}",
+  "rating_insufficient": "Insufficient rating: {rating} (minimum 4.0)",
+  "reviews_insufficient": "Insufficient reviews: {count} (minimum 50)",
+  "no_skills_found_criteria": "No skills found for these criteria.",
+  "skills_found_header": "**Skills found:**\n",
+  "no_rating": "no rating",
+  "category_label": "Category: {category}",
+  "sage_blocked": "Sage blocked: {reason}",
+  "skills_json_corrupt": "[skill-writer] ERROR: skills.json corrupted at {path}. Recreating.",
+  "no_skills_for_persona": "No skills found for this persona.",
+  "install_prompt": "Numbers of skills to install (e.g. 1,3) or 'all' or 'none': ",
+  "none_installed": "No skill installed.",
+  "invalid_selection": "Invalid selection. No skill installed.",
+  "installed_label": "\nInstalled: {names}",
+  "failed_label": "Failed/blocked: {names}"
+}

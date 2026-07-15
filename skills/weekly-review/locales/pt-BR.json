@@ -1,0 +1,19 @@
+{
+  "title": "📊 Revisão Semanal — {start_date} a {end_date}",
+  "separator": "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+  "persona_header": "🧠 {name}",
+  "interactions": "Interações: {count} esta semana",
+  "most_used_for": "Mais usada para: {intent}",
+  "favorite_tool": "Ferramenta favorita: {tool}",
+  "peak_hours": "Horários de pico: {hours}",
+  "current_weight": "Peso atual: {weight}",
+  "suggestion": "💡 Sugestão: ajustar peso para {new_weight} ({reason})",
+  "inactive_title": "😴 Personas sem atividade esta semana:",
+  "inactive_item": "• {name} (último uso: {days} dias atrás)",
+  "suggestions_prompt": "Encontrei {count} sugestão(ões) de ajuste de peso.\nQuer que eu aplique as sugestões acima? (sim / não / escolher)",
+  "no_suggestions": "✅ Os pesos das suas personas estão bem calibrados para esta semana.\nNenhum ajuste necessário.",
+  "confirm_individual": "Ajustar peso de {name} de {old_weight} para {new_weight}? (sim/não)",
+  "applied": "✅ Ajustes aplicados:\n{changes}\n\nOs pesos foram atualizados. Até a próxima segunda! 👋",
+  "no_personas": "Não há personas configuradas. Execute o onboarding primeiro.",
+  "insufficient_data": "Ainda não há dados suficientes para análise. A revisão será mais útil na próxima semana."
+}

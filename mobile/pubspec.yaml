@@ -1,0 +1,45 @@
+name: bastion_companion
+description: Bastion companion app — chat + cockpit
+
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.10.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # HTTP client with interceptors for JWT injection
+  dio: ^5.4.0
+  # SSE client (flutter_http_sse — custom headers supported)
+  flutter_http_sse: ^1.0.0
+  # Secure JWT storage (iOS Keychain / Android Keystore — NEVER SharedPreferences)
+  flutter_secure_storage: ^9.2.2
+  # QR code rendering for pairing screen
+  qr_flutter: ^4.1.0
+  # QR scanner for scanning a QR displayed by the daemon
+  mobile_scanner: ^5.0.0
+  # Local persistence for theme/avatar/behavior preferences (display prefs only)
+  shared_preferences: ^2.2.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  # Bundled fonts (no runtime CDN dependency — pixel/mono always render offline).
+  fonts:
+    - family: Silkscreen
+      fonts:
+        - asset: assets/fonts/Silkscreen-Regular.ttf
+        - asset: assets/fonts/Silkscreen-Bold.ttf
+          weight: 700
+    - family: JetBrainsMono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono-Regular.ttf
+        - asset: assets/fonts/JetBrainsMono-Bold.ttf
+          weight: 700

@@ -1,0 +1,5 @@
+{
+  "confirm_adjust": "Vou ajustar o peso de '{name}' de {old_weight} para {new_weight}. Confirma? (sim/não)",
+  "adjusted": "✅ Peso de '{name}' ajustado: {old_weight} → {new_weight}",
+  "persona_not_found": "Persona '{slug}' não encontrada em USER.md"
+}

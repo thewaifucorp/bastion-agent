@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Bastion · Shadow Monarch HUD — mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --void:#06070D; --deep:#0B0E1A; --panel:#11142A;
+    --system:#22D3EE; --monarch:#8B5CF6; --arise:#C026D3;
+    --text:#E6EAF5; --muted:#7A86A8;
+    --track:#1C2140; --danger:#FB5B7A; --ok:#34E5C4;
+    --pixel:'Silkscreen', monospace;
+    --mono:'JetBrains Mono', monospace;
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  body{
+    font-family:var(--mono); color:var(--text);
+    background:
+      radial-gradient(900px 500px at 20% -10%, rgba(124,58,237,.20), transparent 60%),
+      radial-gradient(800px 600px at 110% 20%, rgba(34,211,238,.12), transparent 55%),
+      var(--void);
+    min-height:100vh; padding:40px 24px 64px;
+    display:flex; flex-direction:column; align-items:center; gap:8px;
+  }
+  /* faint scanline + grid overlay for the "System" feel */
+  body::before{
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:999;
+    background:
+      repeating-linear-gradient(0deg, rgba(255,255,255,.018) 0 1px, transparent 1px 3px),
+      linear-gradient(rgba(34,211,238,.04), transparent 40%);
+    mix-blend-mode:screen;
+  }
+  .page-title{font-family:var(--pixel); font-size:13px; letter-spacing:2px; color:var(--system);
+    text-shadow:0 0 12px rgba(34,211,238,.6); margin-bottom:6px}
+  .page-sub{font-size:11px; color:var(--muted); margin-bottom:26px; letter-spacing:.5px}
+  .stage{display:flex; gap:40px; flex-wrap:wrap; justify-content:center; align-items:flex-start}
+  .label-screen{font-family:var(--pixel); font-size:10px; color:var(--muted); letter-spacing:2px;
+    text-align:center; margin-bottom:10px; text-transform:uppercase}
+
+  /* ── phone frame ───────────────────────────────────────── */
+  .phone{
+    width:380px; height:760px; border-radius:34px; padding:12px;
+    background:linear-gradient(160deg,#15182b,#080a14);
+    box-shadow:0 0 0 1px rgba(139,92,246,.25), 0 30px 80px rgba(0,0,0,.7),
+      0 0 60px rgba(124,58,237,.18);
+    position:relative;
+  }
+  .screen{
+    width:100%; height:100%; border-radius:24px; overflow:hidden;
+    background:linear-gradient(180deg,#0a0c18 0%, #07080f 100%);
+    display:flex; flex-direction:column; position:relative;
+  }
+
+  /* ── System window (chamfered, glowing frame) ──────────── */
+  .win{ position:relative; --bw:1.5px; --c:var(--system); --cut:14px; }
+  .win .frame{
+    position:absolute; inset:0;
+    background:linear-gradient(135deg, var(--c), rgba(255,255,255,.05));
+    clip-path:polygon(var(--cut) 0,100% 0,100% calc(100% - var(--cut)),calc(100% - var(--cut)) 100%,0 100%,0 var(--cut));
+    filter:drop-shadow(0 0 7px color-mix(in srgb, var(--c) 55%, transparent));
+  }
+  .win .body{
+    position:absolute; inset:var(--bw);
+    background:linear-gradient(180deg, rgba(17,20,42,.92), rgba(10,12,24,.94));
+    clip-path:polygon(calc(var(--cut) - 1px) 0,100% 0,100% calc(100% - var(--cut) + 1px),calc(100% - var(--cut) + 1px) 100%,0 100%,0 calc(var(--cut) - 1px));
+    padding:12px 14px;
+  }
+  .win.block{position:relative; display:block}
+  .win.block .spacer{visibility:hidden} /* gives the win height = its content */
+
+  /* ── avatar (hexagon, glowing) ─────────────────────────── */
+  .avatar{position:relative; --c:var(--monarch); flex:none}
+  .avatar.sm{width:46px; height:52px}
+  .avatar.lg{width:76px; height:86px}
+  .avatar .hexf{position:absolute; inset:0;
+    background:linear-gradient(135deg, var(--c), rgba(255,255,255,.12));
+    clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);
+    filter:drop-shadow(0 0 7px color-mix(in srgb, var(--c) 60%, transparent))}
+  .avatar .hexi{position:absolute; inset:2px; background:#0b0e1c;
+    clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);
+    display:flex; align-items:center; justify-content:center}
+  .avatar svg{width:48%; height:48%; fill:var(--c); opacity:.92}
+  /* icon picker strip */
+  .picker{display:flex; gap:10px; align-items:center; margin-top:4px}
+  .pick{width:40px; height:46px; cursor:pointer}
+  .pick.sel .hexf{filter:drop-shadow(0 0 9px var(--c))}
+  .pick:not(.sel){opacity:.5}
+  .pick.add .hexi{font-family:var(--pixel); font-size:14px; color:var(--system)}
+  .pick.add svg{display:none}
+  .id-row{display:flex; align-items:center; gap:12px}
+  .id-row .meta{display:flex; flex-direction:column; gap:3px}
+  .id-row .pname{font-family:var(--pixel); font-size:11px; color:var(--monarch); letter-spacing:1px;
+    text-shadow:0 0 10px rgba(139,92,246,.6)}
+
+  /* ── top HUD bar ───────────────────────────────────────── */
+  .hud{padding:14px 16px 10px; border-bottom:1px solid rgba(34,211,238,.18);
+    background:linear-gradient(180deg, rgba(124,58,237,.10), transparent);}
+  .hud-row{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px}
+  .sys-tag{font-family:var(--pixel); font-size:12px; letter-spacing:2px; color:var(--system);
+    text-shadow:0 0 10px rgba(34,211,238,.6)}
+  .sys-tag .dot{color:var(--ok); text-shadow:0 0 8px var(--ok); font-size:9px; margin-right:6px}
+  .lv{font-family:var(--pixel); font-size:11px; color:var(--monarch); letter-spacing:1px;
+    text-shadow:0 0 10px rgba(139,92,246,.7)}
+  .stat{display:flex; align-items:center; gap:8px; margin:6px 0; font-family:var(--pixel); font-size:8px; letter-spacing:1px}
+  .stat .nm{width:42px; color:var(--muted)}
+  .bar{flex:1; height:9px; display:flex; gap:2px}
+  .seg{flex:1; background:var(--track); border-radius:1px}
+  /* per-tick blue→purple progression: each filled seg gets a solid step color (set inline) */
+  .seg.on{box-shadow:0 0 6px rgba(110,140,240,.5)}
+  .seg.t1{background:#22D3EE} .seg.t2{background:#37BBF0} .seg.t3{background:#4CA3F1}
+  .seg.t4{background:#618CF3} .seg.t5{background:#7674F4} .seg.t6{background:#8B5CF6}
+  .seg.risk{background:linear-gradient(90deg,var(--danger),#ff8aa0); box-shadow:0 0 6px rgba(251,91,122,.6)}
+  .pips{display:flex; gap:4px}
+  .pip{width:9px; height:9px; transform:rotate(45deg); background:var(--track)}
+  .pip.on{background:linear-gradient(135deg,var(--monarch),var(--arise)); box-shadow:0 0 7px rgba(192,38,211,.6)}
+
+  /* ── chat feed ─────────────────────────────────────────── */
+  .feed{flex:1; overflow:auto; padding:16px 14px; display:flex; flex-direction:column; gap:18px}
+  .msg{max-width:84%}
+  .msg .who{font-family:var(--pixel); font-size:8px; letter-spacing:1.5px; margin:0 4px 6px;
+    display:flex; align-items:center; gap:6px}
+  .msg.you{align-self:flex-end}
+  .msg.you .who{justify-content:flex-end; color:var(--system); text-shadow:0 0 8px rgba(34,211,238,.5)}
+  .msg.aria .who{color:var(--monarch); text-shadow:0 0 8px rgba(139,92,246,.6)}
+  .msg.sys .who{color:var(--arise); text-shadow:0 0 8px rgba(192,38,211,.6)}
+  .msg .txt{font-size:13px; line-height:1.5; color:var(--text)}
+  .msg .txt .b{color:var(--system)}
+  .msg .txt .ln{display:flex; gap:7px} .msg .txt .ln .mk{color:var(--monarch)}
+
+  /* ── input bar ─────────────────────────────────────────── */
+  .input{padding:12px 14px 16px; border-top:1px solid rgba(34,211,238,.18);
+    background:linear-gradient(0deg, rgba(124,58,237,.08), transparent)}
+  .field{display:flex; align-items:center; gap:10px; padding:11px 13px;
+    background:rgba(11,14,26,.9); border:1px solid rgba(34,211,238,.35);
+    box-shadow:0 0 14px rgba(34,211,238,.12) inset; border-radius:3px}
+  .field .cue{color:var(--system); font-weight:700}
+  .field .ph{color:var(--muted); font-size:13px; flex:1}
+  .send{font-family:var(--pixel); font-size:9px; letter-spacing:1px; color:var(--void);
+    background:linear-gradient(135deg,var(--system),var(--monarch)); padding:7px 12px; border-radius:2px;
+    box-shadow:0 0 12px rgba(34,211,238,.5)}
+
+  /* ── cockpit ───────────────────────────────────────────── */
+  .ck{flex:1; overflow:auto; padding:16px 14px; display:flex; flex-direction:column; gap:16px}
+  .panel-h{font-family:var(--pixel); font-size:9px; letter-spacing:1.5px; color:var(--system);
+    display:flex; justify-content:space-between; align-items:center; margin-bottom:10px}
+  .panel-h .v{color:var(--monarch); text-shadow:0 0 8px rgba(139,92,246,.6)}
+  .big{font-family:var(--pixel); font-size:20px; color:var(--text); text-shadow:0 0 14px rgba(34,211,238,.4); margin:4px 0 8px}
+  .sub{font-size:11px; color:var(--muted); line-height:1.5}
+  .quest{display:flex; gap:10px; align-items:flex-start; padding:9px 0; border-bottom:1px dashed rgba(122,134,168,.2)}
+  .quest:last-child{border-bottom:none}
+  .quest .ic{color:var(--monarch); font-size:13px; margin-top:1px}
+  .quest .qt{font-size:12px; color:var(--text)}
+  .quest .qm{font-size:10px; color:var(--muted)}
+  .badge{font-family:var(--pixel); font-size:7px; letter-spacing:1px; padding:3px 6px; border-radius:2px;
+    color:var(--ok); border:1px solid rgba(52,229,196,.4); box-shadow:0 0 8px rgba(52,229,196,.2)}
+  .nav{display:flex; border-top:1px solid rgba(34,211,238,.18)}
+  .nav a{flex:1; text-align:center; padding:14px 0; font-family:var(--pixel); font-size:8px; letter-spacing:1px; color:var(--muted)}
+  .nav a.on{color:var(--system); text-shadow:0 0 10px rgba(34,211,238,.6);
+    box-shadow:inset 0 2px 0 var(--system)}
+</style>
+</head>
+<body>
+  <!-- silhouette defs (generic feminine / masculine placeholders) -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="fem" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4"/><path d="M12 12c-3.2 0-5.2 2.2-6 7h12c-.8-4.8-2.8-7-6-7z"/></symbol>
+    <symbol id="masc" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4"/><path d="M5 21v-2.5a7 7 0 0 1 14 0V21z"/></symbol>
+  </svg>
+  <div class="page-title">⟦ BASTION · SHADOW MONARCH HUD ⟧</div>
+  <div class="page-sub">mockup descartável — fontes/glow/cores reais · afinar antes de portar pro Flutter</div>
+
+  <div class="stage">
+
+    <!-- ───────────── CHAT ───────────── -->
+    <div>
+      <div class="label-screen">chat</div>
+      <div class="phone"><div class="screen">
+
+        <div class="hud">
+          <div class="hud-row">
+            <div class="id-row">
+              <div class="avatar sm" style="--c:var(--monarch)">
+                <div class="hexf"></div>
+                <div class="hexi"><svg><use href="#fem"/></svg></div>
+              </div>
+              <div class="meta">
+                <div class="sys-tag"><span class="dot">●</span>SYSTEM</div>
+                <div class="pname">ARIA</div>
+              </div>
+            </div>
+            <div class="lv">LV.7</div>
+          </div>
+          <div class="stat">
+            <span class="nm">DRIFT</span>
+            <div class="bar">
+              <i class="seg on t1"></i><i class="seg on t2"></i><i class="seg on t3"></i><i class="seg on t4"></i>
+              <i class="seg on t5"></i><i class="seg on t6"></i><i class="seg"></i><i class="seg"></i>
+            </div>
+          </div>
+          <div class="stat">
+            <span class="nm">METAS</span>
+            <div class="pips">
+              <i class="pip on"></i><i class="pip on"></i><i class="pip"></i><i class="pip"></i><i class="pip"></i>
+            </div>
+          </div>
+        </div>
+
+        <div class="feed">
+          <div class="msg you">
+            <div class="who">YOU ◢</div>
+            <div class="win" style="--c:var(--system)">
+              <div class="frame"></div>
+              <div class="body"><div class="txt">como tá meu drift hoje?</div></div>
+              <div class="spacer txt">como tá meu drift hoje?</div>
+            </div>
+          </div>
+
+          <div class="msg aria">
+            <div class="who">◤ ARIA · SHADOW</div>
+            <div class="win" style="--c:var(--monarch)">
+              <div class="frame"></div>
+              <div class="body"><div class="txt">
+                <div class="ln"><span class="mk">⟢</span><span>drift estável (75%) — sem sinais de deriva.</span></div>
+                <div class="ln"><span class="mk">⟢</span><span>2 metas ativas, nenhuma em risco.</span></div>
+              </div></div>
+              <div class="spacer txt"><div class="ln"><span>⟢</span><span>drift estável (75%) — sem sinais de deriva.</span></div><div class="ln"><span>⟢</span><span>2 metas ativas, nenhuma em risco.</span></div></div>
+            </div>
+          </div>
+
+          <div class="msg sys">
+            <div class="who">⟢ SISTEMA · PROATIVO</div>
+            <div class="win" style="--c:var(--arise)">
+              <div class="frame"></div>
+              <div class="body"><div class="txt">lembrete: você pediu pra revisar o orçamento até sexta.</div></div>
+              <div class="spacer txt">lembrete: você pediu pra revisar o orçamento até sexta.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="input">
+          <div class="field">
+            <span class="cue">▸</span>
+            <span class="ph">digite uma mensagem…</span>
+            <span class="send">SEND ⟫</span>
+          </div>
+        </div>
+
+        <div class="nav">
+          <a class="on">◳ CHAT</a>
+          <a>◈ COCKPIT</a>
+          <a>⚙ CONFIG</a>
+        </div>
+
+      </div></div>
+    </div>
+
+    <!-- ───────────── COCKPIT ───────────── -->
+    <div>
+      <div class="label-screen">cockpit</div>
+      <div class="phone"><div class="screen">
+
+        <div class="hud">
+          <div class="hud-row">
+            <div class="id-row">
+              <div class="avatar lg" style="--c:var(--monarch)">
+                <div class="hexf"></div>
+                <div class="hexi"><svg><use href="#fem"/></svg></div>
+              </div>
+              <div class="meta">
+                <div class="sys-tag"><span class="dot">●</span>STATUS</div>
+                <div class="pname">ARIA · SHADOW</div>
+                <div class="picker">
+                  <div class="pick avatar sm sel" style="--c:var(--monarch)">
+                    <div class="hexf"></div><div class="hexi"><svg><use href="#fem"/></svg></div>
+                  </div>
+                  <div class="pick avatar sm" style="--c:var(--system)">
+                    <div class="hexf"></div><div class="hexi"><svg><use href="#masc"/></svg></div>
+                  </div>
+                  <div class="pick avatar sm add" style="--c:var(--system)">
+                    <div class="hexf"></div><div class="hexi">+</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="lv">LV.7</div>
+          </div>
+        </div>
+
+        <div class="ck">
+          <div class="win block" style="--c:var(--system)">
+            <div class="frame"></div>
+            <div class="body">
+              <div class="panel-h"><span>DRIFT</span><span class="v">ESTÁVEL</span></div>
+              <div class="big">75%</div>
+              <div class="stat" style="margin:0">
+                <div class="bar">
+                  <i class="seg on t1"></i><i class="seg on t2"></i><i class="seg on t3"></i><i class="seg on t4"></i>
+                  <i class="seg on t5"></i><i class="seg on t6"></i><i class="seg"></i><i class="seg"></i>
+                </div>
+              </div>
+              <div class="sub" style="margin-top:8px">última checagem há 2h · sem deriva de persona</div>
+            </div>
+            <div class="spacer" style="height:128px"></div>
+          </div>
+
+          <div class="win block" style="--c:var(--monarch)">
+            <div class="frame"></div>
+            <div class="body">
+              <div class="panel-h"><span>METAS ATIVAS</span><span class="v">2 / 5</span></div>
+              <div class="quest"><span class="ic">◈</span><div><div class="qt">Lançar v1.0 no GitHub</div><div class="qm">progresso 80% · prazo sex</div></div></div>
+              <div class="quest"><span class="ic">◈</span><div><div class="qt">Revisar orçamento mensal</div><div class="qm">progresso 30% · em andamento</div></div></div>
+            </div>
+            <div class="spacer" style="height:150px"></div>
+          </div>
+
+          <div class="win block" style="--c:var(--arise)">
+            <div class="frame"></div>
+            <div class="body">
+              <div class="panel-h"><span>MEMÓRIAS CONTESTÁVEIS</span><span class="v">3</span></div>
+              <div class="quest"><span class="ic">⟢</span><div><div class="qt">"Mario prefere café sem açúcar"</div><div class="qm">fonte: chat 12/jun</div></div><span class="badge" style="margin-left:auto">CONTESTAR</span></div>
+              <div class="quest"><span class="ic">⟢</span><div><div class="qt">"Trabalha com IA / agentes"</div><div class="qm">fonte: onboarding</div></div><span class="badge" style="margin-left:auto">CONTESTAR</span></div>
+            </div>
+            <div class="spacer" style="height:160px"></div>
+          </div>
+        </div>
+
+        <div class="nav">
+          <a>◳ CHAT</a>
+          <a class="on">◈ COCKPIT</a>
+          <a>⚙ CONFIG</a>
+        </div>
+
+      </div></div>
+    </div>
+
+  </div>
+
+  <!-- ════════════════ VARIAÇÃO B · NEUMORPHISM ════════════════ -->
+  <style>
+    .neo{ --nbg:#171b2c; --nlight:#222a47; --ndark:#0a0c15; margin-top:64px }
+    .neo .divider{font-family:var(--pixel); font-size:12px; letter-spacing:2px; color:var(--monarch);
+      text-shadow:0 0 12px rgba(139,92,246,.5); text-align:center; margin-bottom:4px}
+    .neo .divider-sub{font-size:11px; color:var(--muted); text-align:center; margin-bottom:26px}
+    /* flat soft base — no glow, no translucency */
+    .neo .phone{background:linear-gradient(160deg,#1b2034,#0d0f1a);
+      box-shadow:0 30px 80px rgba(0,0,0,.6), 0 0 0 1px rgba(34,40,71,.6)}
+    .neo .screen{background:var(--nbg)}
+    .neo .hud{background:var(--nbg); border-bottom:none;
+      box-shadow:inset 0 -10px 16px -12px var(--ndark)}
+    /* raised soft card (the neuro "window") */
+    .neo .nwin{background:var(--nbg); border-radius:16px; padding:12px 15px;
+      box-shadow:-6px -6px 13px var(--nlight), 6px 6px 14px var(--ndark)}
+    .neo .nwin.cy{box-shadow:-6px -6px 13px var(--nlight), 6px 6px 14px var(--ndark), inset 0 0 0 1px rgba(34,211,238,.10)}
+    .neo .nwin.pu{box-shadow:-6px -6px 13px var(--nlight), 6px 6px 14px var(--ndark), inset 0 0 0 1px rgba(139,92,246,.12)}
+    .neo .nwin.mg{box-shadow:-6px -6px 13px var(--nlight), 6px 6px 14px var(--ndark), inset 0 0 0 1px rgba(192,38,211,.12)}
+    .neo .who{text-shadow:none; opacity:.85}
+    /* avatar: same hex, but dual soft shadow instead of neon glow */
+    .neo .avatar .hexf{background:var(--nbg);
+      filter:drop-shadow(-3px -3px 4px var(--nlight)) drop-shadow(3px 3px 4px var(--ndark))}
+    .neo .avatar .hexi{background:var(--nbg)}
+    .neo .pname{text-shadow:none}
+    .neo .sys-tag{text-shadow:none; color:var(--muted)}
+    .neo .sys-tag .dot{color:var(--ok); text-shadow:0 0 6px var(--ok)}
+    .neo .lv{text-shadow:none}
+    /* stat bar = pressed groove; ticks = soft raised pills (blue→purple kept) */
+    .neo .bar{height:15px; padding:3px; border-radius:7px;
+      box-shadow:inset 3px 3px 6px var(--ndark), inset -3px -3px 6px var(--nlight)}
+    .neo .seg{border-radius:3px; box-shadow:none}
+    .neo .seg.on{box-shadow:1px 1px 2px rgba(0,0,0,.4)}
+    .neo .seg:not(.on){background:transparent}
+    .neo .pip{box-shadow:1px 1px 2px var(--ndark)}
+    .neo .pip:not(.on){background:var(--nbg); box-shadow:inset 1px 1px 2px var(--ndark)}
+    .neo .big{text-shadow:none}
+    /* input: pressed groove + raised send button */
+    .neo .input{border-top:none; box-shadow:inset 0 12px 16px -14px var(--ndark)}
+    .neo .field{background:var(--nbg); border:none;
+      box-shadow:inset 3px 3px 7px var(--ndark), inset -3px -3px 7px var(--nlight)}
+    .neo .send{box-shadow:-3px -3px 7px var(--nlight), 3px 3px 7px var(--ndark);
+      background:var(--nbg); color:var(--system); text-shadow:0 0 8px rgba(34,211,238,.4)}
+    /* nav: active = pressed (pushed in) */
+    .neo .nav{border-top:none}
+    .neo .nav a{color:var(--muted)}
+    .neo .nav a.on{color:var(--system); text-shadow:0 0 8px rgba(34,211,238,.4); box-shadow:none;
+      background:var(--nbg)}
+    .neo .nav a.on::after{content:""; display:block; margin:6px auto 0; width:60%; height:6px;
+      border-radius:4px; box-shadow:inset 2px 2px 4px var(--ndark), inset -2px -2px 4px var(--nlight)}
+    .neo .badge{border:none; box-shadow:-2px -2px 5px var(--nlight), 2px 2px 5px var(--ndark); color:var(--ok)}
+    .neo .quest{border-bottom:none; margin-bottom:4px}
+    .neo .panel-h{color:var(--muted)} .neo .panel-h .v{text-shadow:none}
+  </style>
+
+  <div class="neo">
+    <div class="divider">⟦ VARIAÇÃO B · NEUMORPHISM (soft UI) ⟧</div>
+    <div class="divider-sub">pedido do dev — relevo macio, sem vidro/translucidez · mesma paleta e ticks azul→roxo</div>
+
+    <div class="stage">
+
+      <!-- ── CHAT (neuro) ── -->
+      <div>
+        <div class="label-screen">chat</div>
+        <div class="phone"><div class="screen">
+
+          <div class="hud">
+            <div class="hud-row">
+              <div class="id-row">
+                <div class="avatar sm" style="--c:var(--monarch)">
+                  <div class="hexf"></div><div class="hexi"><svg><use href="#fem"/></svg></div>
+                </div>
+                <div class="meta">
+                  <div class="sys-tag"><span class="dot">●</span>SYSTEM</div>
+                  <div class="pname">ARIA</div>
+                </div>
+              </div>
+              <div class="lv">LV.7</div>
+            </div>
+            <div class="stat">
+              <span class="nm">DRIFT</span>
+              <div class="bar">
+                <i class="seg on t1"></i><i class="seg on t2"></i><i class="seg on t3"></i><i class="seg on t4"></i>
+                <i class="seg on t5"></i><i class="seg on t6"></i><i class="seg"></i><i class="seg"></i>
+              </div>
+            </div>
+            <div class="stat">
+              <span class="nm">METAS</span>
+              <div class="pips">
+                <i class="pip on"></i><i class="pip on"></i><i class="pip"></i><i class="pip"></i><i class="pip"></i>
+              </div>
+            </div>
+          </div>
+
+          <div class="feed">
+            <div class="msg you">
+              <div class="who" style="color:var(--system)">YOU ◢</div>
+              <div class="nwin cy"><div class="txt">como tá meu drift hoje?</div></div>
+            </div>
+            <div class="msg aria">
+              <div class="who" style="color:var(--monarch)">◤ ARIA · SHADOW</div>
+              <div class="nwin pu"><div class="txt">
+                <div class="ln"><span class="mk">⟢</span><span>drift estável (75%) — sem sinais de deriva.</span></div>
+                <div class="ln"><span class="mk">⟢</span><span>2 metas ativas, nenhuma em risco.</span></div>
+              </div></div>
+            </div>
+            <div class="msg sys">
+              <div class="who" style="color:var(--arise)">⟢ SISTEMA · PROATIVO</div>
+              <div class="nwin mg"><div class="txt">lembrete: você pediu pra revisar o orçamento até sexta.</div></div>
+            </div>
+          </div>
+
+          <div class="input">
+            <div class="field">
+              <span class="cue">▸</span>
+              <span class="ph">digite uma mensagem…</span>
+              <span class="send">SEND ⟫</span>
+            </div>
+          </div>
+
+          <div class="nav">
+            <a class="on">◳ CHAT</a>
+            <a>◈ COCKPIT</a>
+            <a>⚙ CONFIG</a>
+          </div>
+
+        </div></div>
+      </div>
+
+      <!-- ── COCKPIT (neuro) ── -->
+      <div>
+        <div class="label-screen">cockpit</div>
+        <div class="phone"><div class="screen">
+
+          <div class="hud">
+            <div class="hud-row">
+              <div class="id-row">
+                <div class="avatar lg" style="--c:var(--monarch)">
+                  <div class="hexf"></div><div class="hexi"><svg><use href="#fem"/></svg></div>
+                </div>
+                <div class="meta">
+                  <div class="sys-tag"><span class="dot">●</span>STATUS</div>
+                  <div class="pname">ARIA · SHADOW</div>
+                  <div class="picker">
+                    <div class="pick avatar sm sel" style="--c:var(--monarch)">
+                      <div class="hexf"></div><div class="hexi"><svg><use href="#fem"/></svg></div>
+                    </div>
+                    <div class="pick avatar sm" style="--c:var(--system)">
+                      <div class="hexf"></div><div class="hexi"><svg><use href="#masc"/></svg></div>
+                    </div>
+                    <div class="pick avatar sm add" style="--c:var(--system)">
+                      <div class="hexf"></div><div class="hexi">+</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="lv">LV.7</div>
+            </div>
+          </div>
+
+          <div class="ck">
+            <div class="nwin cy">
+              <div class="panel-h"><span>DRIFT</span><span class="v">ESTÁVEL</span></div>
+              <div class="big">75%</div>
+              <div class="stat" style="margin:0">
+                <div class="bar">
+                  <i class="seg on t1"></i><i class="seg on t2"></i><i class="seg on t3"></i><i class="seg on t4"></i>
+                  <i class="seg on t5"></i><i class="seg on t6"></i><i class="seg"></i><i class="seg"></i>
+                </div>
+              </div>
+              <div class="sub" style="margin-top:8px">última checagem há 2h · sem deriva de persona</div>
+            </div>
+
+            <div class="nwin pu">
+              <div class="panel-h"><span>METAS ATIVAS</span><span class="v">2 / 5</span></div>
+              <div class="quest"><span class="ic">◈</span><div><div class="qt">Lançar v1.0 no GitHub</div><div class="qm">progresso 80% · prazo sex</div></div></div>
+              <div class="quest"><span class="ic">◈</span><div><div class="qt">Revisar orçamento mensal</div><div class="qm">progresso 30% · em andamento</div></div></div>
+            </div>
+
+            <div class="nwin mg">
+              <div class="panel-h"><span>MEMÓRIAS CONTESTÁVEIS</span><span class="v">3</span></div>
+              <div class="quest"><span class="ic">⟢</span><div><div class="qt">"Mario prefere café sem açúcar"</div><div class="qm">fonte: chat 12/jun</div></div><span class="badge" style="margin-left:auto">CONTESTAR</span></div>
+              <div class="quest"><span class="ic">⟢</span><div><div class="qt">"Trabalha com IA / agentes"</div><div class="qm">fonte: onboarding</div></div><span class="badge" style="margin-left:auto">CONTESTAR</span></div>
+            </div>
+          </div>
+
+          <div class="nav">
+            <a>◳ CHAT</a>
+            <a class="on">◈ COCKPIT</a>
+            <a>⚙ CONFIG</a>
+          </div>
+
+        </div></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ════════════════ VARIAÇÃO C · NEUMORPHISM CHANFRADO ════════════════ -->
+  <style>
+    .neoc{ --nbg:#171b2c; --nlight:#232b49; --ndark:#090b13; --groove:#10131f; margin-top:64px }
+    .neoc .divider{font-family:var(--pixel); font-size:12px; letter-spacing:2px; color:var(--monarch);
+      text-shadow:0 0 12px rgba(139,92,246,.5); text-align:center; margin-bottom:4px}
+    .neoc .divider-sub{font-size:11px; color:var(--muted); text-align:center; margin-bottom:26px}
+    .neoc .phone{background:linear-gradient(160deg,#1b2034,#0d0f1a);
+      box-shadow:0 30px 80px rgba(0,0,0,.6), 0 0 0 1px rgba(35,43,73,.6)}
+    .neoc .screen{background:var(--nbg)}
+    .neoc .hud{background:var(--nbg); border-bottom:none; box-shadow:inset 0 -10px 16px -12px var(--ndark)}
+
+    /* chamfered RAISED card — relief via dual drop-shadow (follows the clip-path silhouette) */
+    .neoc .cwin{ background:var(--nbg); padding:13px 15px;
+      clip-path:polygon(13px 0,100% 0,100% calc(100% - 13px),calc(100% - 13px) 100%,0 100%,0 13px);
+      filter:drop-shadow(-5px -5px 5px var(--nlight)) drop-shadow(5px 5px 7px var(--ndark)) }
+    /* accent: faint colored tint on the fill (no border — pure neuro) */
+    .neoc .cwin.cy{ background:linear-gradient(135deg,#19233a,var(--nbg) 55%) }
+    .neoc .cwin.pu{ background:linear-gradient(135deg,#1d1a3a,var(--nbg) 55%) }
+    .neoc .cwin.mg{ background:linear-gradient(135deg,#241433,var(--nbg) 55%) }
+
+    /* chamfered ENGRAVED groove — reversed shadow direction = carved-in look */
+    .neoc .cgroove{ background:var(--groove);
+      clip-path:polygon(9px 0,100% 0,100% calc(100% - 9px),calc(100% - 9px) 100%,0 100%,0 9px);
+      filter:drop-shadow(-2px -2px 3px var(--ndark)) drop-shadow(2px 2px 3px var(--nlight)) }
+
+    .neoc .who{opacity:.85} .neoc .pname,.neoc .lv,.neoc .big{text-shadow:none}
+    .neoc .sys-tag{text-shadow:none; color:var(--muted)} .neoc .sys-tag .dot{color:var(--ok); text-shadow:0 0 6px var(--ok)}
+    .neoc .panel-h{color:var(--muted)} .neoc .panel-h .v{text-shadow:none}
+    /* avatar: same hex, neuro relief */
+    .neoc .avatar .hexf{background:var(--nbg);
+      filter:drop-shadow(-3px -3px 4px var(--nlight)) drop-shadow(3px 3px 4px var(--ndark))}
+    .neoc .avatar .hexi{background:var(--nbg)}
+
+    /* stat bar inside an engraved chamfered groove */
+    .neoc .bar{height:11px; gap:3px; padding:0; width:100%}
+    .neoc .barwrap{flex:1; padding:4px 5px;
+      background:var(--groove);
+      clip-path:polygon(7px 0,100% 0,100% calc(100% - 7px),calc(100% - 7px) 100%,0 100%,0 7px);
+      filter:drop-shadow(-2px -2px 3px var(--ndark)) drop-shadow(2px 2px 3px var(--nlight))}
+    .neoc .seg{border-radius:2px; box-shadow:none}
+    .neoc .seg.on{box-shadow:1px 1px 2px rgba(0,0,0,.4)}
+    .neoc .seg:not(.on){background:transparent}
+    .neoc .pip{box-shadow:1px 1px 2px var(--ndark)}
+    .neoc .pip:not(.on){background:var(--groove); box-shadow:inset 1px 1px 2px var(--ndark)}
+
+    /* input: chamfered engraved field + chamfered raised SEND */
+    .neoc .input{border-top:none; box-shadow:inset 0 12px 16px -14px var(--ndark)}
+    .neoc .field{background:var(--groove); border:none; padding:11px 6px 11px 13px;
+      clip-path:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px);
+      filter:drop-shadow(-2px -2px 3px var(--ndark)) drop-shadow(2px 2px 3px var(--nlight))}
+    .neoc .send{background:var(--nbg); color:var(--system); text-shadow:0 0 8px rgba(34,211,238,.4);
+      clip-path:polygon(6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%,0 6px);
+      filter:drop-shadow(-2px -2px 4px var(--nlight)) drop-shadow(2px 2px 4px var(--ndark))}
+    /* nav active = chamfered engraved indicator */
+    .neoc .nav{border-top:none} .neoc .nav a{color:var(--muted)}
+    .neoc .nav a.on{color:var(--system); text-shadow:0 0 8px rgba(34,211,238,.4); box-shadow:none}
+    .neoc .nav a.on::after{content:""; display:block; margin:6px auto 0; width:58%; height:7px;
+      background:var(--groove);
+      clip-path:polygon(4px 0,100% 0,100% calc(100% - 4px),calc(100% - 4px) 100%,0 100%,0 4px);
+      filter:drop-shadow(-1px -1px 2px var(--ndark)) drop-shadow(1px 1px 2px var(--nlight))}
+    .neoc .badge{border:none; color:var(--ok);
+      clip-path:polygon(5px 0,100% 0,100% calc(100% - 5px),calc(100% - 5px) 100%,0 100%,0 5px);
+      background:var(--nbg); filter:drop-shadow(-1px -1px 2px var(--nlight)) drop-shadow(1px 1px 2px var(--ndark))}
+    .neoc .quest{border-bottom:none; margin-bottom:4px}
+  </style>
+
+  <div class="neoc">
+    <div class="divider">⟦ VARIAÇÃO C · NEUMORPHISM CHANFRADO ⟧</div>
+    <div class="divider-sub">relevo macio do neuro + formato chanfrado ◤◢ das caixas originais · sem borda neon</div>
+
+    <div class="stage">
+
+      <!-- ── CHAT (neuro chanfrado) ── -->
+      <div>
+        <div class="label-screen">chat</div>
+        <div class="phone"><div class="screen">
+
+          <div class="hud">
+            <div class="hud-row">
+              <div class="id-row">
+                <div class="avatar sm" style="--c:var(--monarch)">
+                  <div class="hexf"></div><div class="hexi"><svg><use href="#fem"/></svg></div>
+                </div>
+                <div class="meta">
+                  <div class="sys-tag"><span class="dot">●</span>SYSTEM</div>
+                  <div class="pname">ARIA</div>
+                </div>
+              </div>
+              <div class="lv">LV.7</div>
+            </div>
+            <div class="stat">
+              <span class="nm">DRIFT</span>
+              <div class="barwrap"><div class="bar">
+                <i class="seg on t1"></i><i class="seg on t2"></i><i class="seg on t3"></i><i class="seg on t4"></i>
+                <i class="seg on t5"></i><i class="seg on t6"></i><i class="seg"></i><i class="seg"></i>
+              </div></div>
+            </div>
+            <div class="stat">
+              <span class="nm">METAS</span>
+              <div class="pips">
+                <i class="pip on"></i><i class="pip on"></i><i class="pip"></i><i class="pip"></i><i class="pip"></i>
+              </div>
+            </div>
+          </div>
+
+          <div class="feed">
+            <div class="msg you">
+              <div class="who" style="color:var(--system)">YOU ◢</div>
+              <div class="cwin cy"><div class="txt">como tá meu drift hoje?</div></div>
+            </div>
+            <div class="msg aria">
+              <div class="who" style="color:var(--monarch)">◤ ARIA · SHADOW</div>
+              <div class="cwin pu"><div class="txt">
+                <div class="ln"><span class="mk">⟢</span><span>drift estável (75%) — sem sinais de deriva.</span></div>
+                <div class="ln"><span class="mk">⟢</span><span>2 metas ativas, nenhuma em risco.</span></div>
+              </div></div>
+            </div>
+            <div class="msg sys">
+              <div class="who" style="color:var(--arise)">⟢ SISTEMA · PROATIVO</div>
+              <div class="cwin mg"><div class="txt">lembrete: você pediu pra revisar o orçamento até sexta.</div></div>
+            </div>
+          </div>
+
+          <div class="input">
+            <div class="field">
+              <span class="cue">▸</span>
+              <span class="ph">digite uma mensagem…</span>
+              <span class="send">SEND ⟫</span>
+            </div>
+          </div>
+
+          <div class="nav">
+            <a class="on">◳ CHAT</a>
+            <a>◈ COCKPIT</a>
+            <a>⚙ CONFIG</a>
+          </div>
+
+        </div></div>
+      </div>
+
+      <!-- ── COCKPIT (neuro chanfrado) ── -->
+      <div>
+        <div class="label-screen">cockpit</div>
+        <div class="phone"><div class="screen">
+
+          <div class="hud">
+            <div class="hud-row">
+              <div class="id-row">
+                <div class="avatar lg" style="--c:var(--monarch)">
+                  <div class="hexf"></div><div class="hexi"><svg><use href="#fem"/></svg></div>
+                </div>
+                <div class="meta">
+                  <div class="sys-tag"><span class="dot">●</span>STATUS</div>
+                  <div class="pname">ARIA · SHADOW</div>
+                  <div class="picker">
+                    <div class="pick avatar sm sel" style="--c:var(--monarch)">
+                      <div class="hexf"></div><div class="hexi"><svg><use href="#fem"/></svg></div>
+                    </div>
+                    <div class="pick avatar sm" style="--c:var(--system)">
+                      <div class="hexf"></div><div class="hexi"><svg><use href="#masc"/></svg></div>
+                    </div>
+                    <div class="pick avatar sm add" style="--c:var(--system)">
+                      <div class="hexf"></div><div class="hexi">+</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="lv">LV.7</div>
+            </div>
+          </div>
+
+          <div class="ck">
+            <div class="cwin cy">
+              <div class="panel-h"><span>DRIFT</span><span class="v">ESTÁVEL</span></div>
+              <div class="big">75%</div>
+              <div class="barwrap"><div class="bar">
+                <i class="seg on t1"></i><i class="seg on t2"></i><i class="seg on t3"></i><i class="seg on t4"></i>
+                <i class="seg on t5"></i><i class="seg on t6"></i><i class="seg"></i><i class="seg"></i>
+              </div></div>
+              <div class="sub" style="margin-top:8px">última checagem há 2h · sem deriva de persona</div>
+            </div>
+
+            <div class="cwin pu">
+              <div class="panel-h"><span>METAS ATIVAS</span><span class="v">2 / 5</span></div>
+              <div class="quest"><span class="ic">◈</span><div><div class="qt">Lançar v1.0 no GitHub</div><div class="qm">progresso 80% · prazo sex</div></div></div>
+              <div class="quest"><span class="ic">◈</span><div><div class="qt">Revisar orçamento mensal</div><div class="qm">progresso 30% · em andamento</div></div></div>
+            </div>
+
+            <div class="cwin mg">
+              <div class="panel-h"><span>MEMÓRIAS CONTESTÁVEIS</span><span class="v">3</span></div>
+              <div class="quest"><span class="ic">⟢</span><div><div class="qt">"Mario prefere café sem açúcar"</div><div class="qm">fonte: chat 12/jun</div></div><span class="badge" style="margin-left:auto">CONTESTAR</span></div>
+              <div class="quest"><span class="ic">⟢</span><div><div class="qt">"Trabalha com IA / agentes"</div><div class="qm">fonte: onboarding</div></div><span class="badge" style="margin-left:auto">CONTESTAR</span></div>
+            </div>
+          </div>
+
+          <div class="nav">
+            <a>◳ CHAT</a>
+            <a class="on">◈ COCKPIT</a>
+            <a>⚙ CONFIG</a>
+          </div>
+
+        </div></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ════════════════ TELA CONFIG · SELETOR DE TEMA ════════════════ -->
+  <style>
+    .cfgwrap{margin-top:64px}
+    .cfgwrap .cfg-sec{font-family:var(--pixel); font-size:9px; letter-spacing:1.5px; color:var(--system);
+      text-shadow:0 0 8px rgba(34,211,238,.4); margin:20px 2px 11px}
+    .cfgwrap .ck{gap:6px}
+    .tiles{display:flex; gap:11px}
+    .tile{flex:1; padding:8px 8px 9px; position:relative; cursor:pointer; text-align:center;
+      background:var(--nbg);
+      clip-path:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px);
+      filter:drop-shadow(-4px -4px 5px var(--nlight)) drop-shadow(4px 4px 6px var(--ndark))}
+    .tile.sel{filter:drop-shadow(0 0 8px rgba(34,211,238,.5))}
+    .tile.sel .mini{outline:1px solid rgba(34,211,238,.5)}
+    .tlabel{font-family:var(--pixel); font-size:6.5px; letter-spacing:.5px; color:var(--muted); margin-top:7px; line-height:1.4}
+    .tile.sel .tlabel{color:var(--system); text-shadow:0 0 6px rgba(34,211,238,.4)}
+    .tcheck{position:absolute; top:5px; right:8px; color:var(--ok); font-size:10px; text-shadow:0 0 6px var(--ok)}
+    .mini{height:38px; position:relative; display:flex; align-items:center; justify-content:center; gap:3px}
+    /* mini A — glass neon */
+    .mini.glass{background:rgba(17,20,42,.8); border:1px solid var(--system); box-shadow:0 0 8px rgba(34,211,238,.5) inset, 0 0 7px rgba(124,58,237,.4);
+      clip-path:polygon(7px 0,100% 0,100% calc(100% - 7px),calc(100% - 7px) 100%,0 100%,0 7px)}
+    .mini.glass .mb{width:30px; height:7px; background:linear-gradient(90deg,#22D3EE,#8B5CF6); box-shadow:0 0 6px rgba(34,211,238,.6)}
+    /* mini B — soft rounded */
+    .mini.soft{background:var(--nbg); border-radius:9px; box-shadow:-3px -3px 6px var(--nlight),3px 3px 7px var(--ndark)}
+    .mini.soft .mb{width:30px; height:7px; border-radius:4px; background:linear-gradient(90deg,#22D3EE,#8B5CF6); box-shadow:inset 1px 1px 2px var(--ndark)}
+    /* mini C — soft chamfered */
+    .mini.softx{background:var(--nbg); filter:drop-shadow(-2px -2px 3px var(--nlight)) drop-shadow(2px 2px 4px var(--ndark));
+      clip-path:polygon(7px 0,100% 0,100% calc(100% - 7px),calc(100% - 7px) 100%,0 100%,0 7px)}
+    .mini.softx .mb{width:30px; height:7px; background:linear-gradient(90deg,#22D3EE,#8B5CF6)}
+    /* settings rows + toggles */
+    .row{display:flex; justify-content:space-between; align-items:center; gap:10px; padding:12px 2px}
+    .row .rl{font-size:12px; color:var(--text)} .row .rh{font-size:10px; color:var(--muted)}
+    .sw{width:44px; height:23px; border-radius:13px; background:var(--groove); position:relative; flex:none;
+      box-shadow:inset 2px 2px 4px var(--ndark), inset -2px -2px 4px var(--nlight)}
+    .sw.on{background:linear-gradient(90deg,#22D3EE,#8B5CF6); box-shadow:0 0 8px rgba(34,211,238,.4)}
+    .sw .knob{position:absolute; top:3px; left:3px; width:17px; height:17px; border-radius:50%;
+      background:#e6eaf5; box-shadow:1px 1px 3px var(--ndark); transition:.2s}
+    .sw.on .knob{left:24px}
+    .urlfield{display:flex; align-items:center; gap:9px; padding:11px 13px; background:var(--groove);
+      clip-path:polygon(9px 0,100% 0,100% calc(100% - 9px),calc(100% - 9px) 100%,0 100%,0 9px);
+      filter:drop-shadow(-2px -2px 3px var(--ndark)) drop-shadow(2px 2px 3px var(--nlight))}
+    .urlfield .u{flex:1; font-size:12px; color:var(--text)} .urlfield .st{font-size:9px; color:var(--ok); font-family:var(--pixel); letter-spacing:.5px}
+    .btn{font-family:var(--pixel); font-size:8px; letter-spacing:1px; color:var(--system); text-align:center;
+      padding:11px; margin-top:9px; background:var(--nbg);
+      clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px);
+      filter:drop-shadow(-3px -3px 5px var(--nlight)) drop-shadow(3px 3px 5px var(--ndark))}
+  </style>
+
+  <div class="cfgwrap neoc">
+    <div class="divider">⟦ TELA CONFIG · SELETOR DE TEMA + SETTINGS ⟧</div>
+    <div class="divider-sub">tema vira preferência do usuário (troca ao vivo) · renderizado aqui na skin Soft Angular</div>
+
+    <div style="display:flex; justify-content:center">
+      <div class="phone"><div class="screen">
+
+        <div class="hud">
+          <div class="hud-row">
+            <div class="id-row">
+              <div class="avatar sm" style="--c:var(--monarch)">
+                <div class="hexf"></div><div class="hexi"><svg><use href="#fem"/></svg></div>
+              </div>
+              <div class="meta">
+                <div class="sys-tag"><span class="dot">●</span>CONFIG</div>
+                <div class="pname">ARIA</div>
+              </div>
+            </div>
+            <div class="lv">⚙</div>
+          </div>
+        </div>
+
+        <div class="ck">
+          <div class="cfg-sec">APARÊNCIA / TEMA</div>
+          <div class="tiles">
+            <div class="tile sel">
+              <span class="tcheck">✦</span>
+              <div class="mini glass"><span class="mb"></span></div>
+              <div class="tlabel">SYSTEM<br>NEON</div>
+            </div>
+            <div class="tile">
+              <div class="mini soft"><span class="mb"></span></div>
+              <div class="tlabel">SOFT<br>(NEURO)</div>
+            </div>
+            <div class="tile">
+              <div class="mini softx"><span class="mb"></span></div>
+              <div class="tlabel">SOFT<br>ANGULAR</div>
+            </div>
+          </div>
+
+          <div class="cfg-sec">AVATAR</div>
+          <div class="picker" style="padding:2px">
+            <div class="pick avatar sm sel" style="--c:var(--monarch)">
+              <div class="hexf"></div><div class="hexi"><svg><use href="#fem"/></svg></div>
+            </div>
+            <div class="pick avatar sm" style="--c:var(--system)">
+              <div class="hexf"></div><div class="hexi"><svg><use href="#masc"/></svg></div>
+            </div>
+            <div class="pick avatar sm add" style="--c:var(--system)">
+              <div class="hexf"></div><div class="hexi">+</div>
+            </div>
+          </div>
+
+          <div class="cfg-sec">CONEXÃO</div>
+          <div class="urlfield">
+            <span class="u">http://192.168.0.8:8787</span>
+            <span class="st">● ONLINE</span>
+          </div>
+          <div class="btn">⟲ REPAREAR DISPOSITIVO</div>
+
+          <div class="cfg-sec">COMPORTAMENTO</div>
+          <div class="row">
+            <div><div class="rl">Nudges proativos</div><div class="rh">o agente fala primeiro quando relevante</div></div>
+            <div class="sw on"><span class="knob"></span></div>
+          </div>
+          <div class="row">
+            <div><div class="rl">Notificações push</div><div class="rh">avisa no celular fora do app</div></div>
+            <div class="sw on"><span class="knob"></span></div>
+          </div>
+          <div class="row">
+            <div><div class="rl">Efeitos (scanline/glow)</div><div class="rh">só no tema System Neon</div></div>
+            <div class="sw"><span class="knob"></span></div>
+          </div>
+        </div>
+
+        <div class="nav">
+          <a>◳ CHAT</a>
+          <a>◈ COCKPIT</a>
+          <a class="on">⚙ CONFIG</a>
+        </div>
+
+      </div></div>
+    </div>
+  </div>
+</body>
+</html>

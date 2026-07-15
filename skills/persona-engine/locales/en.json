@@ -1,0 +1,14 @@
+{
+  "create_intro": "Let's create a new persona. 🎭",
+  "ask_name": "What will be the name of this persona?\n(e.g., \"Tech Lead\", \"Entrepreneur\", \"Family Man\", \"Athlete\")",
+  "ask_domain": "What is the domain of \"{name}\"?\n\nDescribe the areas of knowledge and responsibility of this persona.\n(e.g., \"code, software architecture, technical team leadership\")",
+  "ask_voice_tone": "How should \"{name}\" communicate?\n\nChoose the characteristics that best describe the tone of voice:\n\n1. Formality: formal / informal\n2. Depth: direct and objective / detailed and explanatory\n3. Style: technical / accessible / motivational / analytical\n\nAnswer freely or use the examples above as a guide.\n(e.g., \"informal, direct, technical\" or \"formal and detailed, with practical examples\")",
+  "ask_keywords": "What words or expressions should activate \"{name}\"?\n\nThese are the trigger_keywords — when they appear in a message, this persona will be considered to respond.\n\nList the keywords separated by commas.\n(e.g., \"PR, review, deploy, bug, architecture, code, refactor\")",
+  "ask_skills": "Which ClawHub skills are relevant for \"{name}\"?\n\nI can suggest based on the informed domain, or you can list directly.\n\nSuggestions for \"{domains}\":\n{suggestions}\n\nType the names of the desired skills, separated by commas.\nOr answer \"none\" to skip.",
+  "ask_base_weight": "What is the base weight of \"{name}\"?\n\nThe base weight (0.0 to 1.0) defines the default priority of this persona.\nPersonas with higher weight are more likely to be activated when there is ambiguity.\n\n• 0.9–1.0: main persona, high priority\n• 0.6–0.8: important persona, medium-high priority\n• 0.3–0.5: secondary persona, medium priority\n• 0.1–0.2: low priority persona\n\nEnter a value between 0.0 and 1.0:",
+  "summary": "Summary of the new persona:\n\n🎭 Name: {name}\n🔑 Slug: {slug}\n📂 Domains: {domains}\n🗣️ Voice tone: {voice_tone}\n🏷️ Keywords: {keywords}\n🔧 ClawHub Skills: {skills}\n⚖️ Base weight: {base_weight}\n\nConfirm creation? (yes/no — or tell me what to adjust)",
+  "created": "✅ Persona \"{name}\" created successfully!\n\nFile generated: personas/{slug}/SOUL.md\n{skills_installed}\n\nThis persona will be automatically activated when you mention: {keywords}",
+  "invalid_weight": "The base weight must be a number between 0.0 and 1.0.\n\n• 0.9 = high priority\n• 0.5 = medium priority\n• 0.2 = low priority\n\nEnter a valid value:",
+  "generic_keyword_warning": "The keyword '{keyword}' is too generic and may activate this persona in almost all messages. Do you want to keep it anyway? (yes/no)",
+  "no_personas_fallback": "You don't have any personas configured yet. Type /nova-persona to create your first persona."
+}

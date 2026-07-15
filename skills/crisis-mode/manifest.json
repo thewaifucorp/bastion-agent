@@ -1,0 +1,26 @@
+{
+  "name": "bastion/crisis-mode",
+  "version": "1.0.0",
+  "permissions": {
+    "fs": {
+      "read": [
+        "~/.openclaw/workspace/skills/crisis-mode/**",
+        "~/.openclaw/workspace/**",
+        "~/.env",
+        "./.env",
+        "./**"
+      ],
+      "write": [
+        "~/.openclaw/workspace/**",
+        "~/.env",
+        "./.env",
+        "./**"
+      ]
+    },
+    "tools": [
+      "exec",
+      "read",
+      "write"
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "promoted_to_hot": "Pattern promoted to HOT: {pattern_id}",
+  "decayed_to_warm": "Pattern decayed to WARM: {pattern_id}",
+  "weight_gate_blocked": "Promotion blocked: persona weight ({weight}) below minimum (0.3)",
+  "crisis_override": "Crisis priority: forced promotion to HOT"
+}

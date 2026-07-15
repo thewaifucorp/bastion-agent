@@ -1,0 +1,97 @@
+# bastion.toml — all non-secret config for Bastion v3
+# Secrets go in .env only — API keys, tokens. See .env.example for required variables.
+# This file is safe to commit to git.
+
+[agent]
+# Model is chosen by name: '/' -> OpenRouter, "claude*" -> Anthropic, "gemini*" -> Gemini,
+# "gpt*/o1/o3" -> OpenAI, else Ollama (see src/provider/registry.rs). This deployment uses
+# Gemini flash: native structured output (response_format) for reliable router calls +
+# free tier, unlike the prior OpenRouter free model which failed structured router calls.
+# Requires GEMINI_API_KEY in .env. Override per-deployment via env BASTION__AGENT__DEFAULT_MODEL.
+default_model         = "gemini-2.0-flash"
+daily_budget_usd      = 5.0
+# fallback_models = ["groq/llama-3.1-8b-instant"]  # D-11: tried in order on hard provider failure
+
+[session]
+db_path               = "/bastion-data/sessions.db"
+autocompact_threshold = 0.80
+keep_last_n           = 20
+
+[logging]
+log_path              = "/bastion-data/bastion.log"
+
+[mcp]
+tool_call_timeout_secs = 30
+
+# MCP server URLs — replaces .bastion/mcp-servers.json (D-09)
+[mcp.servers.memupalace]
+url   = "http://memupalace:8001/mcp"
+label = "memupalace"
+
+[mcp.servers.skill-writer]
+url   = "http://skill-writer:8002/mcp"
+label = "skill-writer"
+
+[mcp.servers.self-improving]
+url   = "http://self-improving:8003/mcp"
+label = "self-improving"
+
+# Content-validation tools (post length, feed fold preview) — shared with the Claude Code
+# plugins in ../social-skills via the same content-mcp server. Local dev only: run
+# `npm run start:http` in content-mcp before starting the daemon. If content-mcp is ever
+# containerized into docker-compose.yml, change this to the container hostname (like the
+# servers above), not localhost.
+[mcp.servers.content]
+url   = "http://localhost:8010/mcp"
+label = "content"
+
+# VOICE-01: voice sidecar (mirrors memupalace 1:1 — own Dockerfile, port 8004,
+# models baked at build time). is_local=true is the ENTIRE mechanism Plan 10-08
+# built: without it voice_transcribe/voice_speak default to is_local=false and
+# every LocalOnly-tagged voice turn is blocked by the egress gate. Only set
+# is_local=true on a server that genuinely never sends data off-host.
+[mcp.servers.voice]
+url       = "http://voice:8004/mcp"
+label     = "voice"
+is_local  = true
+
+[channels.telegram]
+enabled = true
+
+[channels.webhook]
+enabled = false
+
+# CHAN-01/CHAN-03/VOICE-01: new channels default to disabled — each needs real
+# per-operator credentials (unlike the container-internal voice sidecar, nobody
+# should be silently exposed to an unconfigured external channel). See
+# docs/channels-setup.md for onboarding steps per channel.
+[channels.whatsapp]
+enabled = false
+
+[channels.discord]
+enabled = false
+
+[channels.slack]
+enabled = false
+
+[channels.email]
+enabled = false
+
+[channels.voice]
+enabled           = false
+wake_word_enabled = false
+voice             = "pf_dora"
+
+# CHAN-02/D-05: unified owner-identity table — one row per human owner, mapping
+# their canonical owner_id to every channel-specific identifier they use. Replaces
+# the old scattered per-channel env vars (BASTION_TELEGRAM_OWNERS/BASTION_WEBHOOK_OWNERS)
+# as the single source of truth for OwnerMap construction across ALL 7 channels.
+# Uncomment and fill in one block per owner:
+# [[identity]]
+# owner_id         = "mario"
+# telegram_chat_id = "12345678"
+# webhook_token    = "token-mario"
+# whatsapp_phone   = "+5511999999999"
+# discord_user_id  = "111222333444555"
+# slack_user_id    = "U01ABCDEF"
+# email_address    = "mario@example.com"

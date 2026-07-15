@@ -1,0 +1,6 @@
+{
+  "promoted_to_hot": "Padrão promovido para HOT: {pattern_id}",
+  "decayed_to_warm": "Padrão decaído para WARM: {pattern_id}",
+  "weight_gate_blocked": "Promoção bloqueada: peso da persona ({weight}) abaixo do mínimo (0.3)",
+  "crisis_override": "Prioridade de crise: promoção forçada para HOT"
+}

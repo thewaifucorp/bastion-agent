@@ -1,0 +1,29 @@
+{
+  "name": "bastion/output-validator",
+  "version": "1.0.0",
+  "description": "Automatic output validation for Bastion skills using JSON Schema",
+  "commands": {
+    "validate": "python -m skills.output_validator.cli validate",
+    "regenerate": "python -m skills.output_validator.cli regenerate",
+    "stats": "python -m skills.output_validator.cli stats",
+    "dashboard": "python -m skills.output_validator.cli dashboard"
+  },
+  "permissions": {
+    "fs": {
+      "read": [
+        "skills/**",
+        "config/logs/**",
+        "./**"
+      ],
+      "write": [
+        "skills/**",
+        "config/logs/**"
+      ]
+    },
+    "tools": [
+      "exec",
+      "read",
+      "write"
+    ]
+  }
+}
