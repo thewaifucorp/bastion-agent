@@ -6,6 +6,19 @@ product/release number (see
 [bastion-core's VERSIONING.md](https://github.com/thewaifucorp/bastion-core/blob/main/docs/VERSIONING.md)
 for how that differs from the library crates it depends on).
 
+## [Unreleased]
+
+### Added
+
+- Interactive `/pet` subcommands for viewing stats, toggling game mode, caring
+  for the companion, putting it to sleep, and selecting a pet pack; completion
+  options remain visible after typing `/pet `.
+- Instant `/theme` switching with named palettes or a custom `#RRGGBB` accent,
+  persisted in `~/.config/bastion/tui.json` across sessions.
+- Pixel-art Keeper and Patchwork mascot rendering through supported terminal
+  graphics protocols, with state-specific faces and seals, automatic text-mode
+  fallback, and a `BASTION_TUI_GRAPHICS=off` override.
+
 ## [0.1.2] — 2026-07-16
 
 ### Added
@@ -101,5 +114,6 @@ Depends on [bastion-core](https://github.com/thewaifucorp/bastion-core) for
 the runtime substrate (agent loop, capabilities, memory, cognition,
 personas, mesh, providers, extension protocol).
 
+[Unreleased]: https://github.com/thewaifucorp/bastion-agent/compare/v0.1.2...HEAD
 [0.1.1]: https://github.com/thewaifucorp/bastion-agent/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/thewaifucorp/bastion-agent/releases/tag/v0.1.0
