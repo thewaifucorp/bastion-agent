@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>A self-hosted agent that remembers, acts, and stays answerable to you.</strong>
+  <strong>Your self-hosted Life OS — one agent for a real life, accountable by design.</strong>
 </p>
 
 <p align="center">
@@ -25,15 +25,15 @@
 
 ---
 
-## Your agent should not become the most powerful stranger in your life. 🏰
+## A Life OS your whole life can trust. 🏰
 
 Most “personal agents” are a chat window with tools bolted on. They can remember things, open links, read emails, run commands—and quietly turn any text they ingest into instructions with more power than the person who owns them.
 
-**Bastion takes the opposite bet.** It is a long-lived personal runtime where memory is challengeable, authority is explicit, and external content never earns permission merely by entering the context.
+**Bastion takes the opposite bet.** It is a long-lived personal runtime for the different areas of your life—health, work, relationships, projects, learning, money, and whatever comes next—where memory is challengeable, authority is explicit, and external content never earns permission merely by entering the context.
 
 You own the process, storage, channels, model choice, and boundaries. Bastion helps across time; it does not ask you to hand over the keys and hope its prompt is good enough.
 
-> **Not a chatbot. Not an agent launcher. A durable personal operating layer for an AI that must remain accountable.**
+> **Not a chatbot. Not an agent launcher. A Life OS: a durable personal operating layer for an AI whose north star is being reliable.**
 
 ## Why Bastion
 
@@ -44,6 +44,7 @@ The problem is not getting an LLM to answer. The problem is letting an assistant
 | Memory that can grow safely | **Contestable, longitudinal memory**: inspect it, correct it, revoke it, and retain its source and validity instead of treating chat history as unquestionable truth. |
 | An agent that can act without becoming dangerous | **Authority separation**: a web page, email, attachment, or public message is content—not permission. Capability calls, approvals, and privacy/egress decisions remain separate. |
 | A system you can keep | **Self-hosted continuity**: sessions, memory services, personas, and skills live in your deployment rather than inside a disposable SaaS conversation. |
+| One assistant for a real, multi-domain life | **Context without collapse**: personas, goals, memories, and active work can stay distinct while still informing the same person-level assistant. |
 | Real interfaces, not a demo | **One runtime, many surfaces**: CLI, Telegram, webhook/mobile pairing, WhatsApp, Discord, Slack, email, local voice, MCP, and external agent runtimes. |
 | Extensions without a permission free-for-all | **Capability-bounded extensibility**: declarative, WASM, and subprocess extensions plug into a controlled host rather than receiving ambient authority on install. |
 
@@ -54,6 +55,18 @@ The problem is not getting an LLM to answer. The problem is letting an assistant
 Useful agents need continuity. Dangerous agents accumulate unchallengeable assumptions.
 
 Bastion treats memory as something with provenance, validity, and a lifecycle—not a hidden “profile” that silently becomes policy. The goal is an assistant that can remember years of context while still allowing you to ask: *where did this come from, is it still true, and remove it.*
+
+### 🧭 One life, many domains—without one giant messy chat
+
+Your work priorities should not erase your health goals. A difficult week should not disappear because you opened a different channel. Bastion is designed as a **Life OS**: it can move between the areas that matter to you while retaining their distinct context, goals, personas, and history.
+
+The point is not to turn life into a dashboard. It is to have one assistant that can help manage the whole picture—then understand when a new constraint in one area changes what deserves attention in another.
+
+### 🏛️ Cabinet mode: reprioritize with perspective
+
+When trade-offs get real, one default voice is not enough. Cabinet mode convenes named personas so the system can deliberate across perspectives, preserve dissent, and return a synthesized recommendation instead of pretending every conflict has an obvious answer.
+
+Use it to ask questions like: *Should I push this launch, protect recovery time, or deal with the financial risk first?* The Cabinet exists to make priorities explicit and revisable—not to replace your judgment.
 
 ### 🛡️ Authority is not context
 
@@ -70,6 +83,12 @@ Bastion can run with configured model providers or external agent runtimes, incl
 Skills are useful because they add real capability. That is exactly why they must be reviewed as code.
 
 Bastion’s extension host supports declarative packages, WASM, and subprocesses while keeping authority in the runtime. An extension can be installed without being granted a blank check to access your files, money, network, or identities.
+
+### 📈 Improvement that stays accountable
+
+An agent should improve from what worked, what it remembers, and what you explicitly ask it to become better at. Bastion includes self-improvement and skill-writing paths that identify reusable patterns and turn completed work into candidates for a better future workflow.
+
+But “learn automatically” must not mean “rewrite itself without oversight.” Distilled skill candidates are queued for approval rather than silently applied. Improvement is useful only when it preserves the same property that made the system worth trusting in the first place: **you remain able to see, question, and control the change.**
 
 ### 🌐 A personal runtime, not a single UI
 
@@ -95,6 +114,8 @@ you ──► channel / CLI / mobile
 | **Owner mapping per channel** | Your Discord user ID, Telegram chat, Slack user, phone, and email can resolve to the same canonical owner—unknown senders do not get a session. |
 | **Trust-aware ingress** | Public messages and email are not treated like a private instruction from you. |
 | **Privacy-aware egress** | Data leaving the runtime is a first-class decision, not an incidental side effect of a tool call. |
+| **Cross-life reprioritization** | Goals, personas, proactive nudges, and Cabinet deliberation help surface conflicts before one part of life quietly consumes the rest. |
+| **Approval-gated improvement** | Reusable patterns can be distilled into skill candidates, but the system does not silently auto-apply them. |
 | **Portable agent state** | Export/import the agent’s identity, memories, goals, personas, and configuration with the built-in CLI. |
 | **Local-first deployment shape** | The provided Compose stack isolates local Python sidecars from internet egress while the core handles only the connections it needs. |
 | **MCP-native composition** | Connect MCP services, or compile the optional `bastion mcp-stdio` surface to let another local agent drive Bastion. |
