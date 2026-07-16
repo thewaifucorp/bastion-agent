@@ -25,6 +25,8 @@ BASTION__SESSION__DB_PATH=/data/sessions.db cargo run -- daemon
 | Session | `session.db_path` | SQLite session database location. |
 | Session | `session.autocompact_threshold` | Session compaction threshold. |
 | Logging | `logging.log_path` | JSON log file location. |
+| TUI | `tui.theme`, `tui.accent` | RGB preset or custom terminal accent. |
+| TUI | `tui.mascot`, `tui.animations`, `tui.game`, `tui.pet` | Companion display, progression, and optional pet pack. |
 | MCP | `mcp.tool_call_timeout_secs` | Tool-call timeout. |
 
 The checked-in file is a useful starting point, but its values are deployment defaults—not universal advice. Review every enabled service before using it outside local development.

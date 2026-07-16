@@ -20,6 +20,18 @@ keep_last_n           = 20
 [logging]
 log_path              = ".bastion/bastion.log"
 
+[tui]
+# rgb | cyan | blue | magenta | amber | green | mono
+theme      = "rgb"
+# Optional 24-bit override; when set, it replaces the semantic accent.
+# accent   = "#68d9ff"
+mascot     = true
+animations = true
+# Opt-in progression and wellbeing reminders. Companion visuals work either way.
+game       = false
+# A declarative pet pack can be supplied by an extension UI asset.
+# pet      = "extensions/acme/keeper/ui/pet.toml"
+
 [mcp]
 tool_call_timeout_secs = 30
 

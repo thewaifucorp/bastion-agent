@@ -9,7 +9,11 @@
 //! turn is a blocking `POST /webhook` with an animated spinner, not a live trace
 //! of tool calls. The SSE panel is wired up so it starts working the day that lands.
 
+mod companion;
+mod visual;
+
 use anyhow::{bail, Context, Result};
+use companion::{CareAction, CareCue, CompanionState};
 use crossterm::event::{
     Event as CEvent, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
@@ -20,7 +24,7 @@ use crossterm::terminal::{
 use futures_util::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line as RLine, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Terminal;
@@ -33,6 +37,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use url::{Host, Url};
+use visual::{Appearance, Identity, VisualMode};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -282,58 +287,6 @@ enum Line {
     Bastion(String),
     Event(String),
     System(String),
-    /// Boxed welcome banner (mascot + brand + hints) — content rows only, the
-    /// box border/width is computed at render time from these strings.
-    Banner(Vec<String>),
-}
-
-/// Builds the boxed welcome banner shown once at the top of a session.
-fn welcome_banner(owner_id: &str, device_name: &str, base_url: &str) -> Vec<String> {
-    vec![
-        "◈ BASTION // LIFE OS".to_string(),
-        String::new(),
-        format!("owner: {owner_id} · device: {device_name}"),
-        format!("daemon: {base_url}"),
-        String::new(),
-        "Enter envia · Esc/Ctrl+C sai · Ctrl+U limpa a linha".to_string(),
-    ]
-}
-
-/// Draws `content` inside a Unicode box, using display width (not char count)
-/// so the border stays straight even with the wide mascot emoji in the title.
-fn render_banner(content: &[String]) -> Vec<RLine<'static>> {
-    use unicode_width::UnicodeWidthStr;
-
-    let inner_width = content.iter().map(|l| l.width()).max().unwrap_or(0);
-    let accent = Style::default().fg(Color::Magenta);
-
-    let mut out = vec![RLine::styled(
-        format!("╭{}╮", "─".repeat(inner_width + 2)),
-        accent,
-    )];
-    for (i, l) in content.iter().enumerate() {
-        let pad = " ".repeat(inner_width - l.width());
-        let style = if i == 0 {
-            accent.add_modifier(Modifier::BOLD)
-        } else if l.is_empty() {
-            Style::default()
-        } else if l.starts_with("Enter") {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        out.push(RLine::from(vec![
-            Span::styled("│ ", accent),
-            Span::styled(format!("{l}{pad}"), style),
-            Span::styled(" │", accent),
-        ]));
-    }
-    out.push(RLine::styled(
-        format!("╰{}╯", "─".repeat(inner_width + 2)),
-        accent,
-    ));
-    out.push(RLine::raw(""));
-    out
 }
 
 /// Result of a completed turn, delivered back into the event loop.
@@ -366,6 +319,12 @@ struct CommandInfo {
 }
 
 const COMMANDS: &[CommandInfo] = &[
+    CommandInfo {
+        name: "/pet",
+        usage: "/pet <ação>",
+        desc: "cuida e configura o companion — TUI local",
+        remote: false,
+    },
     CommandInfo {
         name: "/help",
         usage: "/help",
@@ -428,6 +387,168 @@ fn command_matches(input: &str) -> Vec<&'static CommandInfo> {
         .collect()
 }
 
+fn companion_command(app: &mut App, input: &str) -> Option<String> {
+    let mut parts = input.split_whitespace();
+    if parts.next()? != "/pet" {
+        return None;
+    }
+    let command = parts.next().unwrap_or("stats");
+    let response = match command {
+        "stats" => format!(
+            "Companion: {}\nNecessidades: {}\nGame mode: {}",
+            app.companion.status(),
+            app.companion.needs_status(),
+            if app.companion.game_enabled {
+                "ligado"
+            } else {
+                "desligado"
+            }
+        ),
+        "game" => match parts.next() {
+            Some("on") => {
+                app.companion.game_enabled = true;
+                save_companion(
+                    app,
+                    "Game mode ligado. O progresso recompensa turnos concluídos, nunca volume de tokens.",
+                )
+            }
+            Some("off") => {
+                app.companion.game_enabled = false;
+                save_companion(
+                    app,
+                    "Game mode desligado. O companion visual continua ativo.",
+                )
+            }
+            _ => "Uso: /pet game <on|off>".into(),
+        },
+        "water" | "drink" => {
+            app.companion.care(CareAction::Water);
+            save_companion(
+                app,
+                "Keeper hidratado. Bom momento para você beber água também.",
+            )
+        }
+        "feed" => {
+            app.companion.care(CareAction::Feed);
+            save_companion(
+                app,
+                "Keeper alimentado. O cuidado do companion fica separado do seu progresso.",
+            )
+        }
+        "play" => {
+            app.companion.care(CareAction::Play);
+            save_companion(
+                app,
+                "Pausa para brincar concluída. Alongue, caminhe, respire ou escolha qualquer reset curto que funcione para você.",
+            )
+        }
+        "sleep" | "rest" => {
+            app.companion.care(CareAction::Sleep);
+            save_companion(
+                app,
+                "Companion descansando. Seu progresso está seguro; considere encerrar sua sessão longa também.",
+            )
+        }
+        "use" => match parts.next() {
+            Some("builtin") => {
+                app.appearance.pet = None;
+                app.companion.pet_path = None;
+                save_companion(app, "Usando a família nativa de companions do Bastion.")
+            }
+            Some(path) => {
+                let path = PathBuf::from(path);
+                match app.appearance.use_pet(&path) {
+                    Ok(()) => {
+                        app.companion.pet_path = Some(path);
+                        save_companion(app, "Pet pack customizado carregado.")
+                    }
+                    Err(error) => format!("Não foi possível carregar o pet pack: {error}"),
+                }
+            }
+            None => "Uso: /pet use <pet.toml|builtin>".into(),
+        },
+        _ => "Uso: /pet <stats|game on|off|feed|water|play|sleep|use>".into(),
+    };
+    Some(response)
+}
+
+fn save_companion(app: &App, success: &str) -> String {
+    match app.companion.save() {
+        Ok(()) => success.to_string(),
+        Err(error) => format!("A mudança vale nesta sessão, mas não pôde ser salva: {error}"),
+    }
+}
+
+fn care_cue(cue: CareCue) -> &'static str {
+    match cue {
+        CareCue::Water => "Keeper está com sede — /pet water (e pegue água para você também).",
+        CareCue::Feed => "Keeper está com fome — /pet feed para alimentá-lo.",
+        CareCue::Play => "Keeper quer um reset curto — /pet play quando você escolher pausar.",
+        CareCue::Sleep => "Esta sessão ativa está longa — /pet sleep quando for hora de parar.",
+    }
+}
+
+/// Stable, binary-level event bridge for Claude/Codex/OpenCode hooks. Events
+/// only update local companion wellbeing state; they cannot invoke tools or
+/// alter Bastion capabilities.
+pub fn companion_event(kind: &str, source: &str) -> Result<String> {
+    let valid_source = !source.is_empty()
+        && source.len() <= 32
+        && source
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_.".contains(character));
+    if !valid_source {
+        bail!("companion source must be 1-32 ASCII letters, digits, '-', '_' or '.'");
+    }
+
+    let mut state = CompanionState::load(false);
+    match kind {
+        "session-start" => state.start_session(source),
+        "activity" => return companion_activity(&mut state, source),
+        "session-stop" => state.stop_session(source),
+        _ => bail!("unknown companion event '{kind}'"),
+    }
+    state.save()?;
+    Ok(format!("evento do companion registrado: {kind} ({source})"))
+}
+
+fn companion_activity(state: &mut CompanionState, source: &str) -> Result<String> {
+    let cue = state.record_source_activity(source);
+    state.save()?;
+    Ok(cue.map_or_else(
+        || format!("evento do companion registrado: activity ({source})"),
+        |due| care_cue(due).to_string(),
+    ))
+}
+
+pub fn companion_care(action: &str) -> Result<String> {
+    let mut state = CompanionState::load(false);
+    let (care, message) = match action {
+        "water" => (CareAction::Water, "companion hidratado"),
+        "feed" => (CareAction::Feed, "companion alimentado"),
+        "play" => (CareAction::Play, "pausa do companion registrada"),
+        "sleep" | "rest" => (CareAction::Sleep, "companion descansando"),
+        _ => bail!("unknown companion care action '{action}'"),
+    };
+    state.care(care);
+    state.save()?;
+    Ok(message.to_string())
+}
+
+pub fn companion_status() -> String {
+    let state = CompanionState::load(false);
+    format!(
+        "{}\n{}\ngame mode: {}",
+        state.status(),
+        state.needs_status(),
+        if state.game_enabled {
+            "ligado"
+        } else {
+            "desligado"
+        }
+    )
+}
+
 struct App {
     owner_id: String,
     device_name: String,
@@ -436,9 +557,14 @@ struct App {
     input: String,
     thinking: bool,
     spinner_idx: usize,
+    animation_tick: usize,
+    visual_mode: VisualMode,
+    settle_at: Option<Instant>,
+    appearance: Appearance,
     /// Index into the live `command_matches(&input)` list — reset to 0 whenever
     /// the input text changes so it never points past the new match set.
     suggestion_idx: usize,
+    companion: CompanionState,
 }
 
 fn spawn_key_reader(tx: UnboundedSender<AppMsg>) {
@@ -551,34 +677,46 @@ fn suggestion_height(input: &str) -> u16 {
 
 fn draw(f: &mut ratatui::Frame, app: &App) {
     let area = f.area();
+    let identity_height = visual::identity_height(area, &app.appearance);
+    let mut companion_parts = Vec::new();
+    if let Some(pet) = app.appearance.pet_label() {
+        companion_parts.push(pet);
+    }
+    if app.companion.game_enabled {
+        companion_parts.push(format!(
+            "{} · {}",
+            app.companion.status(),
+            app.companion.needs_status()
+        ));
+    }
+    let companion_status = (!companion_parts.is_empty()).then(|| companion_parts.join(" · "));
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
+            Constraint::Length(identity_height),
             Constraint::Min(3),
             Constraint::Length(suggestion_height(&app.input)),
             Constraint::Length(3),
         ])
         .split(area);
 
-    let header = Paragraph::new(RLine::from(vec![
-        Span::styled(
-            " ◈ BASTION ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Magenta)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(format!(
-            " {} @ {} · {} ",
-            app.owner_id, app.device_name, app.base_url
-        )),
-    ]));
-    f.render_widget(header, chunks[0]);
+    visual::render_identity(
+        f,
+        chunks[0],
+        &app.appearance,
+        Identity {
+            owner: &app.owner_id,
+            device: &app.device_name,
+            runtime: &app.base_url,
+            mode: app.visual_mode,
+            tick: app.animation_tick,
+            companion: companion_status.as_deref(),
+        },
+    );
 
     let transcript_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(app.appearance.muted()))
         .title(" conversa ");
     let inner = transcript_block.inner(chunks[1]);
 
@@ -590,7 +728,7 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
                     Span::styled(
                         "❯ ",
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(app.appearance.user())
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(t.clone()),
@@ -602,7 +740,7 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
                     Span::styled(
                         "◈ Bastion  ",
                         Style::default()
-                            .fg(Color::Magenta)
+                            .fg(app.appearance.accent(app.visual_mode))
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(t.clone()),
@@ -612,25 +750,24 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
             Line::Event(t) => {
                 text_lines.push(RLine::styled(
                     format!("· {t}"),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(app.appearance.muted()),
                 ));
                 text_lines.push(RLine::raw(""));
             }
             Line::System(t) => {
                 text_lines.push(RLine::styled(
                     format!("⚠ {t}"),
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(app.appearance.warning()),
                 ));
                 text_lines.push(RLine::raw(""));
             }
-            Line::Banner(content) => text_lines.extend(render_banner(content)),
         }
     }
     if app.thinking {
         let frame = SPINNER[app.spinner_idx % SPINNER.len()];
         text_lines.push(RLine::styled(
             format!("{frame} pensando…"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(app.appearance.muted()),
         ));
     }
 
@@ -654,34 +791,43 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
             .map(|(i, c)| {
                 let style = if i == selected {
                     Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
+                        .fg(app.appearance.text())
+                        .bg(app.appearance.user())
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(app.appearance.text())
                 };
                 let marker = if i == selected { "▸ " } else { "  " };
-                let tag = if c.remote { "" } else { " [console]" };
+                let tag = if c.name == "/pet" {
+                    " [TUI]"
+                } else if c.remote {
+                    ""
+                } else {
+                    " [console]"
+                };
                 RLine::from(vec![
                     Span::styled(format!("{marker}{:<22}", c.usage), style),
-                    Span::styled(format!(" {}", c.desc), Style::default().fg(Color::DarkGray)),
-                    Span::styled(tag, Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        format!(" {}", c.desc),
+                        Style::default().fg(app.appearance.muted()),
+                    ),
+                    Span::styled(tag, Style::default().fg(app.appearance.warning())),
                 ])
             })
             .collect();
         let suggestion_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
+            .border_style(Style::default().fg(app.appearance.muted()))
             .title(" ↑↓ escolhe · Tab/Enter completa ");
         f.render_widget(Paragraph::new(items).block(suggestion_block), chunks[2]);
     }
 
     let input_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(app.appearance.accent(app.visual_mode)))
         .title(" mensagem — Enter envia · Esc/Ctrl+C sai · Ctrl+U limpa ");
     let input = Paragraph::new(app.input.as_str())
-        .style(Style::default().fg(Color::White))
+        .style(Style::default().fg(app.appearance.text()))
         .block(input_block);
     f.render_widget(input, chunks[3]);
 
@@ -707,19 +853,27 @@ async fn run_app(
         session.jwt.clone(),
     );
 
+    let mut appearance = Appearance::load();
+    let companion = CompanionState::load(appearance.game_default);
+    if let Some(path) = &companion.pet_path {
+        let _ = appearance.use_pet(path);
+    }
     let mut app = App {
         owner_id: session.owner_id.clone(),
         device_name: session.device_name.clone(),
         base_url: base_url.to_string(),
-        lines: vec![Line::Banner(welcome_banner(
-            &session.owner_id,
-            &session.device_name,
-            base_url,
-        ))],
+        lines: vec![Line::Event(
+            "Bastion pronto. Conte o que precisa cuidar agora.".to_string(),
+        )],
         input: String::new(),
         thinking: false,
         spinner_idx: 0,
+        animation_tick: 0,
+        visual_mode: VisualMode::Onboarding,
+        settle_at: None,
+        appearance,
         suggestion_idx: 0,
+        companion,
     };
 
     loop {
@@ -730,12 +884,30 @@ async fn run_app(
         };
         match msg {
             AppMsg::Tick => {
+                if app.appearance.animations {
+                    app.animation_tick = app.animation_tick.wrapping_add(1);
+                }
                 if app.thinking {
                     app.spinner_idx = (app.spinner_idx + 1) % SPINNER.len();
                 }
+                if app
+                    .settle_at
+                    .is_some_and(|deadline| Instant::now() >= deadline)
+                {
+                    app.visual_mode = VisualMode::Guard;
+                    app.settle_at = None;
+                }
             }
-            AppMsg::SseEvent(e) => app.lines.push(Line::Event(e)),
+            AppMsg::SseEvent(e) => {
+                if let Some(mode) = visual::mode_for_event(&e) {
+                    app.visual_mode = mode;
+                }
+                app.lines.push(Line::Event(e));
+            }
             AppMsg::Key(key) if key.kind == KeyEventKind::Press => {
+                if let Some(cue) = app.companion.record_activity() {
+                    app.lines.push(Line::Event(care_cue(cue).to_string()));
+                }
                 let suggestions = command_matches(&app.input);
                 let picked = suggestions
                     .get(app.suggestion_idx.min(suggestions.len().saturating_sub(1)))
@@ -777,7 +949,15 @@ async fn run_app(
                             app.input.clear();
                             app.suggestion_idx = 0;
                             app.lines.push(Line::You(text.clone()));
+                            if let Some(response) = companion_command(&mut app, &text) {
+                                app.visual_mode = VisualMode::Success;
+                                app.settle_at = Some(Instant::now() + Duration::from_millis(1400));
+                                app.lines.push(Line::Bastion(response));
+                                continue;
+                            }
                             app.thinking = true;
+                            app.visual_mode = visual::mode_for_request(&text);
+                            app.settle_at = None;
                             spawn_turn(
                                 tx.clone(),
                                 client.clone(),
@@ -808,9 +988,29 @@ async fn run_app(
             AppMsg::Turn(outcome) => {
                 app.thinking = false;
                 match outcome {
-                    TurnOutcome::Reply(r) => app.lines.push(Line::Bastion(r)),
-                    TurnOutcome::Error(e) => app.lines.push(Line::System(format!("erro: {e}"))),
+                    TurnOutcome::Reply(r) => {
+                        let completed_mode = app.visual_mode;
+                        if let Some(level) = app.companion.award_success(completed_mode) {
+                            app.lines.push(Line::Event(format!(
+                                "Companion chegou ao nível {level}. Nenhuma capability ou permissão mudou."
+                            )));
+                        }
+                        if let Err(error) = app.companion.save() {
+                            app.lines.push(Line::Event(format!(
+                                "Progresso do companion não pôde ser salvo: {error}"
+                            )));
+                        }
+                        app.visual_mode = VisualMode::Success;
+                        app.settle_at = Some(Instant::now() + Duration::from_millis(1400));
+                        app.lines.push(Line::Bastion(r));
+                    }
+                    TurnOutcome::Error(e) => {
+                        app.visual_mode = VisualMode::Alert;
+                        app.settle_at = None;
+                        app.lines.push(Line::System(format!("erro: {e}")));
+                    }
                     TurnOutcome::Unauthorized => {
+                        app.visual_mode = VisualMode::Alert;
                         app.lines.push(Line::System(
                             "sessão expirada — repareando (tela suspensa)…".into(),
                         ));

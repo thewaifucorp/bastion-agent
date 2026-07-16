@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bastion Pet Pack"
+  short_description: "Create and validate terminal companion packs"
+  default_prompt: "Use $bastion-pet-pack to create a safe animated companion pack for Bastion."

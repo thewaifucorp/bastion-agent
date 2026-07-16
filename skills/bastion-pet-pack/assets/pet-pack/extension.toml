@@ -1,0 +1,10 @@
+id = "example/terminal-pet"
+version = "0.1.0"
+kind = "declarative"
+compat = "^0.1"
+provides = [{ kind = "ui", name = "pet" }]
+requires = []
+permissions = {}
+secrets = []
+entrypoint = { kind = "declarative", artifact_path = "ui/pet.toml" }
+migrations = []

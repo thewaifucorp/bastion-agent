@@ -20,6 +20,8 @@ BASTION__SESSION__DB_PATH=/data/sessions.db cargo run -- daemon
 | Sessão | `session.db_path` | Local do banco SQLite de sessões. |
 | Sessão | `session.autocompact_threshold` | Limiar de compactação. |
 | Logs | `logging.log_path` | Arquivo de logs JSON. |
+| TUI | `tui.theme`, `tui.accent` | Preset RGB ou cor customizada do terminal. |
+| TUI | `tui.mascot`, `tui.animations`, `tui.game`, `tui.pet` | Exibição, progressão e pet pack opcional. |
 | MCP | `mcp.tool_call_timeout_secs` | Timeout de chamadas de ferramentas. |
 
 ## Segredos e variáveis

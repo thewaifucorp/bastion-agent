@@ -118,6 +118,7 @@ async-trait        = "0.1"
 futures-util       = "0.3"
 dotenvy            = "0.15"
 config             = "0.14"
+toml               = "0.8"
 serde_norway = "0.9.42"
 schemars = "0.8"
 frankenstein = { version = "0.50.0", features = ["client-reqwest"] }

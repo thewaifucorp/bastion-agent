@@ -119,6 +119,7 @@ you ──► channel / CLI / mobile
 | **Portable agent state** | Export/import the agent’s identity, memories, goals, personas, and configuration with the built-in CLI. |
 | **Local-first deployment shape** | The provided Compose stack isolates local Python sidecars from internet egress while the core handles only the connections it needs. |
 | **MCP-native composition** | Connect MCP services, or compile the optional `bastion mcp-stdio` surface to let another local agent drive Bastion. |
+| **A Life OS with a pulse** | The RGB terminal companion changes with onboarding, guard, build, and Cabinet work; optional game mode turns healthy breaks and completed work into cosmetic progression. |
 
 ## Start in minutes
 
@@ -160,6 +161,10 @@ cargo run -- daemon
 `bastion chat --url https://your-host` remains available for an explicit remote
 connection; `bastion daemon` remains the operator-facing foreground command.
 
+The TUI includes a responsive Tamagotchi-like companion. Run `/pet game on` to
+opt into cosmetic progression and wellbeing reminders, or select a declarative
+pet pack supplied by an extension. See the [companion guide](docs/en/companion.md).
+
 `bastion.toml` controls non-secret behavior; `.env` contains credentials. A channel
 starts only when it is enabled in TOML and its required secret exists. Before exposing
 one, map its sender to a canonical owner and read the security model.
@@ -172,6 +177,7 @@ one, map its sender to a canonical owner and read the security model.
 | [Configuration](docs/en/configuration.md) | [Configuração](docs/pt-br/configuracao.md) |
 | [Architecture](docs/en/architecture.md) | [Arquitetura](docs/pt-br/arquitetura.md) |
 | [Channels](docs/en/channels.md) | [Canais](docs/pt-br/canais.md) |
+| [Terminal companion](docs/en/companion.md) | [Companion de terminal](docs/pt-br/companion.md) |
 | [Security model](docs/en/security.md) | [Modelo de segurança](docs/pt-br/seguranca.md) |
 | [All docs](docs/en/README.md) | [Toda a documentação](docs/pt-br/README.md) |
 

@@ -15,6 +15,12 @@ for how that differs from the library crates it depends on).
   automatically; `bastion chat` remains the explicit remote form.
 - Host CLI installation under `~/.local/bin`, backed by the release binary
   already built in the Docker image.
+- Responsive RGB terminal companion with onboarding, guard, build, Cabinet,
+  success, and alert states; configurable themes and custom accents.
+- Opt-in companion progression and non-punitive feeding, water, play, and rest
+  reminders based only on observed active time.
+- Declarative, authority-free animated pet packs, a generator/validator skill,
+  and CLI/MCP lifecycle event bridges for external coding agents.
 
 ### Fixed
 

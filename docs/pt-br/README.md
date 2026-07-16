@@ -13,6 +13,7 @@ Bem-vindo. Estes guias descrevem o código deste repositório — não uma vers�
 
 - [Arquitetura](arquitetura.md) — runtime, canais, serviços MCP, armazenamento e extensões.
 - [Personas](personas.md) — organize o comportamento do agente com personas.
+- [Companion de terminal](companion.md) — temas, pets animados, cuidado, progressão e extension packs.
 - [App mobile](app-mobile.md) — compile e pareie o cliente Flutter.
 - [FAQ](faq.md) — dúvidas operacionais comuns.
 

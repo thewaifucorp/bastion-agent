@@ -1,0 +1,56 @@
+schema = 1
+id = "example/terminal-pet"
+name = "Terminal Pet"
+rarity = "common"
+
+[palette]
+primary = "#68d9ff"
+secondary = "#3dffae"
+
+[states.onboarding]
+interval_ms = 450
+frames = [
+  ["{primary}  ╭─╮╭─╮", "{secondary}  │▪  ▪│", "{secondary}  │ hi ▮│", "{primary}  ╰────╯"],
+  ["{primary}  ╭─╮╭─╮", "{secondary}  │▪  ▪│", "{secondary}  │ hi  │", "{primary}  ╰────╯"],
+]
+
+[states.guard]
+interval_ms = 700
+frames = [
+  ["{primary}   ▄████▄", "{primary}  █ ▪  ▪ █", "{secondary}  █  ──  █", "{primary}   ▀████▀"],
+  ["{primary}   ▄████▄", "{primary}  █ ─  ─ █", "{secondary}  █  ──  █", "{primary}   ▀████▀"],
+]
+
+[states.thinking]
+interval_ms = 300
+frames = [
+  ["{blue}      ·", "{primary}   ▄████▄", "{primary}  █ ▪  ▪ █", "{primary}   ▀████▀"],
+  ["{blue}    ·  ·", "{primary}   ▄████▄", "{primary}  █ ▪  ▪ █", "{primary}   ▀████▀"],
+]
+
+[states.build]
+interval_ms = 320
+frames = [
+  ["{amber}  ▣     {cyan}◆", "{primary}   ▄████▄", "{primary}  █ ▪  ▪ █", "{green}  ▰{primary} ▀████▀"],
+  ["{cyan}  ◆     {amber}▣", "{primary}   ▄████▄", "{primary}  █ ▪  ▪ █", "{green}    ▀████▀ ▰"],
+]
+
+[states.cabinet]
+interval_ms = 420
+frames = [
+  ["{magenta}  A   ◆   B", "{primary}   ▄████▄", "{primary}  █ ▪  ▪ █", "{magenta}   CABINET"],
+  ["{magenta}  B   ◆   A", "{primary}   ▄████▄", "{primary}  █ ▪  ▪ █", "{magenta}   CABINET"],
+]
+
+[states.success]
+interval_ms = 500
+frames = [
+  ["{green}      ✓", "{primary}   ▄████▄", "{primary}  █ ▪  ▪ █", "{green}  █  ︶  █"],
+]
+
+[states.alert]
+interval_ms = 350
+frames = [
+  ["{red}      !", "{primary}   ▄████▄", "{red}  █ ▪  ▪ █", "{primary}   ▀████▀"],
+  ["{amber}      !", "{primary}   ▄████▄", "{amber}  █ ▪  ▪ █", "{primary}   ▀████▀"],
+]

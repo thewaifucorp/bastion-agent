@@ -87,6 +87,11 @@ enum Command {
     },
     /// Start long-running REPL daemon (reads stdin, responds, loops)
     Daemon,
+    /// Companion state and agent-session event bridge
+    Companion {
+        #[command(subcommand)]
+        action: CompanionAction,
+    },
     /// Start MCP server over stdio (local subprocess transport).
     /// Used by local agents that control lifecycle (Claude Code, opencode, etc.).
     #[cfg(feature = "mcp-server")]
@@ -113,6 +118,22 @@ enum Command {
     },
 }
 
+#[derive(Subcommand)]
+enum CompanionAction {
+    /// Print level, needs, and game-mode status
+    Status,
+    /// Record an external coding-agent lifecycle event
+    Event {
+        /// session-start | activity | session-stop
+        kind: String,
+        /// Event source, for example claude, codex, or opencode
+        #[arg(long, default_value = "external")]
+        source: String,
+    },
+    /// Care for the companion: feed | water | play | sleep
+    Care { action: String },
+}
+
 fn default_chat_command() -> Command {
     Command::Chat {
         url: std::env::var("BASTION_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string()),
@@ -137,6 +158,15 @@ async fn main() -> anyhow::Result<()> {
     } = &command
     {
         return bastion::tui::run(url, token.as_deref(), owner, !no_auto_start).await;
+    }
+    if let Command::Companion { action } = &command {
+        let output = match action {
+            CompanionAction::Status => bastion::tui::companion_status(),
+            CompanionAction::Event { kind, source } => bastion::tui::companion_event(kind, source)?,
+            CompanionAction::Care { action } => bastion::tui::companion_care(action)?,
+        };
+        println!("{output}");
+        return Ok(());
     }
 
     // Load bastion.toml config (non-secret config only; secrets stay in .env)
@@ -313,6 +343,9 @@ async fn main() -> anyhow::Result<()> {
     // BIG-1 (Gap 2): one McpToolAdapter per connected MCP tool, into the SAME
     // registry instance the loop owns (moved verbatim out of `AgentLoop::new`).
     bastion_mcp::registry_setup::register_mcp_tools(&mut agent.capability_registry, &mcp_client);
+    agent.capability_registry.register(Arc::new(
+        bastion::companion_capability::CompanionEventCapability::new(),
+    ))?;
 
     // Ciclo 2.4 (`docs/revamp/C2-backend-profile-design.md` §2): build the
     // RuntimeRegistry from whatever AgentRuntime adapters are actually
@@ -367,6 +400,9 @@ async fn main() -> anyhow::Result<()> {
 
     match command {
         Command::Chat { .. } => unreachable!("chat is handled before daemon initialization"),
+        Command::Companion { .. } => {
+            unreachable!("companion is handled before daemon initialization")
+        }
         Command::Agent { message } => {
             let response = agent.run_turn(&message).await?;
             println!("{}", response);
@@ -1411,6 +1447,22 @@ mod cli_tests {
                 no_auto_start: true,
                 ..
             })
+        ));
+
+        let cli = Cli::try_parse_from([
+            "bastion",
+            "companion",
+            "event",
+            "activity",
+            "--source",
+            "codex",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Companion {
+                action: CompanionAction::Event { ref kind, ref source }
+            }) if kind == "activity" && source == "codex"
         ));
     }
 }

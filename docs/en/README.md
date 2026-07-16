@@ -13,6 +13,7 @@ Welcome. These guides describe the code in this repository—not an older hosted
 
 - [Architecture](architecture.md) — runtime, channels, MCP services, storage, and extension boundaries.
 - [Personas](personas.md) — organize agent behavior with personas.
+- [Terminal companion](companion.md) — themes, animated pets, care, progression, and extension packs.
 - [Mobile companion](mobile-app.md) — build and pair the Flutter client.
 - [FAQ](faq.md) — common operational questions.
 
