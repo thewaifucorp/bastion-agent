@@ -54,7 +54,12 @@ The included Compose file builds the core and local sidecars. It mounts `bastion
 bastion
 ```
 
-The core exposes port `8080` in the provided configuration. Treat that as an administrative surface: bind or firewall it for your deployment and do not publish it broadly merely to test it. The installer generates `APP_JWT_SECRET`, `BASTION_INFER_TOKEN`, and an owner-scoped bootstrap token.
+The core publishes `127.0.0.1:8080` in the provided configuration. Set
+`BASTION_PUBLISH_HOST` only when a reverse proxy or remote client must reach it,
+and keep that administrative surface firewalled. `BASTION_HTTP_PORT` changes the
+host port; set `BASTION_URL` to the matching client URL when overriding it. The
+installer generates `APP_JWT_SECRET`, `BASTION_INFER_TOKEN`, and an owner-scoped
+bootstrap token.
 
 ## Confirm it is healthy
 

@@ -17,6 +17,9 @@ if grep -Eq '^[[:space:]]*container_name:' "$ROOT/docker-compose.yml"; then
   exit 1
 fi
 
+grep -Fq '${BASTION_PUBLISH_HOST:-127.0.0.1}:${BASTION_HTTP_PORT:-8080}:8080' \
+  "$ROOT/docker-compose.yml"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 cp "$ROOT/.env.example" "$ROOT/Cargo.toml" "$ROOT/docker-compose.yml" "$ROOT/bastion.toml" "$tmp/"
@@ -27,6 +30,8 @@ grep -q '^GEMINI_API_KEY=test-only-key$' "$tmp/.env"
 grep -Eq '^APP_JWT_SECRET=.{64}$' "$tmp/.env"
 grep -Eq '^BASTION_INFER_TOKEN=.{64}$' "$tmp/.env"
 grep -Eq '^BASTION_BOOTSTRAP_TOKEN=.{64}$' "$tmp/.env"
+grep -q '^BASTION_PUBLISH_HOST=127.0.0.1$' "$tmp/.env"
+grep -q '^BASTION_HTTP_PORT=8080$' "$tmp/.env"
 [[ "$(stat -c '%a' "$tmp/.env" 2>/dev/null || stat -f '%Lp' "$tmp/.env")" == 600 ]]
 
 first_jwt="$(sed -n 's/^APP_JWT_SECRET=//p' "$tmp/.env")"

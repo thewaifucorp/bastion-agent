@@ -54,7 +54,12 @@ O arquivo Compose incluso compila o core e os sidecars locais. Ele monta `bastio
 bastion
 ```
 
-Na configuração fornecida, o core expõe a porta `8080`. Trate-a como superfície administrativa e restrinja bind/firewall. O instalador gera `APP_JWT_SECRET`, `BASTION_INFER_TOKEN` e um token de bootstrap limitado ao proprietário.
+Na configuração fornecida, o core publica `127.0.0.1:8080`. Defina
+`BASTION_PUBLISH_HOST` somente quando um proxy reverso ou cliente remoto precisar
+alcançá-lo, mantendo essa superfície administrativa protegida por firewall.
+`BASTION_HTTP_PORT` altera a porta do host; ao sobrescrevê-la, aponte
+`BASTION_URL` para a URL correspondente. O instalador gera `APP_JWT_SECRET`,
+`BASTION_INFER_TOKEN` e um token de bootstrap limitado ao proprietário.
 
 ## Confirme que está saudável
 

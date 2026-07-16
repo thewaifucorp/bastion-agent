@@ -181,6 +181,24 @@ fn start_compose(compose_dir: &Path) -> Result<bool> {
     }
 }
 
+fn ensure_compose_port(compose_dir: &Path) -> Result<()> {
+    let output = Command::new("docker")
+        .args(["compose", "port", "core", "8080"])
+        .current_dir(compose_dir)
+        .output()
+        .context("verificando a porta publicada pelo Docker Compose")?;
+    let published = String::from_utf8_lossy(&output.stdout);
+    if output.status.success() && !published.trim().is_empty() {
+        return Ok(());
+    }
+
+    let detail = String::from_utf8_lossy(&output.stderr);
+    bail!(
+        "o container core iniciou sem publicar a porta HTTP; verifique se BASTION_PUBLISH_HOST e BASTION_HTTP_PORT estão livres ({})",
+        detail.trim()
+    )
+}
+
 fn start_native_daemon() -> Result<()> {
     println!("◈ Iniciando daemon Bastion local em background…");
     let executable = std::env::current_exe().context("localizando o executável do Bastion")?;
@@ -215,7 +233,13 @@ async fn ensure_runtime(client: &Client, base_url: &str, auto_start: bool) -> Re
         .ok()
         .and_then(|cwd| find_compose_dir(&cwd));
     let compose_started = match compose_dir {
-        Some(dir) => start_compose(&dir)?,
+        Some(dir) => {
+            let started = start_compose(&dir)?;
+            if started {
+                ensure_compose_port(&dir)?;
+            }
+            started
+        }
         None => false,
     };
     if !compose_started {

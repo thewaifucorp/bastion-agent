@@ -31,7 +31,8 @@ Coloque os valores abaixo em `.env`, jamais no TOML versionado.
 | Variável | Uso |
 | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | Canal Telegram. |
-| `BASTION_WEBHOOK_ADDR` | Endereço de bind do webhook/pareamento mobile. |
+| `BASTION_PUBLISH_HOST`, `BASTION_HTTP_PORT` | Interface e porta publicadas pelo Compose; o padrão é `127.0.0.1:8080`. |
+| `BASTION_WEBHOOK_ADDR` | Endereço de bind interno do webhook/pareamento mobile no container. |
 | `APP_JWT_SECRET` | Assinatura JWT do webhook e do pareamento mobile. |
 | `BASTION_BOOTSTRAP_TOKEN` | Acesso inicial de API/TUI limitado ao proprietário; rotacione depois do onboarding. |
 | `BASTION_INFER_TOKEN` | Autentica chamadas dos sidecars ao gateway de inferência. |

@@ -40,12 +40,14 @@ services:
       - bastion-net    # reaches memupalace, skill-writer, self-improving
       - egress-net     # reaches Anthropic, OpenAI, Telegram APIs (D-04)
     # WEB-CMD-01: webhook/cockpit channel (`bastion chat`, mobile app) — bound inside
-    # the container per BASTION_WEBHOOK_ADDR, published here for host clients.
+    # the container per BASTION_WEBHOOK_ADDR, published on loopback by default.
+    # Set BASTION_PUBLISH_HOST explicitly only when a reverse proxy or remote client
+    # must reach the port; never claim every host interface for a local-only install.
     # ⚠️ The container-side port here (right of the ":") MUST match the port in
     # your .env's BASTION_WEBHOOK_ADDR — if you change one, change both, or the
     # daemon binds a port nothing forwards to.
     ports:
-      - "8080:8080"
+      - "${BASTION_PUBLISH_HOST:-127.0.0.1}:${BASTION_HTTP_PORT:-8080}:8080"
     volumes:
       - bastion-data:/bastion-data                # sessions.db + bastion.log
       - ./personas:/personas:ro                   # SOUL.md files (D-02: bind-mount, no copy)

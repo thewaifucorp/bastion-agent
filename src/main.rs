@@ -135,8 +135,12 @@ enum CompanionAction {
 }
 
 fn default_chat_command() -> Command {
+    let url = std::env::var("BASTION_URL").unwrap_or_else(|_| {
+        let port = std::env::var("BASTION_HTTP_PORT").unwrap_or_else(|_| "8080".to_string());
+        format!("http://127.0.0.1:{port}")
+    });
     Command::Chat {
-        url: std::env::var("BASTION_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string()),
+        url,
         token: std::env::var("BASTION_TOKEN").ok(),
         owner: std::env::var("BASTION_OWNER_ID").unwrap_or_else(|_| "_local".to_string()),
         no_auto_start: false,

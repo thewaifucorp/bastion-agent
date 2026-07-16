@@ -163,6 +163,7 @@ prepare_environment() {
 }
 
 run_compose() {
+  local publish_host http_port client_host client_url
   need docker
   docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required"
   (cd "$INSTALL_DIR" && docker compose config --quiet)
@@ -174,7 +175,18 @@ run_compose() {
   else
     info "Starting Bastion"
     (cd "$INSTALL_DIR" && docker compose up -d --force-recreate)
-    info "Bastion is starting at http://127.0.0.1:8080"
+    publish_host="$(env_get BASTION_PUBLISH_HOST)"
+    http_port="$(env_get BASTION_HTTP_PORT)"
+    client_url="$(env_get BASTION_URL)"
+    publish_host="${publish_host:-127.0.0.1}"
+    http_port="${http_port:-8080}"
+    case "$publish_host" in
+      0.0.0.0|::) publish_host=127.0.0.1 ;;
+    esac
+    client_host="$publish_host"
+    [[ "$client_host" == *:* ]] && client_host="[$client_host]"
+    client_url="${client_url:-http://${client_host}:${http_port}}"
+    info "Bastion is starting at $client_url"
     info "Check readiness with: docker compose -f '$INSTALL_DIR/docker-compose.yml' ps"
   fi
 }
