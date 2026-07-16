@@ -12,7 +12,6 @@ services:
   # are NOT touched — only writable data volumes.
   volume-init:
     image: busybox:stable
-    container_name: bastion-volume-init
     user: "0:0"
     network_mode: "none"
     command:
@@ -33,7 +32,6 @@ services:
   core:
     build: .
     image: bastion-core:latest
-    container_name: bastion-core
     restart: unless-stopped
     # Non-root user (PKG-08); UID/GID can match the host for bind mounts.
     # Volume ownership is fixed up-front by the volume-init sidecar (depends_on below).
@@ -99,7 +97,6 @@ services:
   memupalace:
     build: skills/memupalace
     image: bastion-memupalace:latest
-    container_name: bastion-memupalace
     restart: unless-stopped
     user: "1001:1001"
     networks:
@@ -136,7 +133,6 @@ services:
   skill-writer:
     build: skills/skill-writer
     image: bastion-skill-writer:latest
-    container_name: bastion-skill-writer
     restart: unless-stopped
     user: "1001:1001"
     networks:
@@ -169,7 +165,6 @@ services:
   self-improving:
     build: skills/self-improving
     image: bastion-self-improving:latest
-    container_name: bastion-self-improving
     restart: unless-stopped
     user: "1001:1001"
     networks:
@@ -203,7 +198,6 @@ services:
     build: skills/voice
     networks: [bastion-net]    # ONLY — zero egress invariant (VOICE-01/D-04): áudio nunca sai para a nuvem
     image: bastion-voice:latest
-    container_name: bastion-voice
     restart: unless-stopped
     user: "1001:1001"
     # No volumes: the sidecar is stateless (no persistent DB, unlike memupalace) and

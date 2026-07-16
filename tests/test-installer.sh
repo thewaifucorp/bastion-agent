@@ -12,6 +12,11 @@ if grep -Eqi 'openclaw|clawhub|evolution.?api|pokedev|bastion\.json|samurai-py' 
   exit 1
 fi
 
+if grep -Eq '^[[:space:]]*container_name:' "$ROOT/docker-compose.yml"; then
+  echo "Compose services must use project-scoped container names" >&2
+  exit 1
+fi
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 cp "$ROOT/.env.example" "$ROOT/Cargo.toml" "$ROOT/docker-compose.yml" "$ROOT/bastion.toml" "$tmp/"

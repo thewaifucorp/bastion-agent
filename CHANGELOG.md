@@ -22,6 +22,8 @@ for how that differs from the library crates it depends on).
   user to start a separate daemon manually.
 - CLI installation now resolves the freshly built core image before any
   Compose containers exist.
+- Compose services now use project-scoped names, allowing installed and
+  development stacks to coexist without global container-name conflicts.
 
 ## [0.1.1] — 2026-07-16
 
