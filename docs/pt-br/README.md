@@ -14,7 +14,6 @@ Bem-vindo. Estes guias descrevem o código deste repositório — não uma vers�
 - [Arquitetura](arquitetura.md) — runtime, canais, serviços MCP, armazenamento e extensões.
 - [Personas](personas.md) — organize o comportamento do agente com personas.
 - [App mobile](app-mobile.md) — compile e pareie o cliente Flutter.
-- [Modo crise](modo-crise.md) — opere com uma postura deliberadamente mais restrita.
 - [FAQ](faq.md) — dúvidas operacionais comuns.
 
 ## Desenvolver e contribuir

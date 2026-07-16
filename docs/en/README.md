@@ -14,7 +14,6 @@ Welcome. These guides describe the code in this repository—not an older hosted
 - [Architecture](architecture.md) — runtime, channels, MCP services, storage, and extension boundaries.
 - [Personas](personas.md) — organize agent behavior with personas.
 - [Mobile companion](mobile-app.md) — build and pair the Flutter client.
-- [Crisis mode](crisis-mode.md) — operate with a deliberately narrower posture.
 - [FAQ](faq.md) — common operational questions.
 
 ## Build and contribute
