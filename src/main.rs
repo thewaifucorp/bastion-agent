@@ -52,10 +52,15 @@ fn init_otel_provider() -> anyhow::Result<opentelemetry_sdk::trace::SdkTracerPro
 }
 
 #[derive(Parser)]
-#[command(name = "bastion", about = "Bastion AI agent runtime", version)]
+#[command(
+    name = "bastion",
+    about = "Bastion Life OS",
+    long_about = "Open the Bastion terminal UI. With no subcommand, Bastion discovers or starts the local runtime automatically.",
+    version
+)]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -71,6 +76,9 @@ enum Command {
         /// Canonical owner associated with --token
         #[arg(long, env = "BASTION_OWNER_ID", default_value = "_local")]
         owner: String,
+        /// Do not start a missing local runtime automatically
+        #[arg(long)]
+        no_auto_start: bool,
     },
     /// Execute a single-turn agent call and exit
     Agent {
@@ -105,14 +113,30 @@ enum Command {
     },
 }
 
+fn default_chat_command() -> Command {
+    Command::Chat {
+        url: std::env::var("BASTION_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string()),
+        token: std::env::var("BASTION_TOKEN").ok(),
+        owner: std::env::var("BASTION_OWNER_ID").unwrap_or_else(|_| "_local".to_string()),
+        no_auto_start: false,
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load .env (if present) before any std::env::var read. Real shell env wins.
     dotenvy::dotenv().ok();
 
     let cli = Cli::parse();
-    if let Command::Chat { url, token, owner } = &cli.command {
-        return bastion::tui::run(url, token.as_deref(), owner).await;
+    let command = cli.command.unwrap_or_else(default_chat_command);
+    if let Command::Chat {
+        url,
+        token,
+        owner,
+        no_auto_start,
+    } = &command
+    {
+        return bastion::tui::run(url, token.as_deref(), owner, !no_auto_start).await;
     }
 
     // Load bastion.toml config (non-secret config only; secrets stay in .env)
@@ -341,7 +365,7 @@ async fn main() -> anyhow::Result<()> {
             bastion_runtime::capability::SqlitePermissionGate::new(&db_path),
         ));
 
-    match cli.command {
+    match command {
         Command::Chat { .. } => unreachable!("chat is handled before daemon initialization"),
         Command::Agent { message } => {
             let response = agent.run_turn(&message).await?;
@@ -1355,4 +1379,38 @@ fn build_token_perms(
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn bare_bastion_selects_default_tui_flow() {
+        let cli = Cli::try_parse_from(["bastion"]).unwrap();
+        assert!(cli.command.is_none());
+        assert!(matches!(default_chat_command(), Command::Chat { .. }));
+    }
+
+    #[test]
+    fn explicit_subcommands_remain_available() {
+        let cli = Cli::try_parse_from(["bastion", "daemon"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Daemon)));
+
+        let cli = Cli::try_parse_from([
+            "bastion",
+            "chat",
+            "--url",
+            "https://example.test",
+            "--no-auto-start",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Chat {
+                no_auto_start: true,
+                ..
+            })
+        ));
+    }
 }

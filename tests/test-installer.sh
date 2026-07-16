@@ -30,4 +30,33 @@ first_infer="$(sed -n 's/^BASTION_INFER_TOKEN=//p' "$tmp/.env")"
 [[ "$(sed -n 's/^APP_JWT_SECRET=//p' "$tmp/.env")" == "$first_jwt" ]]
 [[ "$(sed -n 's/^BASTION_INFER_TOKEN=//p' "$tmp/.env")" == "$first_infer" ]]
 
+mkdir -p "$tmp/mock-bin" "$tmp/home"
+cat > "$tmp/mock-bin/docker" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+case "${1:-}" in
+  compose)
+    case "${2:-}" in
+      version|config|build|up) exit 0 ;;
+      images) printf '%s\n' fake-bastion-image ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  create) printf '%s\n' fake-container ;;
+  cp)
+    printf '#!/usr/bin/env bash\nprintf "mock bastion 0.1.1\\n"\n' > "$3"
+    ;;
+  rm) exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod 755 "$tmp/mock-bin/docker"
+
+HOME="$tmp/home" PATH="$tmp/mock-bin:$PATH" GEMINI_API_KEY=test-only-key \
+  "$INSTALLER" --dir "$tmp" --no-start --non-interactive >/dev/null
+
+[[ -x "$tmp/.bastion/bin/bastion" ]]
+[[ -x "$tmp/home/.local/bin/bastion" ]]
+[[ "$(HOME="$tmp/home" "$tmp/home/.local/bin/bastion")" == "mock bastion 0.1.1" ]]
+
 echo "installer smoke tests passed"

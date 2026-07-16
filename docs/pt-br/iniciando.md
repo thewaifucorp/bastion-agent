@@ -34,14 +34,16 @@ O repositório consome crates `bastion-core` por um commit Git fixado; portanto,
    cargo run -- agent --message "Resuma o que você pode fazer com segurança nesta instalação."
    ```
 
-5. Inicie o daemon interativo quando quiser uma sessão persistente.
+5. Abra o Bastion.
 
    ```bash
-   cargo run -- daemon
+   cargo run
    ```
 
-   Com um daemon em execução, `cargo run -- chat` abre a TUI remota oficial. Ela
-   aceita uma sessão pareada ou `BASTION_TOKEN` durante o bootstrap.
+   Sem subcomando, `bastion` abre a TUI, inicia o runtime local se necessário,
+   espera a prontidão e usa automaticamente o token de bootstrap local.
+   `cargo run -- chat --url https://seu-host` é a forma remota explícita;
+   `cargo run -- daemon` continua disponível para operação em foreground.
 
 ## Execute a stack Compose
 
@@ -49,6 +51,7 @@ O arquivo Compose incluso compila o core e os sidecars locais. Ele monta `bastio
 
 ```bash
 ./installer.sh
+bastion
 ```
 
 Na configuração fornecida, o core expõe a porta `8080`. Trate-a como superfície administrativa e restrinja bind/firewall. O instalador gera `APP_JWT_SECRET`, `BASTION_INFER_TOKEN` e um token de bootstrap limitado ao proprietário.

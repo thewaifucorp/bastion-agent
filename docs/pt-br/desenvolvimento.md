@@ -15,8 +15,9 @@ cargo test
 
 | Comando | Finalidade |
 | --- | --- |
+| `cargo run` | Abre a TUI e supervisiona automaticamente o runtime local. |
 | `cargo run -- daemon` | Inicia o daemon interativo. |
-| `cargo run -- chat` | Abre a interface de terminal remota oficial. |
+| `cargo run -- chat --url <url>` | Conecta a TUI a um runtime remoto explícito. |
 | `cargo run -- agent --message "…"` | Executa um turno e sai. |
 | `cargo build --all-features` | Compila recursos opcionais. |
 | `cargo fmt --check` | Verifica formatação Rust. |

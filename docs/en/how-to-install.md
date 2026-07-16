@@ -14,6 +14,13 @@ less installer.sh
 The installer is idempotent. It preserves `.env`, generates missing internal secrets,
 validates Compose, rebuilds images, and starts the stack. It does not install Node,
 an external skill registry, legacy plugin bootstrap, or a second configuration format.
+It extracts the release binary from the image and installs a launcher at
+`~/.local/bin/bastion`; add that directory to `PATH` if your shell does not
+already include it. After installation, the normal command is simply:
+
+```bash
+bastion
+```
 
 Useful modes:
 
@@ -29,7 +36,7 @@ Useful modes:
 ```bash
 ./installer.sh --prepare-only
 cargo build --locked
-cargo run -- daemon
+cargo run
 ```
 
 The checked-in `bastion.toml` uses local paths and loopback MCP URLs. Compose overrides

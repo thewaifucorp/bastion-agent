@@ -1,8 +1,8 @@
 //! Official Bastion terminal UI for the webhook + SSE API — the same surface the
 //! mobile companion app pairs with (`/auth/exchange`, `/webhook`, `/events`).
 //!
-//! Pairing: on the machine running the daemon, type `/connect-app <device-name>`
-//! in its interactive console to mint a one-time code, then paste it here.
+//! Local startup discovers or starts the runtime and consumes the owner-scoped
+//! bootstrap token automatically. Pairing codes are reserved for remote devices.
 //!
 //! Known gap (2026-07-02): `/events` today only broadcasts `mesh_sync` messages
 //! (`src/mesh/p2p.rs`) — there is no per-turn tool-call/progress event yet, so a
@@ -28,9 +28,14 @@ use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::io::{self, Stdout, Write};
-use std::path::PathBuf;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use url::{Host, Url};
+
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
+const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Session {
@@ -104,6 +109,127 @@ fn write_private_file(path: &std::path::Path, contents: &[u8]) -> Result<()> {
 
 fn clear_session() {
     let _ = std::fs::remove_file(token_path());
+}
+
+fn is_local_url(base_url: &str) -> bool {
+    Url::parse(base_url)
+        .ok()
+        .is_some_and(|url| match url.host() {
+            Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+            Some(Host::Ipv4(address)) => address.is_loopback(),
+            Some(Host::Ipv6(address)) => address.is_loopback(),
+            None => false,
+        })
+}
+
+fn local_bootstrap_token(base_url: &str) -> Option<String> {
+    is_local_url(base_url)
+        .then(|| std::env::var("BASTION_BOOTSTRAP_TOKEN").ok())
+        .flatten()
+        .filter(|token| !token.trim().is_empty())
+}
+
+fn token_session(token: &str, owner: &str) -> Session {
+    Session {
+        jwt: token.to_owned(),
+        owner_id: owner.to_owned(),
+        device_name: "terminal".to_string(),
+    }
+}
+
+fn find_compose_dir(start: &Path) -> Option<PathBuf> {
+    const COMPOSE_FILES: &[&str] = &[
+        "compose.yaml",
+        "compose.yml",
+        "docker-compose.yaml",
+        "docker-compose.yml",
+    ];
+
+    start.ancestors().find_map(|dir| {
+        COMPOSE_FILES
+            .iter()
+            .any(|name| dir.join(name).is_file())
+            .then(|| dir.to_path_buf())
+    })
+}
+
+async fn runtime_ready(client: &Client, base_url: &str) -> bool {
+    client
+        .get(format!("{}/readyz", base_url.trim_end_matches('/')))
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .is_ok_and(|response| response.status().is_success())
+}
+
+fn start_compose(compose_dir: &Path) -> Result<bool> {
+    println!("◈ Runtime local ausente; iniciando o Bastion com Docker Compose…");
+    match Command::new("docker")
+        .args(["compose", "up", "-d"])
+        .current_dir(compose_dir)
+        .status()
+    {
+        Ok(status) if status.success() => Ok(true),
+        Ok(status) => bail!("Docker Compose terminou com {status}"),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).context("não foi possível executar docker compose"),
+    }
+}
+
+fn start_native_daemon() -> Result<()> {
+    println!("◈ Iniciando daemon Bastion local em background…");
+    let executable = std::env::current_exe().context("localizando o executável do Bastion")?;
+    let mut child = Command::new(executable)
+        .arg("daemon")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("iniciando daemon Bastion local")?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+async fn ensure_runtime(client: &Client, base_url: &str, auto_start: bool) -> Result<()> {
+    if runtime_ready(client, base_url).await {
+        return Ok(());
+    }
+
+    if !is_local_url(base_url) {
+        bail!("runtime remoto indisponível ou ainda não pronto em {base_url}");
+    }
+    if !auto_start {
+        bail!(
+            "runtime local indisponível em {base_url}; inicie `bastion daemon` ou remova --no-auto-start"
+        );
+    }
+
+    let compose_dir = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| find_compose_dir(&cwd));
+    let compose_started = match compose_dir {
+        Some(dir) => start_compose(&dir)?,
+        None => false,
+    };
+    if !compose_started {
+        start_native_daemon()?;
+    }
+
+    let started_at = Instant::now();
+    while started_at.elapsed() < STARTUP_TIMEOUT {
+        if runtime_ready(client, base_url).await {
+            println!("◈ Runtime Bastion pronto.");
+            return Ok(());
+        }
+        tokio::time::sleep(STARTUP_POLL_INTERVAL).await;
+    }
+
+    bail!(
+        "o runtime foi iniciado, mas não ficou pronto em {}s; verifique `docker compose logs core` ou `.bastion/bastion.log`",
+        STARTUP_TIMEOUT.as_secs()
+    )
 }
 
 /// Plain-terminal pairing prompt — runs BEFORE raw mode / the alternate screen
@@ -692,7 +818,13 @@ async fn run_app(
                         clear_session();
                         disable_raw_mode()?;
                         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-                        let new_session = pair(client, base_url).await?;
+                        let new_session = match local_bootstrap_token(base_url) {
+                            Some(token) => token_session(&token, &session.owner_id),
+                            None if is_local_url(base_url) => bail!(
+                                "sessão local expirou e BASTION_BOOTSTRAP_TOKEN não está disponível"
+                            ),
+                            None => pair(client, base_url).await?,
+                        };
                         *session = new_session;
                         enable_raw_mode()?;
                         execute!(terminal.backend_mut(), EnterAlternateScreen)?;
@@ -720,19 +852,23 @@ fn install_panic_hook() {
     }));
 }
 
-pub async fn run(url: &str, token: Option<&str>, owner: &str) -> Result<()> {
+pub async fn run(url: &str, token: Option<&str>, owner: &str, auto_start: bool) -> Result<()> {
     let client = Client::new();
+    ensure_runtime(&client, url, auto_start).await?;
+    let saved_session = token.is_none().then(load_session).flatten();
+    let bootstrap = token
+        .is_none()
+        .then(|| local_bootstrap_token(url))
+        .flatten();
 
-    let mut session = match token {
-        Some(jwt) => Session {
-            jwt: jwt.to_string(),
-            owner_id: owner.to_string(),
-            device_name: "terminal".to_string(),
-        },
-        None => match load_session() {
-            Some(s) => s,
-            None => pair(&client, url).await?,
-        },
+    let mut session = match (token, saved_session, bootstrap) {
+        (Some(explicit), _, _) => token_session(explicit, owner),
+        (None, Some(saved), _) => saved,
+        (None, None, Some(local_token)) => token_session(&local_token, owner),
+        (None, None, None) if is_local_url(url) => bail!(
+            "runtime local pronto, mas BASTION_BOOTSTRAP_TOKEN não foi encontrado; execute a partir da instalação que contém `.env` ou passe --token"
+        ),
+        (None, None, None) => pair(&client, url).await?,
     };
 
     println!(
@@ -752,4 +888,46 @@ pub async fn run(url: &str, token: Option<&str>, owner: &str) -> Result<()> {
     terminal.show_cursor()?;
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_only_loopback_urls_as_local() {
+        assert!(is_local_url("http://127.0.0.1:8080"));
+        assert!(is_local_url("http://localhost:8080/"));
+        assert!(is_local_url("http://[::1]:8080"));
+        assert!(!is_local_url("https://bastion.example.com"));
+        assert!(!is_local_url("not-a-url"));
+    }
+
+    #[tokio::test]
+    async fn readiness_probe_accepts_ready_runtime() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = axum::Router::new().route(
+            "/readyz",
+            axum::routing::get(|| async { axum::http::StatusCode::OK }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        assert!(runtime_ready(&Client::new(), &format!("http://{address}"),).await);
+        server.abort();
+    }
+
+    #[test]
+    fn bootstrap_is_never_used_for_remote_targets() {
+        assert_eq!(local_bootstrap_token("https://bastion.example.com"), None);
+    }
+
+    #[test]
+    fn compose_search_walks_parent_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let nested = temp.path().join("a/b");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(temp.path().join("docker-compose.yml"), "services: {}").unwrap();
+        assert_eq!(find_compose_dir(&nested), Some(temp.path().to_path_buf()));
+    }
 }

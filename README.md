@@ -129,9 +129,15 @@ full stack. It preserves an existing `.env` and never prints generated credentia
 git clone https://github.com/thewaifucorp/bastion-agent.git
 cd bastion-agent
 ./installer.sh
+bastion
 ```
 
-Verify the installed daemon with the owner-scoped bootstrap token:
+`bastion` is the normal entry point. It finds or starts the local Compose
+runtime, waits for readiness, consumes the owner-scoped bootstrap token from
+the installation, and opens the TUI. A pairing code is only requested when
+connecting to a remote Bastion that has no cached session.
+
+To verify the HTTP surface directly:
 
 ```bash
 export BASTION_TOKEN="$(sed -n 's/^BASTION_BOOTSTRAP_TOKEN=//p' .env)"
@@ -141,15 +147,18 @@ curl -sS http://127.0.0.1:8080/webhook \
   -d '{"text":"What can you safely do in this installation?"}'
 ```
 
-For a native Rust workflow, prepare the same configuration without starting Docker,
-then use the one-shot command, daemon REPL, or official TUI:
+For a native Rust development workflow, prepare the same configuration, then
+use the default TUI, one-shot command, or explicit daemon REPL:
 
 ```bash
 ./installer.sh --prepare-only
+cargo run
 cargo run -- agent --message "Summarize my current priorities."
 cargo run -- daemon
-BASTION_TOKEN="$BASTION_TOKEN" cargo run -- chat
 ```
+
+`bastion chat --url https://your-host` remains available for an explicit remote
+connection; `bastion daemon` remains the operator-facing foreground command.
 
 `bastion.toml` controls non-secret behavior; `.env` contains credentials. A channel
 starts only when it is enabled in TOML and its required secret exists. Before exposing

@@ -17,8 +17,9 @@ For the Python skill suites, install their declared dependencies in an isolated 
 
 | Command | Purpose |
 | --- | --- |
+| `cargo run` | Open the TUI and supervise the local runtime automatically. |
 | `cargo run -- daemon` | Start the local interactive daemon. |
-| `cargo run -- chat` | Open the official remote terminal UI. |
+| `cargo run -- chat --url <url>` | Connect the TUI to an explicit remote runtime. |
 | `cargo run -- agent --message "…"` | Run one terminal turn and exit. |
 | `cargo build --all-features` | Compile optional product features. |
 | `cargo fmt --check` | Verify Rust formatting. |

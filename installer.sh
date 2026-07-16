@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 readonly REPO_URL="https://github.com/thewaifucorp/bastion-agent.git"
 readonly DEFAULT_INSTALL_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/bastion"
+readonly DEFAULT_BIN_DIR="${XDG_BIN_HOME:-${HOME}/.local/bin}"
 
 INSTALL_DIR="$DEFAULT_INSTALL_DIR"
 NON_INTERACTIVE=0
@@ -167,6 +168,7 @@ run_compose() {
   (cd "$INSTALL_DIR" && docker compose config --quiet)
   info "Building Bastion images"
   (cd "$INSTALL_DIR" && docker compose build --pull)
+  install_cli
   if ((NO_START)); then
     info "Build complete; services were not started."
   else
@@ -175,6 +177,38 @@ run_compose() {
     info "Bastion is starting at http://127.0.0.1:8080"
     info "Check readiness with: docker compose -f '$INSTALL_DIR/docker-compose.yml' ps"
   fi
+}
+
+install_cli() {
+  local image container runtime_dir runtime_bin launcher tmp_launcher
+  image="$(cd "$INSTALL_DIR" && docker compose images -q core | head -n 1)"
+  [[ -n "$image" ]] || die "could not resolve the built Bastion core image"
+
+  runtime_dir="$INSTALL_DIR/.bastion/bin"
+  runtime_bin="$runtime_dir/bastion"
+  mkdir -p "$runtime_dir" "$DEFAULT_BIN_DIR"
+
+  container="$(docker create "$image")"
+  [[ -n "$container" ]] || die "could not create a temporary container for CLI installation"
+  if ! docker cp "$container:/usr/local/bin/bastion" "$runtime_bin.tmp"; then
+    docker rm "$container" >/dev/null 2>&1 || true
+    die "could not extract the Bastion CLI from the built image"
+  fi
+  docker rm "$container" >/dev/null
+  chmod 755 "$runtime_bin.tmp"
+  mv "$runtime_bin.tmp" "$runtime_bin"
+
+  launcher="$DEFAULT_BIN_DIR/bastion"
+  tmp_launcher="$launcher.tmp"
+  printf '#!/usr/bin/env bash\nset -Eeuo pipefail\ncd %q\nexec %q "$@"\n' \
+    "$INSTALL_DIR" "$runtime_bin" > "$tmp_launcher"
+  chmod 755 "$tmp_launcher"
+  mv "$tmp_launcher" "$launcher"
+  info "Installed CLI: $launcher"
+  case ":$PATH:" in
+    *":$DEFAULT_BIN_DIR:"*) ;;
+    *) warn "Add $DEFAULT_BIN_DIR to PATH to run: bastion" ;;
+  esac
 }
 
 main() {

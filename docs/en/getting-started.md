@@ -34,14 +34,16 @@ The repository consumes `bastion-core` crates from a pinned Git commit, so the f
    cargo run -- agent --message "Summarize what you can safely do in this installation."
    ```
 
-5. Start the interactive daemon when you are ready for a persistent session.
+5. Open Bastion.
 
    ```bash
-   cargo run -- daemon
+   cargo run
    ```
 
-   With a daemon already running, `cargo run -- chat` opens the official remote TUI.
-   It accepts a previously paired session or `BASTION_TOKEN` for bootstrap access.
+   With no subcommand, `bastion` opens the TUI, starts a missing local runtime,
+   waits for readiness, and uses the local bootstrap token automatically.
+   `cargo run -- chat --url https://your-host` is the explicit remote form;
+   `cargo run -- daemon` remains available for foreground operation.
 
 ## Run the Compose stack
 
@@ -49,6 +51,7 @@ The included Compose file builds the core and local sidecars. It mounts `bastion
 
 ```bash
 ./installer.sh
+bastion
 ```
 
 The core exposes port `8080` in the provided configuration. Treat that as an administrative surface: bind or firewall it for your deployment and do not publish it broadly merely to test it. The installer generates `APP_JWT_SECRET`, `BASTION_INFER_TOKEN`, and an owner-scoped bootstrap token.
