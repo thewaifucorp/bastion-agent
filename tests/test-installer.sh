@@ -37,11 +37,18 @@ set -Eeuo pipefail
 case "${1:-}" in
   compose)
     case "${2:-}" in
-      version|config|build|up) exit 0 ;;
-      images) printf '%s\n' fake-bastion-image ;;
+      version|build|up) exit 0 ;;
+      config)
+        if [[ "${3:-}" == "--format" && "${4:-}" == "json" ]]; then
+          printf '%s\n' '{' '  "services": {' '    "core": {' \
+            '      "image": "bastion-core:latest"' '    }' '  }' '}'
+        fi
+        ;;
+      images) exit 0 ;;
       *) exit 1 ;;
     esac
     ;;
+  image) [[ "${2:-}" == "inspect" ]] ;;
   create) printf '%s\n' fake-container ;;
   cp)
     printf '#!/usr/bin/env bash\nprintf "mock bastion 0.1.1\\n"\n' > "$3"

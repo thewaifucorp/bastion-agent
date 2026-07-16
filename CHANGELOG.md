@@ -20,6 +20,8 @@ for how that differs from the library crates it depends on).
 
 - First-run local TUI no longer enters the device-pairing flow or requires the
   user to start a separate daemon manually.
+- CLI installation now resolves the freshly built core image before any
+  Compose containers exist.
 
 ## [0.1.1] — 2026-07-16
 

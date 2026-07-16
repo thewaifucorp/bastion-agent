@@ -181,8 +181,22 @@ run_compose() {
 
 install_cli() {
   local image container runtime_dir runtime_bin launcher tmp_launcher
-  image="$(cd "$INSTALL_DIR" && docker compose images -q core | head -n 1)"
-  [[ -n "$image" ]] || die "could not resolve the built Bastion core image"
+  image="$(
+    cd "$INSTALL_DIR"
+    docker compose config --format json | awk '
+      /^    "core": \{/ { in_core = 1; next }
+      in_core && /^    "[^"]+": \{/ { in_core = 0 }
+      in_core && /^      "image": "/ {
+        value = $0
+        sub(/^      "image": "/, "", value)
+        sub(/",?$/, "", value)
+        print value
+      }
+    '
+  )"
+  [[ -n "$image" ]] || die "could not resolve the Bastion core image from Compose configuration"
+  docker image inspect "$image" >/dev/null 2>&1 \
+    || die "built Bastion core image is unavailable: $image"
 
   runtime_dir="$INSTALL_DIR/.bastion/bin"
   runtime_bin="$runtime_dir/bastion"
