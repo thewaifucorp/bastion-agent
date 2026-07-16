@@ -1,9 +1,10 @@
+use anyhow::{bail, Context};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const RGB: [Color; 6] = [
     Color::Rgb(0, 229, 255),
@@ -23,6 +24,11 @@ pub(super) enum VisualMode {
     Cabinet,
     Success,
     Alert,
+    /// Comando de barra que não existe — o Keeper fica em dúvida (olhos
+    /// abertos, não felizes) com uma interrogação âmbar.
+    Unknown,
+    /// `/pet sleep` / fim de sessão longa — rosto de descanso com zzz.
+    Sleep,
 }
 
 impl VisualMode {
@@ -35,6 +41,8 @@ impl VisualMode {
             Self::Cabinet => "CABINET",
             Self::Success => "CONFIRMED",
             Self::Alert => "ATTENTION",
+            Self::Unknown => "UNKNOWN",
+            Self::Sleep => "RESTING",
         }
     }
 }
@@ -50,6 +58,42 @@ enum Theme {
     Mono,
 }
 
+pub(super) const THEME_NAMES: &[&str] =
+    &["rgb", "cyan", "blue", "magenta", "amber", "green", "mono"];
+
+/// Preferências de tema persistidas pelo `/theme` — vivem fora do
+/// `bastion.toml` para o comando poder salvar sem reescrever config de
+/// projeto. Precedência: bastion.toml < tui.json < variáveis de ambiente.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct ThemePrefs {
+    theme: Option<String>,
+    accent: Option<String>,
+}
+
+fn theme_prefs_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home)
+        .join(".config")
+        .join("bastion")
+        .join("tui.json")
+}
+
+impl ThemePrefs {
+    fn load() -> Self {
+        std::fs::read_to_string(theme_prefs_path())
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default()
+    }
+
+    fn save(&self) -> anyhow::Result<()> {
+        let path = theme_prefs_path();
+        let parent = path.parent().context("tema sem diretório")?;
+        super::ensure_private_dir(parent)?;
+        super::write_private_file(&path, serde_json::to_string_pretty(self)?.as_bytes())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Appearance {
     theme: Theme,
@@ -59,6 +103,7 @@ pub(super) struct Appearance {
     pub(super) game_default: bool,
     pub(super) pet: Option<PetPack>,
     no_color: bool,
+    prefs: ThemePrefs,
 }
 
 #[derive(Default, Deserialize)]
@@ -87,6 +132,7 @@ impl Default for Appearance {
             game_default: false,
             pet: None,
             no_color: std::env::var_os("NO_COLOR").is_some(),
+            prefs: ThemePrefs::default(),
         }
     }
 }
@@ -102,6 +148,14 @@ impl Appearance {
             .unwrap_or_default();
 
         let mut appearance = Self::from_raw(raw);
+        let prefs = ThemePrefs::load();
+        if let Some(name) = &prefs.theme {
+            appearance.theme = parse_theme(name);
+        }
+        if let Some(hex) = &prefs.accent {
+            appearance.accent = parse_hex_color(hex);
+        }
+        appearance.prefs = prefs;
         if let Ok(theme) = std::env::var("BASTION_TUI_THEME") {
             appearance.theme = parse_theme(&theme);
         }
@@ -137,6 +191,44 @@ impl Appearance {
             game_default: raw.game.unwrap_or(false),
             pet,
             no_color: std::env::var_os("NO_COLOR").is_some(),
+            prefs: ThemePrefs::default(),
+        }
+    }
+
+    /// Aplica um tema nomeado na hora e persiste em `tui.json`. Um tema
+    /// nomeado limpa o accent customizado — senão o accent continuaria
+    /// mascarando a troca.
+    pub(super) fn apply_theme(&mut self, name: &str) -> anyhow::Result<()> {
+        let name = name.trim().to_ascii_lowercase();
+        if !THEME_NAMES.contains(&name.as_str()) {
+            bail!("tema desconhecido '{name}'; use {}", THEME_NAMES.join("|"));
+        }
+        self.theme = parse_theme(&name);
+        self.accent = None;
+        self.prefs.theme = Some(name);
+        self.prefs.accent = None;
+        self.prefs.save()
+    }
+
+    /// Aplica uma cor de accent `#RRGGBB` na hora e persiste em `tui.json`.
+    pub(super) fn apply_accent(&mut self, hex: &str) -> anyhow::Result<()> {
+        let Some(color) = parse_hex_color(hex) else {
+            bail!("cor inválida '{hex}'; use #RRGGBB");
+        };
+        self.accent = Some(color);
+        self.prefs.accent = Some(hex.trim().to_string());
+        self.prefs.save()
+    }
+
+    pub(super) fn theme_status(&self) -> String {
+        let theme = self
+            .prefs
+            .theme
+            .clone()
+            .unwrap_or_else(|| format!("{:?}", self.theme).to_ascii_lowercase());
+        match &self.prefs.accent {
+            Some(accent) => format!("tema {theme} · accent {accent}"),
+            None => format!("tema {theme}"),
         }
     }
 
@@ -162,9 +254,10 @@ impl Appearance {
             Theme::Rgb => match mode {
                 VisualMode::Onboarding | VisualMode::Success => RGB[5],
                 VisualMode::Guard | VisualMode::Thinking => RGB[0],
-                VisualMode::Build => RGB[4],
+                VisualMode::Build | VisualMode::Unknown => RGB[4],
                 VisualMode::Cabinet => RGB[3],
                 VisualMode::Alert => Color::LightRed,
+                VisualMode::Sleep => RGB[1],
             },
             Theme::Cyan => Color::Cyan,
             Theme::Blue => Color::Rgb(88, 157, 246),
@@ -294,7 +387,7 @@ pub(super) fn identity_height(area: Rect, appearance: &Appearance) -> u16 {
     } else if area.width < 82 || area.height < 28 {
         6
     } else {
-        9
+        10
     }
 }
 
@@ -347,7 +440,7 @@ pub(super) fn render_identity(
 
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(23), Constraint::Min(20)])
+        .constraints([Constraint::Length(26), Constraint::Min(20)])
         .split(inner);
     frame.render_widget(
         Paragraph::new(mascot_lines(
@@ -418,11 +511,189 @@ fn mascot_lines(
     if let Some(pack) = &appearance.pet {
         return custom_pet_lines(pack, mode, tick, appearance, compact);
     }
-    match mode {
-        VisualMode::Onboarding => familiar_lines(tick, appearance, compact),
-        VisualMode::Build | VisualMode::Cabinet => patchwork_lines(mode, tick, appearance, compact),
-        _ => keeper_lines(mode, tick, appearance, compact),
+    let blink = appearance.animations && tick % 32 < 3;
+    let map: &[&str] = match mode {
+        VisualMode::Onboarding | VisualMode::Guard => {
+            if blink {
+                &KEEPER_GUARD_BLINK
+            } else {
+                &KEEPER_GUARD
+            }
+        }
+        VisualMode::Thinking | VisualMode::Build => &KEEPER_THINKING,
+        VisualMode::Cabinet => &PATCHWORK_CABINET,
+        VisualMode::Success => &KEEPER_SUCCESS,
+        VisualMode::Alert => &KEEPER_ERROR,
+        VisualMode::Unknown => &KEEPER_UNKNOWN,
+        VisualMode::Sleep => &KEEPER_SLEEP,
+    };
+    sprite_lines(map, compact, appearance.no_color)
+}
+
+/// Paleta dos sprites nativos — o traço aprovado do teste de mascote:
+/// aço claro, moldura azul, visor escuro e rosto colorido por estado.
+fn sprite_color(ch: char) -> Option<Color> {
+    match ch {
+        's' => Some(Color::Rgb(142, 163, 186)),
+        'S' => Some(Color::Rgb(44, 62, 87)),
+        'k' => Some(Color::Rgb(11, 22, 38)),
+        'b' => Some(Color::Rgb(79, 141, 253)),
+        'c' => Some(Color::Rgb(56, 217, 245)),
+        'g' => Some(Color::Rgb(62, 224, 140)),
+        'm' => Some(Color::Rgb(232, 107, 240)),
+        'a' => Some(Color::Rgb(245, 177, 61)),
+        'w' => Some(Color::Rgb(232, 242, 252)),
+        _ => None,
     }
+}
+
+// Cabeça do Keeper, 24×15 px. Cada estado troca apenas o rosto (linhas 5-9)
+// e o selo no canto superior direito (?, !, z, …).
+macro_rules! keeper {
+    ($r0:literal, $r5:literal, $r6:literal, $r7:literal, $r8:literal, $r9:literal) => {
+        [
+            $r0,
+            "..ssssssssssssssssssss..",
+            ".ssssssssssssssssssssss.",
+            ".ssbbbbbbbbbbbbbbbbbbss.",
+            ".ssbkkkkkkkkkkkkkkkkbss.",
+            $r5,
+            $r6,
+            $r7,
+            $r8,
+            $r9,
+            ".ssbkkkkkkkkkkkkkkkkbss.",
+            ".ssbbbbbbbbbbbbbbbbbbss.",
+            ".ssssssssssssssssssssss.",
+            "..ssssssssssssssssssss..",
+            "....ssssssssssssssss....",
+        ]
+    };
+}
+
+const KEEPER_GUARD: [&str; 15] = keeper!(
+    "....ssssssssssssssss....",
+    "sssbkkkcckkkkkkcckkkbsss",
+    "sssbkkckkckkkkckkckkbsss",
+    "sssbkkkkkkkkkkkkkkkkbsss",
+    "sssbkkkkckkkkkkckkkkbsss",
+    ".ssbkkkkkcccccckkkkkbss."
+);
+
+const KEEPER_GUARD_BLINK: [&str; 15] = keeper!(
+    "....ssssssssssssssss....",
+    "sssbkkkkkkkkkkkkkkkkbsss",
+    "sssbkkcccckkkkcccckkbsss",
+    "sssbkkkkkkkkkkkkkkkkbsss",
+    "sssbkkkkckkkkkkckkkkbsss",
+    ".ssbkkkkkcccccckkkkkbss."
+);
+
+const KEEPER_THINKING: [&str; 15] = keeper!(
+    "....ssssssssssssssssc.c.",
+    "sssbkkcckkkkkkkkcckkbsss",
+    "sssbkkcckkkkkkkkcckkbsss",
+    "sssbkkkkkkkkkkkkkkkkbsss",
+    "sssbkkkkkkkkkkkkkkkkbsss",
+    ".ssbkkkkkkccckkkkkkkbss."
+);
+
+const KEEPER_UNKNOWN: [&str; 15] = keeper!(
+    "....ssssssssssssssss.aa.",
+    "sssbkkkaakkkkkkaakkkbsss",
+    "sssbkkkaakkkkkkaakkkbsss",
+    "sssbkkkkkkkkkkkkkkkkbsss",
+    "sssbkkkkkkkaakkkkkkkbsss",
+    ".ssbkkkkkkkaakkkkkkkbss."
+);
+
+const KEEPER_ERROR: [&str; 15] = keeper!(
+    "....ssssssssssssssss.mm.",
+    "sssbkkmkmkkkkkkmkmkkbsss",
+    "sssbkkkmkkkkkkkkmkkkbsss",
+    "sssbkkmkmkkkkkkmkmkkbsss",
+    "sssbkkkkkkkkkkkkkkkkbsss",
+    ".ssbkkkkkmmmmmmkkkkkbss."
+);
+
+const KEEPER_SUCCESS: [&str; 15] = keeper!(
+    "....ssssssssssssssss....",
+    "sssbkkkggkkkkkkggkkkbsss",
+    "sssbkkgkkgkkkkgkkgkkbsss",
+    "sssbkkkkkkkkkkkkkkkkbsss",
+    "sssbkkkgkkkkkkkkgkkkbsss",
+    ".ssbkkkkggggggggkkkkbss."
+);
+
+const KEEPER_SLEEP: [&str; 15] = keeper!(
+    "....sssssssssssssssscccc",
+    "sssbkkkkkkkkkkkkkkkkbsss",
+    "sssbkkbbbbkkkkbbbbkkbsss",
+    "sssbkkkkkkkkkkkkkkkkbsss",
+    "sssbkkkkkkkkkkkkkkkkbsss",
+    ".ssbkkkkkkkbbkkkkkkkbss."
+);
+
+// Patchwork, 24×12 px: cabeça de olhos quadrados + coração de domínio ao
+// lado — aparece quando o Cabinet é convocado.
+const PATCHWORK_CABINET: [&str; 12] = [
+    "...ssssssssssss.........",
+    "..ssssssssssssss..mm.mm.",
+    ".sbbbbbbbbbbbbbbs.mmmmm.",
+    ".sbkkkkkkkkkkkkbs..mmm..",
+    ".sbkkcckkkkcckkbs...m...",
+    ".sbkkcckkkkcckkbs.......",
+    ".sbkkkkkkkkkkkkbs...aa..",
+    ".sbkkkkcccckkkkbs..aaaa.",
+    ".sbkkkkkkkkkkkkbs..a..a.",
+    ".sbbbbbbbbbbbbbbs..aaaa.",
+    "..ssssssssssssss........",
+    "...ssssssssssss.........",
+];
+
+/// Converte um mapa de pixels em linhas de meio-bloco: cada célula de texto
+/// carrega dois pixels (fg no ▀ de cima, bg no de baixo). Com NO_COLOR o
+/// sprite degrada para ocupação monocromática.
+fn sprite_lines(map: &[&str], compact: bool, no_color: bool) -> Vec<Line<'static>> {
+    let rows: Vec<&str> = if compact {
+        map.iter().skip(4).take(8).copied().collect()
+    } else {
+        map.to_vec()
+    };
+    let mut lines = Vec::new();
+    for pair in rows.chunks(2) {
+        let top = pair[0];
+        let bottom = pair.get(1).copied().unwrap_or("");
+        let width = top.chars().count().max(bottom.chars().count());
+        let top: Vec<char> = top.chars().collect();
+        let bottom: Vec<char> = bottom.chars().collect();
+        let mut spans = Vec::new();
+        for x in 0..width {
+            let t = top.get(x).copied().unwrap_or('.');
+            let b = bottom.get(x).copied().unwrap_or('.');
+            let (t_color, b_color) = if no_color {
+                (
+                    sprite_color(t).map(|_| Color::White),
+                    sprite_color(b).map(|_| Color::White),
+                )
+            } else {
+                (sprite_color(t), sprite_color(b))
+            };
+            spans.push(match (t_color, b_color) {
+                (None, None) => Span::raw(" "),
+                (Some(color), None) => Span::styled("▀", Style::default().fg(color)),
+                (None, Some(color)) => Span::styled("▄", Style::default().fg(color)),
+                (Some(tc), Some(bc)) if tc == bc => {
+                    Span::styled("█", Style::default().fg(tc))
+                }
+                (Some(tc), Some(bc)) => {
+                    Span::styled("▀", Style::default().fg(tc).bg(bc))
+                }
+            });
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
 }
 
 fn custom_pet_lines(
@@ -505,119 +776,6 @@ fn render_pet_line(
     Line::from(spans)
 }
 
-fn keeper_lines(
-    mode: VisualMode,
-    tick: usize,
-    appearance: &Appearance,
-    compact: bool,
-) -> Vec<Line<'static>> {
-    let accent = appearance.accent(mode);
-    let eyes = if appearance.animations && tick.is_multiple_of(32) {
-        "─  ─"
-    } else {
-        "▪  ▪"
-    };
-    let mouth = if mode == VisualMode::Success {
-        " ︶ "
-    } else {
-        " ── "
-    };
-    let mut lines = vec![
-        Line::styled("   ▄██████▄    ◢◣", Style::default().fg(accent)),
-        Line::styled(format!("  █  {eyes}  █   █▌"), Style::default().fg(accent)),
-        Line::styled(format!("  █  {mouth}  █   █▌"), Style::default().fg(accent)),
-        Line::styled("   ▀██████▀    ▼ ", Style::default().fg(accent)),
-    ];
-    if !compact {
-        lines.insert(0, Line::raw(""));
-        lines.push(Line::styled(
-            "    KEEPER",
-            Style::default().fg(appearance.muted()),
-        ));
-    }
-    lines
-}
-
-fn familiar_lines(tick: usize, appearance: &Appearance, compact: bool) -> Vec<Line<'static>> {
-    let blue = if appearance.accent.is_some() {
-        appearance.accent(VisualMode::Onboarding)
-    } else {
-        RGB[1]
-    };
-    let green = if appearance.no_color {
-        Color::White
-    } else {
-        RGB[5]
-    };
-    let cursor = if !appearance.animations || (tick / 5).is_multiple_of(2) {
-        "▮"
-    } else {
-        " "
-    };
-    let mut lines = vec![
-        Line::styled("  ╭─╮ ╭─╮ ╭─╮", Style::default().fg(blue)),
-        Line::styled("  │   ▪   ▪   │", Style::default().fg(green)),
-        Line::styled(
-            format!("  │ bastion:~{cursor} │"),
-            Style::default().fg(green),
-        ),
-        Line::styled("  ╰────────────╯", Style::default().fg(blue)),
-    ];
-    if !compact {
-        lines.insert(0, Line::raw(""));
-        lines.push(Line::styled(
-            "    FAMILIAR",
-            Style::default().fg(appearance.muted()),
-        ));
-    }
-    lines
-}
-
-fn patchwork_lines(
-    mode: VisualMode,
-    tick: usize,
-    appearance: &Appearance,
-    compact: bool,
-) -> Vec<Line<'static>> {
-    let accent = appearance.accent(mode);
-    let colors = if appearance.no_color {
-        [Color::White; 4]
-    } else {
-        [RGB[3], RGB[4], RGB[5], RGB[0]]
-    };
-    let shift = if appearance.animations {
-        (tick / 6) % 4
-    } else {
-        0
-    };
-    let icon = |index: usize, text: &'static str| {
-        Span::styled(text, Style::default().fg(colors[(index + shift) % 4]))
-    };
-    let mut lines = vec![
-        Line::from(vec![icon(0, "  ♥"), Span::raw("      "), icon(1, "▣")]),
-        Line::styled("      ▄████▄", Style::default().fg(accent)),
-        Line::styled("     █ ▪  ▪ █", Style::default().fg(accent)),
-        Line::from(vec![
-            icon(2, "  ▰  "),
-            Span::styled("▀████▀", Style::default().fg(accent)),
-            Span::raw("  "),
-            icon(3, "♟"),
-        ]),
-    ];
-    if !compact {
-        lines.insert(0, Line::raw(""));
-        lines.push(Line::styled(
-            if mode == VisualMode::Cabinet {
-                "    CABINET"
-            } else {
-                "    PATCHWORK"
-            },
-            Style::default().fg(appearance.muted()),
-        ));
-    }
-    lines
-}
-
 fn parse_theme(value: &str) -> Theme {
     match value.trim().to_ascii_lowercase().as_str() {
         "cyan" => Theme::Cyan,
@@ -690,27 +848,81 @@ mod tests {
             no_color: false,
             ..Appearance::default()
         };
-        assert_eq!(identity_height(Rect::new(0, 0, 100, 40), &appearance), 9);
+        assert_eq!(identity_height(Rect::new(0, 0, 100, 40), &appearance), 10);
         assert_eq!(identity_height(Rect::new(0, 0, 70, 24), &appearance), 6);
         assert_eq!(identity_height(Rect::new(0, 0, 50, 40), &appearance), 1);
     }
 
     #[test]
-    fn built_in_family_changes_with_runtime_mode() {
+    fn built_in_sprites_fit_the_identity_panel() {
         let appearance = Appearance {
             no_color: false,
             ..Appearance::default()
         };
-        let onboarding = mascot_lines(VisualMode::Onboarding, 1, &appearance, false);
-        let guard = mascot_lines(VisualMode::Guard, 1, &appearance, false);
-        let build = mascot_lines(VisualMode::Build, 1, &appearance, false);
-        assert!(line_text(&onboarding).contains("FAMILIAR"));
-        assert!(line_text(&guard).contains("KEEPER"));
-        assert!(line_text(&build).contains("PATCHWORK"));
+        for mode in [
+            VisualMode::Onboarding,
+            VisualMode::Guard,
+            VisualMode::Thinking,
+            VisualMode::Build,
+            VisualMode::Cabinet,
+            VisualMode::Success,
+            VisualMode::Alert,
+            VisualMode::Unknown,
+            VisualMode::Sleep,
+        ] {
+            let full = mascot_lines(mode, 1, &appearance, false);
+            assert!(full.len() <= 8, "{mode:?}: sprite alto demais");
+            let compact = mascot_lines(mode, 1, &appearance, true);
+            assert_eq!(compact.len(), 4, "{mode:?}: compacto deve ter 4 linhas");
+            for line in &full {
+                let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+                assert!(width <= 24, "{mode:?}: sprite largo demais ({width})");
+            }
+        }
     }
 
-    fn line_text(lines: &[Line<'_>]) -> String {
-        lines
+    #[test]
+    fn cabinet_uses_the_patchwork_sprite() {
+        let appearance = Appearance {
+            no_color: false,
+            ..Appearance::default()
+        };
+        let guard = render_plain(VisualMode::Guard);
+        let cabinet = render_plain(VisualMode::Cabinet);
+        let unknown = render_plain(VisualMode::Unknown);
+        assert_ne!(guard, cabinet);
+        assert_ne!(guard, unknown);
+        let _ = appearance;
+    }
+
+    #[test]
+    fn sprite_maps_have_consistent_row_widths() {
+        for map in [
+            KEEPER_GUARD.as_slice(),
+            KEEPER_GUARD_BLINK.as_slice(),
+            KEEPER_THINKING.as_slice(),
+            KEEPER_UNKNOWN.as_slice(),
+            KEEPER_ERROR.as_slice(),
+            KEEPER_SUCCESS.as_slice(),
+            KEEPER_SLEEP.as_slice(),
+            PATCHWORK_CABINET.as_slice(),
+        ] {
+            for row in map {
+                assert_eq!(row.chars().count(), 24, "linha com largura errada: {row}");
+                assert!(
+                    row.chars().all(|c| c == '.' || sprite_color(c).is_some()),
+                    "caractere fora da paleta: {row}"
+                );
+            }
+        }
+    }
+
+    fn render_plain(mode: VisualMode) -> String {
+        let appearance = Appearance {
+            no_color: false,
+            ..Appearance::default()
+        };
+        mascot_lines(mode, 1, &appearance, false)
             .iter()
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())

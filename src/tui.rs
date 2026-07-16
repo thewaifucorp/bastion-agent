@@ -350,6 +350,12 @@ const COMMANDS: &[CommandInfo] = &[
         remote: false,
     },
     CommandInfo {
+        name: "/theme",
+        usage: "/theme <nome|#RRGGBB>",
+        desc: "troca as cores da TUI na hora — digite espaço para ver os temas",
+        remote: false,
+    },
+    CommandInfo {
         name: "/help",
         usage: "/help",
         desc: "mostra os comandos",
@@ -453,15 +459,68 @@ const PET_COMMANDS: &[CommandInfo] = &[
     },
 ];
 
+/// Temas nomeados do `/theme`, expandidos no menu após o espaço — mesma
+/// mecânica do `/pet`. Cores hex (`/theme #RRGGBB`) são digitadas direto.
+const THEME_COMMANDS: &[CommandInfo] = &[
+    CommandInfo {
+        name: "/theme rgb",
+        usage: "/theme rgb",
+        desc: "ciclo de cores por estado — o padrão vivo",
+        remote: false,
+    },
+    CommandInfo {
+        name: "/theme cyan",
+        usage: "/theme cyan",
+        desc: "monocromático ciano",
+        remote: false,
+    },
+    CommandInfo {
+        name: "/theme blue",
+        usage: "/theme blue",
+        desc: "monocromático azul",
+        remote: false,
+    },
+    CommandInfo {
+        name: "/theme magenta",
+        usage: "/theme magenta",
+        desc: "monocromático magenta",
+        remote: false,
+    },
+    CommandInfo {
+        name: "/theme amber",
+        usage: "/theme amber",
+        desc: "monocromático âmbar",
+        remote: false,
+    },
+    CommandInfo {
+        name: "/theme green",
+        usage: "/theme green",
+        desc: "monocromático verde — modo matrix",
+        remote: false,
+    },
+    CommandInfo {
+        name: "/theme mono",
+        usage: "/theme mono",
+        desc: "sem cor de destaque",
+        remote: false,
+    },
+];
+
 /// Matches while typing the command token; a space normally closes the menu
-/// (the user is typing arguments), except after `/pet `, where the menu
-/// switches to the subcommand list so as ações ficam visíveis.
+/// (the user is typing arguments), except after `/pet ` and `/theme `, where
+/// the menu switches to the subcommand list so as opções ficam visíveis.
 fn command_matches(input: &str) -> Vec<&'static CommandInfo> {
     if input.is_empty() || !input.starts_with('/') {
         return vec![];
     }
     if input.starts_with("/pet ") {
         return PET_COMMANDS
+            .iter()
+            .filter(|c| c.name.starts_with(input))
+            .collect();
+    }
+    if input.starts_with("/theme ") {
+        return THEME_COMMANDS
             .iter()
             .filter(|c| c.name.starts_with(input))
             .collect();
@@ -475,12 +534,38 @@ fn command_matches(input: &str) -> Vec<&'static CommandInfo> {
         .collect()
 }
 
-fn companion_command(app: &mut App, input: &str) -> Option<String> {
+/// `/theme` é resolvido inteiro na TUI: aplica na hora e persiste em
+/// `~/.config/bastion/tui.json` (bastion.toml continua valendo como base).
+fn theme_command(app: &mut App, input: &str) -> Option<String> {
+    let mut parts = input.split_whitespace();
+    if parts.next()? != "/theme" {
+        return None;
+    }
+    let response = match parts.next() {
+        None => format!(
+            "{}\nUso: /theme <{}|#RRGGBB>",
+            app.appearance.theme_status(),
+            visual::THEME_NAMES.join("|")
+        ),
+        Some(value) if value.starts_with('#') => match app.appearance.apply_accent(value) {
+            Ok(()) => format!("Accent {value} aplicado e salvo."),
+            Err(error) => format!("{error}"),
+        },
+        Some(name) => match app.appearance.apply_theme(name) {
+            Ok(()) => format!("Tema {name} aplicado e salvo."),
+            Err(error) => format!("{error}"),
+        },
+    };
+    Some(response)
+}
+
+fn companion_command(app: &mut App, input: &str) -> Option<(String, VisualMode)> {
     let mut parts = input.split_whitespace();
     if parts.next()? != "/pet" {
         return None;
     }
     let command = parts.next().unwrap_or("stats");
+    let mut mode = VisualMode::Success;
     let response = match command {
         "stats" => format!(
             "Companion: {}\nNecessidades: {}\nGame mode: {}",
@@ -532,6 +617,7 @@ fn companion_command(app: &mut App, input: &str) -> Option<String> {
         }
         "sleep" | "rest" => {
             app.companion.care(CareAction::Sleep);
+            mode = VisualMode::Sleep;
             save_companion(
                 app,
                 "Companion descansando. Seu progresso está seguro; considere encerrar sua sessão longa também.",
@@ -555,9 +641,38 @@ fn companion_command(app: &mut App, input: &str) -> Option<String> {
             }
             None => "Uso: /pet use <pet.toml|builtin>".into(),
         },
-        _ => "Uso: /pet <stats|game on|off|feed|water|play|sleep|use>".into(),
+        _ => {
+            mode = VisualMode::Unknown;
+            "Uso: /pet <stats|game on|off|feed|water|play|sleep|use>".into()
+        }
     };
-    Some(response)
+    Some((response, mode))
+}
+
+/// Quanto tempo o rosto de um estado local fica na tela antes de voltar ao
+/// guard — descanso e dúvida merecem uma pausa maior que um sucesso.
+fn settle_after(mode: VisualMode) -> Duration {
+    match mode {
+        VisualMode::Sleep => Duration::from_millis(4000),
+        VisualMode::Unknown => Duration::from_millis(2200),
+        _ => Duration::from_millis(1400),
+    }
+}
+
+/// Comando de barra que não existe nem local nem no daemon (COMMANDS espelha
+/// `src/agent/command.rs`): responde na hora com o Keeper em dúvida, sem
+/// gastar um turno do runtime.
+fn unknown_command(text: &str) -> Option<String> {
+    if !text.starts_with('/') {
+        return None;
+    }
+    let first = text.split_whitespace().next()?;
+    if COMMANDS.iter().any(|c| c.name == first) {
+        return None;
+    }
+    Some(format!(
+        "Comando desconhecido: {first}. Digite / para ver o menu ou /help para a lista completa."
+    ))
 }
 
 fn save_companion(app: &App, success: &str) -> String {
@@ -1037,10 +1152,22 @@ async fn run_app(
                             app.input.clear();
                             app.suggestion_idx = 0;
                             app.lines.push(Line::You(text.clone()));
-                            if let Some(response) = companion_command(&mut app, &text) {
+                            if let Some((response, mode)) = companion_command(&mut app, &text) {
+                                app.visual_mode = mode;
+                                app.settle_at = Some(Instant::now() + settle_after(mode));
+                                app.lines.push(Line::Bastion(response));
+                                continue;
+                            }
+                            if let Some(response) = theme_command(&mut app, &text) {
                                 app.visual_mode = VisualMode::Success;
                                 app.settle_at = Some(Instant::now() + Duration::from_millis(1400));
                                 app.lines.push(Line::Bastion(response));
+                                continue;
+                            }
+                            if let Some(unknown) = unknown_command(&text) {
+                                app.visual_mode = VisualMode::Unknown;
+                                app.settle_at = Some(Instant::now() + settle_after(VisualMode::Unknown));
+                                app.lines.push(Line::Bastion(unknown));
                                 continue;
                             }
                             app.thinking = true;
@@ -1227,6 +1354,22 @@ mod tests {
         // Outros comandos mantêm o comportamento antigo: espaço fecha o menu.
         assert!(command_matches("/model ").is_empty());
         assert!(!command_matches("/pe").is_empty());
+    }
+
+    #[test]
+    fn theme_menu_expands_and_unknown_commands_answer_locally() {
+        let themes: Vec<&str> = command_matches("/theme ").iter().map(|c| c.name).collect();
+        assert_eq!(themes.len(), THEME_COMMANDS.len());
+        assert!(themes.contains(&"/theme rgb"));
+        assert_eq!(
+            command_matches("/theme m").iter().map(|c| c.name).collect::<Vec<_>>(),
+            vec!["/theme magenta", "/theme mono"]
+        );
+
+        assert!(unknown_command("/naoexiste").is_some());
+        assert!(unknown_command("/pet feed").is_none());
+        assert!(unknown_command("/theme rgb").is_none());
+        assert!(unknown_command("oi bastion").is_none());
     }
 
     #[test]

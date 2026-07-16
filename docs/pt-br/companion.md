@@ -23,6 +23,19 @@ game = false
 `BASTION_TUI_ANIMATIONS`, `BASTION_TUI_GAME` e `BASTION_TUI_PET` sobrescrevem
 esses valores exclusivos da TUI. `NO_COLOR` desativa a paleta RGB.
 
+Dentro da TUI, `/theme <rgb|cyan|blue|magenta|amber|green|mono>` troca o tema
+na hora e `/theme #RRGGBB` define um accent customizado. A escolha persiste em
+`~/.config/bastion/tui.json` (precedência: `bastion.toml` < `tui.json` <
+variáveis de ambiente).
+
+## Mascote nativo
+
+A família nativa agora é o Keeper em pixel art (capacete de aço, visor escuro,
+rosto que muda por estado) e o Patchwork, que assume quando o Cabinet é
+convocado. Estados extras locais: um comando de barra desconhecido mostra o
+Keeper em dúvida (olhos abertos e uma interrogação âmbar) e `/pet sleep`
+mostra o rosto de descanso com zzz.
+
 ## Cuidado e progressão
 
 O game mode recompensa turnos concluídos, nunca volume de tokens. Turnos de

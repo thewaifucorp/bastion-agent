@@ -148,12 +148,12 @@ impl PetPack {
     pub(super) fn animation(&self, mode: VisualMode) -> &Animation {
         match mode {
             VisualMode::Onboarding => &self.states.onboarding,
-            VisualMode::Guard => &self.states.guard,
+            VisualMode::Guard | VisualMode::Sleep => &self.states.guard,
             VisualMode::Thinking => &self.states.thinking,
             VisualMode::Build => &self.states.build,
             VisualMode::Cabinet => &self.states.cabinet,
             VisualMode::Success => &self.states.success,
-            VisualMode::Alert => &self.states.alert,
+            VisualMode::Alert | VisualMode::Unknown => &self.states.alert,
         }
     }
 }
