@@ -1,142 +1,63 @@
-# Instalação local — 10 minutos
+# Primeiros passos
 
-Este guia cobre a instalação do Bastion no seu próprio computador (Mac, Linux ou Windows com WSL2).
+Este guia coloca um processo Bastion local e inspecionável para funcionar. Ele começa propositalmente pela interface de terminal: habilite um canal somente depois de entender suas credenciais e o mapeamento de proprietários.
 
----
+## O que você precisa
 
-## Pré-requisitos
+- Uma toolchain Rust estável recente com Cargo.
+- Git.
+- Configuração de um provedor de modelo compatível com seu ambiente.
+- Docker e Docker Compose apenas se for usar o deploy por Compose.
 
-Antes de começar, você precisa ter:
+O repositório consome crates `bastion-core` por uma tag Git fixada; portanto, o primeiro `cargo build` pode baixar e compilar mais dependências que um CLI pequeno.
 
-| O que | Como obter |
-|-------|-----------|
-| Docker Desktop | [docs.docker.com/get-docker](https://docs.docker.com/get-docker/) |
-| API key de 1 LLM | Anthropic, OpenAI, Google Gemini ou Groq — qualquer um serve |
-| Conta Maton | Crie grátis em [maton.ai](https://maton.ai) e gere uma API key |
-| Bot no Telegram | Fale com [@BotFather](https://t.me/BotFather) e crie um bot — ele te dá um token |
+## Execute o primeiro turno
 
-> Não tem Telegram? Você também pode usar WhatsApp via Twilio. Veja a seção no final.
+1. Clone o repositório e entre nele.
 
----
+   ```bash
+   git clone https://github.com/thewaifucorp/bastion-agent.git
+   cd bastion-agent
+   ```
 
-## Passo 1 — Rode o instalador
+2. Revise `bastion.toml`. Ele contém padrões não secretos, como modelo, caminho de sessão, canais habilitados e servidores MCP.
 
-Abra o terminal e execute:
+3. Coloque credenciais do provedor e tokens de canais em um `.env` local. O binário carrega `.env` quando ele existe; o arquivo é ignorado pelo Git.
 
-```bash
-curl -fsSL https://get.bastion.ai | bash
-```
+4. Compile e faça uma solicitação.
 
-O instalador vai:
-- Verificar se o Docker está instalado
-- Baixar os arquivos do Bastion para a pasta `~/bastion`
-- Criar o arquivo `.env` a partir do template
+   ```bash
+   cargo run -- agent --message "Resuma o que você pode fazer com segurança nesta instalação."
+   ```
 
-Se preferir fazer manualmente, clone o repositório:
+5. Inicie o daemon interativo quando quiser uma sessão persistente.
 
-```bash
-git clone https://github.com/bastion-ai/bastion.git ~/bastion
-cd ~/bastion
-cp .env.example .env
-```
+   ```bash
+   cargo run -- daemon
+   ```
 
----
+## Execute a stack Compose
 
-## Passo 2 — Preencha o `.env`
-
-Abra o arquivo `~/bastion/.env` no seu editor de texto favorito e preencha:
-
-```env
-# LLM — preencha pelo menos uma chave
-ANTHROPIC_API_KEY=sk-ant-...
-# OPENAI_API_KEY=sk-...
-# GEMINI_API_KEY=...
-# GROQ_API_KEY=...
-
-# Maton (obrigatório para integrações como Google Calendar)
-MATON_API_KEY=...
-
-# Telegram
-TELEGRAM_BOT_TOKEN=123456789:AAF...
-
-# JWT — gere uma string aleatória segura
-JWT_SECRET=troque-por-uma-string-longa-e-aleatoria
-```
-
-Para gerar um `JWT_SECRET` seguro no terminal:
+O arquivo Compose incluso compila o core e os sidecars locais. Ele monta `bastion.toml` como somente leitura e guarda o estado em volumes nomeados.
 
 ```bash
-openssl rand -hex 32
+docker compose up --build
 ```
 
----
+Na configuração fornecida, o core expõe a porta `8080`. Trate-a como superfície administrativa: restrinja o bind ou o firewall, defina `APP_JWT_SECRET` e não a publique amplamente apenas para testar.
 
-## Passo 3 — Suba o Bastion
-
-```bash
-cd ~/bastion
-docker compose up -d
-```
-
-Aguarde o Docker baixar as imagens (só na primeira vez). Quando terminar:
+## Confirme que está saudável
 
 ```bash
 docker compose ps
+docker compose logs -f core
 ```
 
-Você deve ver dois containers rodando: `openclaw` e `caddy`.
-
----
-
-## Passo 4 — Envie `/start` no Telegram
-
-Abra o Telegram, encontre o bot que você criou e envie `/start`.
-
-O Bastion vai iniciar o onboarding guiado — ele vai perguntar seu nome, as áreas da sua vida que quer gerenciar, e configurar a autenticação TOTP (você vai precisar do app **Authy** no celular).
-
-O onboarding leva cerca de 5 minutos.
-
----
-
-## Verificando se está tudo certo
-
-Para ver os logs em tempo real:
-
-```bash
-docker compose logs -f openclaw
-```
-
-Para parar o Bastion:
-
-```bash
-docker compose down
-```
-
-Para atualizar para a versão mais recente:
-
-```bash
-docker compose pull
-docker compose up -d
-```
-
----
-
-## Usando WhatsApp em vez de Telegram
-
-Adicione as seguintes variáveis ao `.env`:
-
-```env
-TWILIO_ACCOUNT_SID=AC...
-TWILIO_AUTH_TOKEN=...
-TWILIO_WHATSAPP_NUMBER=whatsapp:+14155238886
-```
-
-E comente a linha `TELEGRAM_BOT_TOKEN`.
-
----
+Em um build local, os logs seguem `logging.log_path` em `bastion.toml`. No Compose padrão, eles ficam no volume de dados do Bastion.
 
 ## Próximos passos
 
-- [Como subir numa VPS](vps-setup.md) — para acessar de qualquer lugar
-- [Guia de segurança](security.md) — boas práticas para proteger sua instância
-- [Conectar o app mobile](connect-app.md)
+- [Configuração](configuracao.md) para modelo, identidade e deploy.
+- [Canais](canais.md) antes de adicionar um token de mensageria.
+- [Segurança](seguranca.md) antes de tornar a instância acessível fora da sua máquina.
+- [Desenvolvimento](desenvolvimento.md) se você pretende alterar o código.

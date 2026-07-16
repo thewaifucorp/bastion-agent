@@ -1,138 +1,63 @@
-# Getting Started — 10 minutes
+# Getting Started
 
-This guide covers installing Bastion on your own computer (Mac, Linux, or Windows with WSL2).
+This guide gets you to a local, inspectable Bastion process. It intentionally begins with the terminal interface: enable a channel only after you understand its credentials and owner mapping.
 
----
+## What you need
 
-## Prerequisites
+- A recent stable Rust toolchain with Cargo.
+- Git.
+- A model provider configuration appropriate to your environment.
+- Docker and Docker Compose only if you choose the Compose deployment.
 
-Before you start, you need:
+The repository consumes `bastion-core` crates from a pinned Git tag, so the first `cargo build` may fetch and compile more than a small CLI project.
 
-| What | How to get it |
-|------|---------------|
-| Docker Desktop | [docs.docker.com/get-docker](https://docs.docker.com/get-docker/) |
-| API key from 1 LLM | Anthropic, OpenAI, Google Gemini, or Groq — any works |
-| Telegram bot | Talk to [@BotFather](https://t.me/BotFather) and create a bot — it gives you a token |
+## Run a first turn
 
-> No Telegram? You can also use WhatsApp via Evolution API. See the section at the end.
+1. Clone and enter the repository.
 
----
+   ```bash
+   git clone https://github.com/thewaifucorp/bastion-agent.git
+   cd bastion-agent
+   ```
 
-## Step 1 — Run the installer
+2. Review `bastion.toml`. It contains non-secret defaults such as the model name, session path, enabled channels, and MCP server definitions.
 
-Open your terminal and run:
+3. Place provider credentials and any channel tokens in a local `.env` file. The binary loads `.env` when it exists; it is ignored by Git.
 
-```bash
-bash <(curl -fsSL https://bastion.run/install)
-```
+4. Build and make one request.
 
-The installer will:
-- Check if Docker is installed
-- Download Bastion files to the `~/bastion` folder
-- Create the `.env` file from the template
+   ```bash
+   cargo run -- agent --message "Summarize what you can safely do in this installation."
+   ```
 
-If you prefer to do it manually, clone the repository:
+5. Start the interactive daemon when you are ready for a persistent session.
 
-```bash
-git clone https://github.com/samurai-py/bastion.git ~/bastion
-cd ~/bastion
-cp .env.example .env
-```
+   ```bash
+   cargo run -- daemon
+   ```
 
----
+## Run the Compose stack
 
-## Step 2 — Fill in `.env`
-
-Open `~/bastion/.env` in your favorite text editor and fill in:
-
-```env
-# LLM — fill in at least one key
-ANTHROPIC_API_KEY=sk-ant-...
-# OPENAI_API_KEY=sk-...
-# GEMINI_API_KEY=...
-# GROQ_API_KEY=...
-
-# Telegram
-TELEGRAM_BOT_TOKEN=123456789:AAF...
-
-# JWT — generate a secure random string
-JWT_SECRET=replace-with-a-long-random-string
-```
-
-To generate a secure `JWT_SECRET` in the terminal:
+The included Compose file builds the core and local sidecars. It mounts `bastion.toml` read-only and stores state in named volumes.
 
 ```bash
-openssl rand -hex 32
+docker compose up --build
 ```
 
----
+The core exposes port `8080` in the provided configuration. Treat that as an administrative surface: bind or firewall it for your deployment, set `APP_JWT_SECRET`, and do not publish it broadly merely to test it.
 
-## Step 3 — Start Bastion
-
-```bash
-cd ~/bastion
-docker compose up -d
-```
-
-Wait for Docker to download the images (first time only). When done:
+## Confirm it is healthy
 
 ```bash
 docker compose ps
+docker compose logs -f core
 ```
 
-You should see two containers running: `openclaw` and `caddy`.
+For a source build, runtime logs follow the `logging.log_path` configured in `bastion.toml`. The default Compose configuration writes them to the Bastion data volume.
 
----
+## Where next?
 
-## Step 4 — Send `/start` on Telegram
-
-Open Telegram, find the bot you created, and send `/start`.
-
-Bastion will start the guided onboarding — it will ask your name, the areas of your life you want it to help with, and set up TOTP authentication (you'll need the **Authy** app on your phone).
-
-Onboarding takes about 5 minutes.
-
----
-
-## Checking everything is working
-
-To see logs in real time:
-
-```bash
-docker compose logs -f openclaw
-```
-
-To stop Bastion:
-
-```bash
-docker compose down
-```
-
-To update to the latest version:
-
-```bash
-docker compose pull
-docker compose up -d
-```
-
----
-
-## Using WhatsApp instead of Telegram
-
-Add the following variables to `.env`:
-
-```env
-WHATSAPP_API_URL=https://your-evolution-api.com
-WHATSAPP_API_KEY=your-api-key
-WHATSAPP_NUMBER=15551234567
-```
-
-And comment out the `TELEGRAM_BOT_TOKEN` line.
-
----
-
-## Next steps
-
-- [Setting up on a VPS](vps-setup.md) — to access from anywhere
-- [Security guide](security.md) — best practices to protect your instance
-- [Connect the mobile app](connecting-the-app.md)
+- [Configuration](configuration.md) for model, identity, and deployment settings.
+- [Channels](channels.md) before adding a messaging token.
+- [Security](security.md) before making the instance reachable from outside your machine.
+- [Development](development.md) if you plan to modify the code.
