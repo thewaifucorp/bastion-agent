@@ -185,7 +185,7 @@ class TestSKWR03SkillEdit:
             patch.object(mod, "_build_pattern_context", new=AsyncMock(return_value="")),
             patch.object(mod, "_call_gateway", new=AsyncMock(return_value="updated content")),
         ):
-            result = await mod.skill_edit(
+            await mod.skill_edit(
                 name="my-skill",
                 edit_instructions="make it shorter",
             )
@@ -218,7 +218,7 @@ class TestSKWR03SkillEdit:
             patch.object(mod, "_build_pattern_context", new=AsyncMock(return_value="")),
             patch.object(mod, "_call_gateway", new=AsyncMock(return_value=new_content)),
         ):
-            result = await mod.skill_edit(
+            await mod.skill_edit(
                 name="my-skill",
                 edit_instructions="add description",
             )
@@ -354,7 +354,7 @@ class TestSKWR04RollbackDeterministic:
         timing dependency. The snapshot file is created directly in .versions/
         rather than via snapshot() to eliminate the async race.
         """
-        from versioning import rollback_to_date, list_snapshots, SNAPSHOT_PREFIX
+        from versioning import SNAPSHOT_PREFIX, rollback_to_date
 
         p = tmp_path / "SKILL.md"
         p.write_text("current content", encoding="utf-8")

@@ -14,7 +14,7 @@ from skill_writer import run_persona_skills_flow, SkillDiscoveryResult
 def mock_flow_deps(monkeypatch):
     """Mocks common dependencies for run_persona_skills_flow to avoid real I/O and repo cloning."""
     monkeypatch.setattr(skill_writer, "clone_or_update_repo", lambda *args, **kwargs: None)
-    monkeypatch.setattr(skill_writer, "get_string", lambda l, k, **kw: k)
+    monkeypatch.setattr(skill_writer, "get_string", lambda locale, key, **kwargs: key)
     monkeypatch.setattr(skill_writer, "load_locale", lambda *args, **kwargs: {})
     monkeypatch.setattr(skill_writer, "present_skills", lambda *args, **kwargs: "Mock Presentation")
 

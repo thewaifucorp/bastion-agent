@@ -120,16 +120,19 @@ fn repo_trigger_manifest(version: (u64, u64, u64)) -> ExtensionManifest {
 fn repo_trigger_extension(version: (u64, u64, u64)) -> Arc<dyn ExtensionInstance> {
     let manifest = repo_trigger_manifest(version);
     let cap = repo_trigger_capability(&manifest.id);
-    Arc::new(SubprocessExtension::new(
-        manifest,
-        vec![(
-            cap,
-            "checks the dev repo for a trigger signal".to_string(),
-            serde_json::json!({}),
-            echo_bin(),
-            vec![],
-        )],
-    ))
+    Arc::new(
+        SubprocessExtension::new(
+            manifest,
+            vec![(
+                cap,
+                "checks the dev repo for a trigger signal".to_string(),
+                serde_json::json!({}),
+                echo_bin(),
+                vec![],
+            )],
+        )
+        .with_unsandboxed_runner(),
+    )
 }
 
 fn budget_calc_manifest(version: (u64, u64, u64)) -> ExtensionManifest {

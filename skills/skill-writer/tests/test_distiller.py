@@ -6,9 +6,6 @@ memupalace_search_fn parameter removed — no search injection required.
 from __future__ import annotations
 
 import json
-from pathlib import Path
-
-import pytest
 
 
 class TestIsDistillationCandidate:

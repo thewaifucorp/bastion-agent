@@ -87,6 +87,9 @@ enum Command {
     Import {
         /// Input path to the .af file (omit for stdin)
         input: Option<String>,
+        /// Apply standalone personas and non-secret config; skills remain reviewable candidates
+        #[arg(long)]
+        apply_product_state: bool,
     },
 }
 
@@ -424,7 +427,10 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!(event = "export_complete", mode = %mode, output = %output);
             println!("Exported agent to {output}");
         }
-        Command::Import { input } => {
+        Command::Import {
+            input,
+            apply_product_state,
+        } => {
             let owner_id = std::env::var("BASTION_OWNER_ID")
                 .unwrap_or_else(|_| bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string());
 
@@ -439,6 +445,15 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
             let af: bastion_mesh::interop::AgentFile = serde_json::from_str(&json)?;
+            let managed = std::env::var("BASTION_DEPLOYMENT_MODE")
+                .map(|mode| mode.eq_ignore_ascii_case("managed"))
+                .unwrap_or(false);
+            let product_import = bastion::product_import::PreparedProductImport::prepare(
+                &af,
+                apply_product_state,
+                managed,
+                std::path::Path::new(&config_path),
+            )?;
             let restored = bastion_mesh::interop::import::import(
                 af,
                 &memory,
@@ -447,12 +462,18 @@ async fn main() -> anyhow::Result<()> {
                 &owner_id,
             )
             .await?;
+            product_import.commit()?;
             if let Some(id) = restored {
                 let age_secret = id.age_secret_bech32();
                 println!("Import complete. Identity restored.");
                 println!("Set MESH_IDENTITY_KEY={age_secret} for mesh use.");
             } else {
                 println!("Import complete (no identity in file).");
+            }
+            if managed && apply_product_state {
+                println!("Managed deployment: persona, skill, and config blocks were not applied locally.");
+            } else if apply_product_state {
+                println!("Personas and non-secret config applied; skills staged as reviewable candidates.");
             }
         }
     }

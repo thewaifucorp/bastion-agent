@@ -6,4 +6,5 @@ pub mod channel;
 pub mod config;
 pub mod extension;
 pub mod mcp;
+pub mod product_import;
 pub mod secret;

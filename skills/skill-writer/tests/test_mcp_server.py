@@ -10,7 +10,7 @@ import importlib
 import sys
 import types
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -114,6 +114,16 @@ class TestSkillPath:
         mod = _import_server()
         path = mod._skill_path("my-skill").resolve()
         assert path.is_relative_to(mod.SKILLS_DIR.resolve())
+
+
+class TestManagedLifecycle:
+    def test_proposal_never_signals_local_reload(self, monkeypatch):
+        mod = _import_server()
+        monkeypatch.setenv("BASTION_DEPLOYMENT_MODE", "managed")
+        proposal = mod._managed_proposal("review", "global", "content", "create")
+        assert proposal["lifecycle"] == "managed-reference"
+        assert proposal["approval_required"] is True
+        assert proposal["skill_reloaded"] is False
 
 
 # ── _build_pattern_context ─────────────────────────────────────────────────────

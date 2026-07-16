@@ -75,23 +75,23 @@ mcp-server     = [
 legacy-terminal-agent = ["bastion-providers/legacy-terminal-agent"]
 
 [dependencies]
-bastion-types = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
-bastion-runtime = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
-bastion-memory = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
-bastion-providers = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
-bastion-mcp = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
-bastion-agent-runtime = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
+bastion-types = { path = "../bastion-core/crates/bastion-types" }
+bastion-runtime = { path = "../bastion-core/crates/bastion-runtime" }
+bastion-memory = { path = "../bastion-core/crates/bastion-memory" }
+bastion-providers = { path = "../bastion-core/crates/bastion-providers" }
+bastion-mcp = { path = "../bastion-core/crates/bastion-mcp" }
+bastion-agent-runtime = { path = "../bastion-core/crates/bastion-agent-runtime" }
 # Loop 3-C (docs/revamp/C3-extension-protocol-design.md): extension host +
 # package manager (src/extension/) — product code, not kernel, so it lives
 # here rather than in a substrate crate.
-bastion-extension-protocol = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
+bastion-extension-protocol = { path = "../bastion-core/crates/bastion-extension-protocol" }
 # Loop 3-C: the Wasm mechanism's sandbox (src/extension/wasm.rs wraps it into
 # an ExtensionInstance/Capability) — the wasm runtime (wasmi) dependency
 # itself is isolated in this crate, never touching the kernel/protocol crates.
-bastion-extension-wasm = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
-bastion-cognition = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
-bastion-personas = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
-bastion-mesh = { git = "https://github.com/thewaifucorp/bastion-core", tag = "v0.1.0" }
+bastion-extension-wasm = { path = "../bastion-core/crates/bastion-extension-wasm" }
+bastion-cognition = { path = "../bastion-core/crates/bastion-cognition" }
+bastion-personas = { path = "../bastion-core/crates/bastion-personas" }
+bastion-mesh = { path = "../bastion-core/crates/bastion-mesh" }
 tokio              = { version = "1",    features = ["full"] }
 async-openai       = { version = "0.38", features = ["chat-completion"] }
 reqwest            = { version = "0.13", features = ["json", "stream"] }
@@ -148,6 +148,7 @@ unicode-width = "0.2.2"
 # 07-04: src/eval/verifier.rs constructs a scratch SqliteMemory at RUNTIME (the
 # Reflector's merge gate, 07-05) — tempfile is no longer test-only.
 tempfile     = "3"
+libc         = "0.2"
 # Phase 10 — channel transports (plan 10-01): Discord/Slack/Email/Voice deps.
 # M3-05: all optional, pulled in by the `channels-extra` / `voice` features.
 serenity       = { version = "0.12.5", optional = true, default-features = false, features = ["client", "gateway", "rustls_backend", "model", "cache"] }

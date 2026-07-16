@@ -28,6 +28,26 @@ MEMUPALACE_URL = os.getenv("MEMUPALACE_URL", "http://memupalace:8001/mcp")
 SKILLS_DIR = Path(os.getenv("SKILLS_DIR", "/skills"))
 
 
+def _managed_mode() -> bool:
+    return os.getenv("BASTION_DEPLOYMENT_MODE", "standalone").lower() == "managed"
+
+
+def _managed_proposal(name: str, scope: str, content: str, operation: str) -> dict:
+    """Return registry input without mutating a managed worker's loadout."""
+    return {
+        "skill_reloaded": False,
+        "status": "managed-reference",
+        "lifecycle": "managed-reference",
+        "approval_required": True,
+        "proposal": {
+            "name": name,
+            "scope": scope,
+            "operation": operation,
+            "content": content,
+        },
+    }
+
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -218,6 +238,9 @@ async def skill_create(
         # Gateway unavailable — return queued status
         return {"skill_reloaded": False, "status": "queued", "skill_name": name}
 
+    if _managed_mode():
+        return _managed_proposal(name, scope, skill_md, "create")
+
     # Snapshot existing (if any) then write
     if path.exists():
         snapshot(path)
@@ -236,6 +259,8 @@ async def skill_create(
         "skill_path": str(path),
         "version": version,
         "scope": scope,
+        "status": "approved-local",
+        "lifecycle": "approved-local",
     }
 
 
@@ -260,8 +285,6 @@ async def skill_edit(
     if not path.exists():
         raise ValueError(f"Skill '{name}' not found at {path}")
 
-    # Mandatory snapshot before any edit
-    snapshot(path)
     existing_content = path.read_text(encoding="utf-8")
 
     # SKWR-05: retrieve similar skill patterns from memupalace BEFORE calling gateway
@@ -277,6 +300,11 @@ async def skill_edit(
     if new_content is None:
         return {"skill_reloaded": False, "status": "queued", "skill_name": name}
 
+    if _managed_mode():
+        return _managed_proposal(name, scope, new_content, "edit")
+
+    # Mandatory snapshot immediately before the local mutation.
+    snapshot(path)
     path.write_text(new_content, encoding="utf-8")
     version = _version_string(path)
     logger.info("skill_edit: updated %s (%s)", name, scope)
@@ -287,6 +315,8 @@ async def skill_edit(
         "skill_path": str(path),
         "version": version,
         "scope": scope,
+        "status": "approved-local",
+        "lifecycle": "approved-local",
     }
 
 
@@ -304,6 +334,20 @@ def skill_rollback(
     """
     _validate_str("name", name)
     _validate_str("date_hint", date_hint)
+
+    if _managed_mode():
+        return {
+            "skill_reloaded": False,
+            "status": "managed-reference",
+            "lifecycle": "managed-reference",
+            "approval_required": True,
+            "proposal": {
+                "name": name,
+                "scope": scope,
+                "operation": "rollback",
+                "date_hint": date_hint,
+            },
+        }
 
     path = _skill_path(name, scope, persona_slug)
     restored = rollback_to_date(path, date_hint)
@@ -352,6 +396,7 @@ def skill_distill_candidate(
 
     return {
         "status": "queued",
+        "lifecycle": "candidate",
         "reason": reason,
         "steps_count": len(tool_calls),
         "approval_required": True,  # D-04/D-11 invariant — never auto-applied

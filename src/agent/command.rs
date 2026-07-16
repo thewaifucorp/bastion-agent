@@ -72,6 +72,7 @@ impl bastion_runtime::agent::ports::CommandHandler for CockpitCommandHandler {
         provider: &SharedProvider,
         memory: &SharedMemory,
         forced_persona: &mut Option<String>,
+        forced_cabinet: &mut Option<Vec<String>>,
         owner: &str,
     ) -> anyhow::Result<CommandResult> {
         handle_command(
@@ -80,6 +81,7 @@ impl bastion_runtime::agent::ports::CommandHandler for CockpitCommandHandler {
             &self.resources.registry,
             memory,
             forced_persona,
+            forced_cabinet,
             self.resources.otc_store.as_ref(),
             self.resources.composio_oauth.as_deref(),
             owner,
@@ -123,6 +125,7 @@ pub async fn handle_command(
     registry: &PersonaRegistry,
     memory: &SharedMemory,
     forced_persona: &mut Option<String>,
+    forced_cabinet: &mut Option<Vec<String>>,
     otc_store: Option<&crate::channel::webhook::OtcStore>,
     composio_oauth: Option<&bastion_mcp::oauth::ComposioOAuth>,
     owner: &str,
@@ -261,10 +264,11 @@ pub async fn handle_command(
                         registry.names().join(", ")
                     )
                 } else {
+                    *forced_cabinet = Some(names.iter().map(|name| (*name).to_string()).collect());
                     tracing::info!(event = "cabinet_convene_request", personas = %names.join(","));
                     format!(
                         "Cabinet convened with: {}\n\
-                         (Cabinet deliberation will run on next message that triggers Cabinet mode)",
+                         (Cabinet deliberation will run on your next message)",
                         names.join(", ")
                     )
                 }
@@ -485,12 +489,14 @@ mod tests {
 
         // /contest <id> should revoke it
         let mut forced = None;
+        let mut cabinet = None;
         let result = handle_command(
             &format!("/contest {}", id),
             &provider,
             &registry,
             &mem,
             &mut forced,
+            &mut cabinet,
             None,
             None,
             "_local",
@@ -516,6 +522,7 @@ mod tests {
         let registry = make_registry(&["Aria"]);
         let provider = make_provider();
         let mut forced = None;
+        let mut cabinet = None;
 
         let _ = handle_command(
             "/as UnknownPersona",
@@ -523,6 +530,7 @@ mod tests {
             &registry,
             &mem,
             &mut forced,
+            &mut cabinet,
             None,
             None,
             "_local",
@@ -544,6 +552,7 @@ mod tests {
         let registry = make_registry(&["Aria"]);
         let provider = make_provider();
         let mut forced = None;
+        let mut cabinet = None;
 
         let result = handle_command(
             "/as Aria",
@@ -551,6 +560,7 @@ mod tests {
             &registry,
             &mem,
             &mut forced,
+            &mut cabinet,
             None,
             None,
             "_local",
@@ -644,6 +654,7 @@ mod tests {
         let registry = make_registry(&["Aria"]);
         let provider = make_provider();
         let mut forced = None;
+        let mut cabinet = None;
 
         // Point RUST_LOG_PATH to a non-existent file — /logs should still return Handled.
         std::env::set_var("RUST_LOG_PATH", "/tmp/bastion_no_log_for_test.log");
@@ -653,6 +664,7 @@ mod tests {
             &registry,
             &mem,
             &mut forced,
+            &mut cabinet,
             None,
             None,
             "_local",
@@ -684,6 +696,7 @@ mod tests {
         let registry = make_registry(&["Aria"]);
         let provider = make_provider();
         let mut forced = None;
+        let mut cabinet = None;
         let store = crate::channel::webhook::new_otc_store();
 
         let result = handle_command(
@@ -692,6 +705,7 @@ mod tests {
             &registry,
             &mem,
             &mut forced,
+            &mut cabinet,
             Some(&store),
             None,
             "_local",
@@ -726,6 +740,7 @@ mod tests {
         let registry = make_registry(&["Aria"]);
         let provider = make_provider();
         let mut forced = None;
+        let mut cabinet = None;
 
         // No webhook channel running → otc_store is None → command still Handled, no panic.
         let result = handle_command(
@@ -734,6 +749,7 @@ mod tests {
             &registry,
             &mem,
             &mut forced,
+            &mut cabinet,
             None,
             None,
             "_local",
@@ -778,6 +794,7 @@ mod tests {
         let registry = make_registry(&["Aria"]);
         let provider = make_provider();
         let mut forced = None;
+        let mut cabinet = None;
 
         let result = handle_command(
             "/connect-app-composio",
@@ -785,6 +802,7 @@ mod tests {
             &registry,
             &mem,
             &mut forced,
+            &mut cabinet,
             None,
             None,
             "_local",
@@ -813,6 +831,7 @@ mod tests {
         let registry = make_registry(&["Aria"]);
         let provider = make_provider();
         let mut forced = None;
+        let mut cabinet = None;
 
         // No COMPOSIO_API_KEY configured → composio_oauth is None → graceful
         // "unavailable" message, never a panic or an Err.
@@ -822,6 +841,7 @@ mod tests {
             &registry,
             &mem,
             &mut forced,
+            &mut cabinet,
             None,
             None,
             "_local",
@@ -839,6 +859,7 @@ mod tests {
         let registry = make_registry(&["Aria"]);
         let provider = make_provider();
         let mut forced = None;
+        let mut cabinet = None;
 
         let addr = spawn_scripted_composio_server("https://composio.dev/auth/xyz").await;
         let oauth =
@@ -850,6 +871,7 @@ mod tests {
             &registry,
             &mem,
             &mut forced,
+            &mut cabinet,
             None,
             Some(&oauth),
             "_local",

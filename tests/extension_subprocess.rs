@@ -62,7 +62,8 @@ async fn install_echo(permissions: PermissionSet) -> (CapabilityRegistry, Extens
             echo_bin(),
             vec![],
         )],
-    );
+    )
+    .with_unsandboxed_runner();
     let mut registry = CapabilityRegistry::new();
     {
         let mut facade = HostFacade::new(&m, "alice", &mut registry);
@@ -248,7 +249,8 @@ async fn install_echo_with_secrets(
             echo_bin(),
             vec![],
         )],
-    );
+    )
+    .with_unsandboxed_runner();
     if let Some(r) = resolver {
         ext = ext.with_secret_resolver(r);
     }

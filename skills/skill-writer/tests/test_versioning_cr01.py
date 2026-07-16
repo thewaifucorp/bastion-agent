@@ -13,8 +13,6 @@ from __future__ import annotations
 import time
 import pathlib as _pl
 
-import pytest
-
 
 class TestSnapshotCallerThreadRead:
     """CR-01: content captured on caller thread, not background thread."""
