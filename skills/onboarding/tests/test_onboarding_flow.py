@@ -63,7 +63,7 @@ def _build_soul_md_frontmatter(**kwargs) -> dict:
         "current_weight": 0.8,
         "domains": ["health", "wellness"],
         "trigger_keywords": ["workout", "diet"],
-        "clawhub_skills": [],
+        "skills": [],
         "current_state": "Going to the gym 3x per week",
         "specific_goals": "Lose 5kg in 3 months",
     }
@@ -178,7 +178,7 @@ class TestPersonaSoulMd:
         fm = _build_soul_md_frontmatter()
         required = [
             "name", "slug", "base_weight", "current_weight",
-            "domains", "trigger_keywords", "clawhub_skills",
+            "domains", "trigger_keywords", "skills",
             "current_state", "specific_goals",
         ]
         for field in required:

@@ -132,7 +132,7 @@ For **each area** in `user.life_areas`, create a persona automatically:
    - Third and beyond: `0.6`
    - Minimum: `0.5`
 
-3. **Infer `domains`, `trigger_keywords`, and suggested `clawhub_skills`** from the area name (see inference table below).
+3. **Infer `domains`, `trigger_keywords`, and suggested `skills`** from the area name (see inference table below).
 
 4. **Collect per-persona details** — ask the user specifically for each persona:
    ```
@@ -151,7 +151,7 @@ For **each area** in `user.life_areas`, create a persona automatically:
 
 **Inference table by area:**
 
-| Area (contains) | domains | trigger_keywords | suggested clawhub_skills |
+| Area (contains) | domains | trigger_keywords | suggested skills |
 |---|---|---|---|
 | work / career | `["work", "career"]` | `["meeting", "task", "project", "deadline", "delivery"]` | `google-calendar`, `notion-tasks` |
 | business / entrepreneurship | `["business", "entrepreneurship"]` | `["client", "sale", "revenue", "product", "startup"]` | `google-calendar`, `notion-tasks`, `web-search` |
@@ -162,7 +162,7 @@ For **each area** in `user.life_areas`, create a persona automatically:
 | personal projects | `["personal-projects"]` | `["project", "idea", "hobby", "creation"]` | `github-integration`, `notion-tasks` |
 | relationships | `["relationships"]` | `["friend", "relationship", "social", "meeting"]` | `google-calendar` |
 
-For unmapped areas: `domains: ["{slug}"]`, `trigger_keywords: ["{area name}"]`, `clawhub_skills: []`.
+For unmapped areas: `domains: ["{slug}"]`, `trigger_keywords: ["{area name}"]`, `skills: []`.
 
 **Format of `personas/{slug}/SOUL.md`:**
 
@@ -174,7 +174,7 @@ base_weight: {value}
 current_weight: {same as base_weight}
 domains: [...]
 trigger_keywords: [...]
-clawhub_skills: [...]
+skills: [...]
 current_state: "{user's current state in this area}"
 specific_goals: "{user's measurable goals for this area}"
 ---
@@ -202,21 +202,25 @@ Report progress to the user:
 
 ---
 
-### Step 6 — ClawHub skill suggestion and installation
+### Step 6 — Local skill assignment
 
-For each persona created with non-empty `clawhub_skills`:
+For each persona created with non-empty suggested `skills`, compare the
+suggestions with the skills already available in this Bastion deployment:
 
 ```
 {locale:skill_suggestion_prompt} "{Area Name}":
 
-{list of suggested skills with brief description}
+{list of locally available suggested skills with brief description}
 
 {locale:skill_install_prompt}
 ```
 
-- "yes": install all listed skills (check Verified badge + rating ≥ 4.0 + 50+ reviews per AGENTS.md policy).
-- "no": skip, set `clawhub_skills: []` in the persona's SOUL.md.
-- "choose": list each skill individually for confirmation.
+- "yes": assign all listed local skills to the persona.
+- "no": skip and set `skills: []` in the persona's SOUL.md.
+- "choose": list each local skill individually for confirmation.
+
+Never download or install a missing skill during onboarding. Missing suggestions
+remain unassigned and can later become reviewable skill-writer proposals.
 
 ---
 
@@ -251,11 +255,11 @@ If "no": inform the user that TOTP can be configured later with `/setup-totp`. P
 
 If "yes":
 
-1. Generate TOTP secret: `python3 ~/.openclaw/workspace/skills/onboarding/totp.py generate`
-2. Generate QR URI: `python3 ~/.openclaw/workspace/skills/onboarding/totp.py qr <secret> <user.name>`
+1. Generate TOTP secret: `python3 skills/onboarding/totp.py generate`
+2. Generate QR URI: `python3 skills/onboarding/totp.py qr <secret> <user.name>`
 3. Render the QR code.
 4. Send to the user with instructions to scan and enter the 6-digit code.
-5. Validate: `python3 ~/.openclaw/workspace/skills/onboarding/totp.py verify <secret> <code>`
+5. Validate: `python3 skills/onboarding/totp.py verify <secret> <code>`
    - Valid (output OK): proceed to Step 9.
    - Invalid (output FAIL): see Edge Case C.
 

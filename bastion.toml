@@ -8,32 +8,32 @@
 # Gemini flash: native structured output (response_format) for reliable router calls +
 # free tier, unlike the prior OpenRouter free model which failed structured router calls.
 # Requires GEMINI_API_KEY in .env. Override per-deployment via env BASTION__AGENT__DEFAULT_MODEL.
-default_model         = "gemini-2.0-flash"
+default_model         = "gemini-2.5-flash"
 daily_budget_usd      = 5.0
 # fallback_models = ["groq/llama-3.1-8b-instant"]  # D-11: tried in order on hard provider failure
 
 [session]
-db_path               = "/bastion-data/sessions.db"
+db_path               = ".bastion/sessions.db"
 autocompact_threshold = 0.80
 keep_last_n           = 20
 
 [logging]
-log_path              = "/bastion-data/bastion.log"
+log_path              = ".bastion/bastion.log"
 
 [mcp]
 tool_call_timeout_secs = 30
 
 # MCP server URLs — replaces .bastion/mcp-servers.json (D-09)
 [mcp.servers.memupalace]
-url   = "http://memupalace:8001/mcp"
+url   = "http://127.0.0.1:8001/mcp"
 label = "memupalace"
 
-[mcp.servers.skill-writer]
-url   = "http://skill-writer:8002/mcp"
+[mcp.servers.skill_writer]
+url   = "http://127.0.0.1:8002/mcp"
 label = "skill-writer"
 
-[mcp.servers.self-improving]
-url   = "http://self-improving:8003/mcp"
+[mcp.servers.self_improving]
+url   = "http://127.0.0.1:8003/mcp"
 label = "self-improving"
 
 # Content-validation tools (post length, feed fold preview) — shared with the Claude Code
@@ -51,20 +51,20 @@ label = "content"
 # every LocalOnly-tagged voice turn is blocked by the egress gate. Only set
 # is_local=true on a server that genuinely never sends data off-host.
 [mcp.servers.voice]
-url       = "http://voice:8004/mcp"
+url       = "http://127.0.0.1:8004/mcp"
 label     = "voice"
 is_local  = true
 
 [channels.telegram]
-enabled = true
+enabled = false
 
 [channels.webhook]
-enabled = false
+enabled = true
 
 # CHAN-01/CHAN-03/VOICE-01: new channels default to disabled — each needs real
 # per-operator credentials (unlike the container-internal voice sidecar, nobody
 # should be silently exposed to an unconfigured external channel). See
-# docs/channels-setup.md for onboarding steps per channel.
+# docs/en/channels.md or docs/pt-br/canais.md for onboarding steps per channel.
 [channels.whatsapp]
 enabled = false
 

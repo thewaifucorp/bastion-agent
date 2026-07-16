@@ -4,16 +4,14 @@
   "permissions": {
     "fs": {
       "read": [
-        "~/.openclaw/workspace/**",
         "./.env",
         "./**"
       ],
       "write": [
-        "db/proactive-engine/**",
-        "~/.openclaw/workspace/**"
+        "db/proactive-engine/**"
       ]
     },
     "tools": ["exec", "read", "write"],
-    "network": ["openrouter.ai", "clawhub"]
+    "network": ["openrouter.ai"]
   }
 }

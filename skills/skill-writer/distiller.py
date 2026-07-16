@@ -43,7 +43,7 @@ def enqueue_pending(prompt: str, context_tier: str) -> None:
     """Append a pending distillation to the JSONL queue.
 
     Queue is processed by the approval flow (D-04) — never auto-applied.
-    Follows log_skill_event() pattern from skill_writer.py.
+    Persists one append-only record per distillation candidate.
     """
     entry = json.dumps(
         {

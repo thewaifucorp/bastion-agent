@@ -89,15 +89,30 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use tokio_stream::wrappers::BroadcastStream;
 
-/// Public type alias for the OTC store shared between the webhook server and skill commands.
+/// A one-time pairing grant binds a human owner to a device label.
+///
+/// `owner_id` is the canonical identity used for memories, goals and sessions.
+/// `device_name` is presentation/audit metadata only and MUST NOT become an owner.
+#[derive(Clone, Debug)]
+pub struct PairingGrant {
+    pub owner_id: String,
+    pub device_name: String,
+    pub issued_at: std::time::Instant,
+}
+
+/// Public type alias for the OTC store shared between the webhook server and commands.
 ///
 /// Skill commands insert a code like this:
 ///   otc_store.write().await.insert(
 ///       "BAST-XXXX".to_string(),
-///       ("device-name".to_string(), std::time::Instant::now()),
+///       PairingGrant {
+///           owner_id: "mario".to_string(),
+///           device_name: "laptop".to_string(),
+///           issued_at: std::time::Instant::now(),
+///       },
 ///   );
 /// The code is consumed by /auth/exchange or /mesh/pair within 5 minutes (CR-02).
-pub type OtcStore = Arc<RwLock<std::collections::HashMap<String, (String, std::time::Instant)>>>;
+pub type OtcStore = Arc<RwLock<std::collections::HashMap<String, PairingGrant>>>;
 
 /// Create a new empty OtcStore. Pass to serve_with_mesh so skills can insert codes.
 pub fn new_otc_store() -> OtcStore {
@@ -133,8 +148,8 @@ struct AppState {
     events_tx: broadcast::Sender<String>,
     /// Registry of known mesh peers (owner_id → peer). Populated from bastion.toml at startup.
     mesh_peer_map: Arc<RwLock<MeshPeerMap>>,
-    /// OTC store: token → (device_name_or_peer_owner_id, issued_at). 5-min TTL.
-    otc_store: Arc<RwLock<std::collections::HashMap<String, (String, std::time::Instant)>>>,
+    /// OTC store: token → canonical owner + device metadata. 5-min TTL.
+    otc_store: OtcStore,
     /// JWT signing secret for /auth/exchange (HS256).
     jwt_secret: String,
     /// Pluggable mesh transport (P2PTransport or relay). None if mesh not configured.
@@ -440,19 +455,19 @@ async fn auth_exchange_handler(
     // Validate OTC against store (5-min TTL)
     let result = {
         let store = state.otc_store.read().await;
-        store.get(&otc).map(|(device_name, issued_at)| {
-            let elapsed = issued_at.elapsed();
-            (device_name.clone(), elapsed)
+        store.get(&otc).map(|grant| {
+            let elapsed = grant.issued_at.elapsed();
+            (grant.clone(), elapsed)
         })
     };
 
     match result {
-        Some((device_name, elapsed)) if elapsed.as_secs() < 300 => {
+        Some((grant, elapsed)) if elapsed.as_secs() < 300 => {
             // OTC valid — consume it (delete from store)
             state.otc_store.write().await.remove(&otc);
 
             // Issue JWT (HS256, 90-day expiry).
-            // JWT encodes device name in "sub" claim.
+            // JWT subject is always the canonical owner. The device is metadata.
             // The issued JWT IS the x-bastion-token used on subsequent requests.
             use jsonwebtoken::{encode, EncodingKey, Header};
             let exp = std::time::SystemTime::now()
@@ -461,8 +476,8 @@ async fn auth_exchange_handler(
                 .as_secs()
                 + 90 * 24 * 3600; // 90 days
             let claims = Claims {
-                sub: device_name.clone(),
-                device: device_name.clone(),
+                sub: grant.owner_id.clone(),
+                device: grant.device_name.clone(),
                 exp,
             };
             match encode(
@@ -472,7 +487,11 @@ async fn auth_exchange_handler(
             ) {
                 Ok(jwt) => (
                     StatusCode::OK,
-                    Json(serde_json::json!({ "jwt": jwt, "device_name": &device_name })),
+                    Json(serde_json::json!({
+                        "jwt": jwt,
+                        "owner_id": &grant.owner_id,
+                        "device_name": &grant.device_name
+                    })),
                 )
                     .into_response(),
                 Err(e) => {
@@ -685,7 +704,7 @@ async fn mesh_pair_handler(
         let store = state.otc_store.read().await;
         store
             .get(&body.token)
-            .map(|(peer_owner_id, issued_at)| (peer_owner_id.clone(), issued_at.elapsed()))
+            .map(|grant| (grant.device_name.clone(), grant.issued_at.elapsed()))
     };
 
     match result {
@@ -1675,7 +1694,11 @@ mod tests {
         // Pre-insert the OTC so /auth/exchange can consume it
         store.try_write().unwrap().insert(
             otc.to_string(),
-            (device_name.to_string(), std::time::Instant::now()),
+            PairingGrant {
+                owner_id: "mario".to_string(),
+                device_name: device_name.to_string(),
+                issued_at: std::time::Instant::now(),
+            },
         );
         let (readiness, lifecycle) = test_operational_state();
         let state = AppState {
@@ -1990,6 +2013,7 @@ mod tests {
             "jwt field missing: {val}"
         );
         assert_eq!(val["device_name"], "mario-phone");
+        assert_eq!(val["owner_id"], "mario");
     }
 
     /// CR-02: new_otc_store() is callable and returns a usable Arc<RwLock<HashMap>>.
@@ -1998,7 +2022,11 @@ mod tests {
         let store = new_otc_store();
         store.try_write().unwrap().insert(
             "BAST-XY".to_string(),
-            ("dev".to_string(), std::time::Instant::now()),
+            PairingGrant {
+                owner_id: "alice".to_string(),
+                device_name: "dev".to_string(),
+                issued_at: std::time::Instant::now(),
+            },
         );
         assert!(store.try_read().unwrap().contains_key("BAST-XY"));
     }

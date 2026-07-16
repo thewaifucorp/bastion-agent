@@ -140,13 +140,13 @@ async def test_staleness_groups_by_wing(default_settings, mock_memupalace):
 
 
 @pytest.mark.asyncio
-async def test_cve_consolidates_multiple_skills(default_settings, mock_clawhub):
+async def test_cve_consolidates_multiple_skills(default_settings, mock_skill_registry):
     bus = EventBus(default_settings)
-    mock_clawhub.get_batch_cves.return_value = {
+    mock_skill_registry.get_batch_cves.return_value = {
         "life-log": [{"cve_id": "CVE-001", "severity": "HIGH", "description": "test"}],
         "guardrails": [{"cve_id": "CVE-002", "severity": "MEDIUM", "description": "test2"}],
     }
-    detector = CVEDetector(mock_clawhub, bus, default_settings)
+    detector = CVEDetector(mock_skill_registry, bus, default_settings)
     await detector.run(["life-log", "guardrails"])
     assert len(bus._events) == 1
     assert bus._events[0].type == "cve"
@@ -154,10 +154,10 @@ async def test_cve_consolidates_multiple_skills(default_settings, mock_clawhub):
 
 
 @pytest.mark.asyncio
-async def test_cve_clawhub_unavailable_no_event(default_settings, mock_clawhub):
+async def test_cve_skill_registry_unavailable_no_event(default_settings, mock_skill_registry):
     bus = EventBus(default_settings)
-    mock_clawhub.get_batch_cves.side_effect = ConnectionError("unavailable")
-    detector = CVEDetector(mock_clawhub, bus, default_settings)
+    mock_skill_registry.get_batch_cves.side_effect = ConnectionError("unavailable")
+    detector = CVEDetector(mock_skill_registry, bus, default_settings)
     await detector.run(["life-log"])
     assert bus._events == []
 

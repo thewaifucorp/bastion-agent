@@ -31,6 +31,8 @@ Coloque os valores abaixo em `.env`, jamais no TOML versionado.
 | `TELEGRAM_BOT_TOKEN` | Canal Telegram. |
 | `BASTION_WEBHOOK_ADDR` | Endereço de bind do webhook/pareamento mobile. |
 | `APP_JWT_SECRET` | Assinatura JWT do webhook e do pareamento mobile. |
+| `BASTION_BOOTSTRAP_TOKEN` | Acesso inicial de API/TUI limitado ao proprietário; rotacione depois do onboarding. |
+| `BASTION_INFER_TOKEN` | Autentica chamadas dos sidecars ao gateway de inferência. |
 | `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN` | Canal WhatsApp Cloud API. |
 | `DISCORD_BOT_TOKEN` | Canal Discord. |
 | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` | Slack Socket Mode. |
@@ -50,7 +52,9 @@ slack_user_id = "U01ABCDEF"
 email_address = "mario@example.com"
 ```
 
-Habilite cada canal deliberadamente em `[channels]`. Veja [Canais](canais.md) para os requisitos de credencial e exposição.
+O webhook local vem habilitado; canais externos vêm desabilitados. Um canal só inicia com `enabled = true` e todas as credenciais obrigatórias no ambiente. Veja [Canais](canais.md).
+
+No Compose, o mesmo `bastion.toml` é usado com overrides `BASTION__...` para caminhos e URLs internas. Não existe um segundo arquivo de configuração.
 
 ## Checklist seguro
 

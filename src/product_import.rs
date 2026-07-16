@@ -206,6 +206,14 @@ impl PreparedProductImport {
     }
 }
 
+impl Drop for PreparedProductImport {
+    fn drop(&mut self) {
+        if let Some(staging) = &self.staging {
+            let _ = std::fs::remove_dir_all(staging);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,13 +342,5 @@ mod tests {
             std::fs::read_to_string(&config_path).expect("still unchanged"),
             original
         );
-    }
-}
-
-impl Drop for PreparedProductImport {
-    fn drop(&mut self) {
-        if let Some(staging) = &self.staging {
-            let _ = std::fs::remove_dir_all(staging);
-        }
     }
 }

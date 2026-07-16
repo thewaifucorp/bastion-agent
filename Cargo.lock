@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "bastion"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "age",
  "anyhow",
@@ -533,6 +533,7 @@ dependencies = [
 [[package]]
 name = "bastion-agent-runtime"
 version = "0.1.0"
+source = "git+https://github.com/thewaifucorp/bastion-core?rev=058d75741885a535f011bd3e8df4210e6072b73b#058d75741885a535f011bd3e8df4210e6072b73b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -548,6 +549,7 @@ dependencies = [
 [[package]]
 name = "bastion-cognition"
 version = "0.1.0"
+source = "git+https://github.com/thewaifucorp/bastion-core?rev=058d75741885a535f011bd3e8df4210e6072b73b#058d75741885a535f011bd3e8df4210e6072b73b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -566,6 +568,7 @@ dependencies = [
 [[package]]
 name = "bastion-extension-protocol"
 version = "0.1.0"
+source = "git+https://github.com/thewaifucorp/bastion-core?rev=058d75741885a535f011bd3e8df4210e6072b73b#058d75741885a535f011bd3e8df4210e6072b73b"
 dependencies = [
  "bastion-types",
  "semver",
@@ -578,6 +581,7 @@ dependencies = [
 [[package]]
 name = "bastion-extension-wasm"
 version = "0.1.0"
+source = "git+https://github.com/thewaifucorp/bastion-core?rev=058d75741885a535f011bd3e8df4210e6072b73b#058d75741885a535f011bd3e8df4210e6072b73b"
 dependencies = [
  "thiserror 2.0.18",
  "wasmi",
@@ -586,6 +590,7 @@ dependencies = [
 [[package]]
 name = "bastion-mcp"
 version = "0.1.0"
+source = "git+https://github.com/thewaifucorp/bastion-core?rev=058d75741885a535f011bd3e8df4210e6072b73b#058d75741885a535f011bd3e8df4210e6072b73b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -603,6 +608,7 @@ dependencies = [
 [[package]]
 name = "bastion-memory"
 version = "0.1.0"
+source = "git+https://github.com/thewaifucorp/bastion-core?rev=058d75741885a535f011bd3e8df4210e6072b73b#058d75741885a535f011bd3e8df4210e6072b73b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -616,6 +622,7 @@ dependencies = [
 [[package]]
 name = "bastion-mesh"
 version = "0.1.0"
+source = "git+https://github.com/thewaifucorp/bastion-core?rev=058d75741885a535f011bd3e8df4210e6072b73b#058d75741885a535f011bd3e8df4210e6072b73b"
 dependencies = [
  "age",
  "anyhow",
@@ -640,6 +647,7 @@ dependencies = [
 [[package]]
 name = "bastion-personas"
 version = "0.1.0"
+source = "git+https://github.com/thewaifucorp/bastion-core?rev=058d75741885a535f011bd3e8df4210e6072b73b#058d75741885a535f011bd3e8df4210e6072b73b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -659,6 +667,7 @@ dependencies = [
 [[package]]
 name = "bastion-providers"
 version = "0.1.0"
+source = "git+https://github.com/thewaifucorp/bastion-core?rev=058d75741885a535f011bd3e8df4210e6072b73b#058d75741885a535f011bd3e8df4210e6072b73b"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -675,6 +684,7 @@ dependencies = [
 [[package]]
 name = "bastion-runtime"
 version = "0.1.0"
+source = "git+https://github.com/thewaifucorp/bastion-core?rev=058d75741885a535f011bd3e8df4210e6072b73b#058d75741885a535f011bd3e8df4210e6072b73b"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -693,6 +703,7 @@ dependencies = [
 [[package]]
 name = "bastion-types"
 version = "0.1.0"
+source = "git+https://github.com/thewaifucorp/bastion-core?rev=058d75741885a535f011bd3e8df4210e6072b73b#058d75741885a535f011bd3e8df4210e6072b73b"
 dependencies = [
  "anyhow",
  "schemars 0.8.22",

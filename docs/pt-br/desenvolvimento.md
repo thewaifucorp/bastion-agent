@@ -16,12 +16,13 @@ cargo test
 | Comando | Finalidade |
 | --- | --- |
 | `cargo run -- daemon` | Inicia o daemon interativo. |
+| `cargo run -- chat` | Abre a interface de terminal remota oficial. |
 | `cargo run -- agent --message "…"` | Executa um turno e sai. |
 | `cargo build --all-features` | Compila recursos opcionais. |
 | `cargo fmt --check` | Verifica formatação Rust. |
 | `cargo clippy --all-targets --all-features -- -D warnings` | Executa o gate estrito do CI. |
 | `cargo test` | Executa testes Rust. |
-| `python3 -m pytest skills/ -q` | Executa testes das skills Python. |
+| `(cd skills/<nome> && python3 -m pytest -q)` | Executa uma suíte Python sem colisões de módulos entre skills. |
 | `bash scripts/check-scope-and-scrub.sh` | Executa a verificação de escopo público. |
 
 ## Convenções

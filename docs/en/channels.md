@@ -20,12 +20,12 @@ email_address = "mario@example.com"
 
 | Channel | Enable/configure | Secret or operational requirement |
 | --- | --- | --- |
-| Telegram | Set `TELEGRAM_BOT_TOKEN` | Telegram chat identity must be mapped. |
-| Webhook/mobile | Set `BASTION_WEBHOOK_ADDR` and `APP_JWT_SECRET` | Protect the reachable address; mobile pairing uses this surface. |
+| Telegram | Enable `[channels.telegram]` and set `TELEGRAM_BOT_TOKEN` | Telegram chat identity must be mapped. |
+| Webhook/mobile/TUI | Enable `[channels.webhook]`; set `BASTION_WEBHOOK_ADDR` and `APP_JWT_SECRET` | Protect the reachable address; pairing and `bastion chat` use this surface. |
 | WhatsApp | Enable `[channels.whatsapp]` and set all four `WHATSAPP_*` values | Requires webhook bind address and Meta signature verification. |
 | Discord | Enable `[channels.discord]`, set `DISCORD_BOT_TOKEN` | Enable Discord’s Message Content intent in the Developer Portal. |
 | Slack | Enable `[channels.slack]`, set `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` | Uses Socket Mode; both token types are distinct. |
-| Email | Enable `[channels.email]` and configure its implementation credentials | Inbound email is always treated as untrusted. |
+| Email | Enable `[channels.email]`; set address, password, IMAP and SMTP variables | Inbound email is always treated as untrusted. |
 | Voice | Enable `[channels.voice]` | Local microphone/speaker; wake word is opt-in. |
 
 ## Trust behavior

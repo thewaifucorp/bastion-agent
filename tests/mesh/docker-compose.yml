@@ -1,46 +1,46 @@
-# docker-compose.mesh-e2e.yml - Phase 09 Plan 04 mesh validation
+# Isolated two-node mesh integration environment. Test-only; run via ./run.sh.
 
 services:
   bastion-a:
-    build: .
+    build: ../..
     image: bastion-mesh-e2e:latest
     command: ["daemon"]
+    user: "0:0"
     environment:
       - BASTION_OWNER_ID=alice
       - MESH_OWNER_ID=alice
       - MESH_IDENTITY_KEY=${ALICE_AGE_KEY}
       - APP_JWT_SECRET=test-jwt-secret-a
       - BASTION_WEBHOOK_ADDR=0.0.0.0:8080
-      - BASTION_WEBHOOK_OWNERS=token-alice:alice
       - BASTION_CONFIG=/bastion.toml
       - BASTION__AGENT__DEFAULT_MODEL=llama3
       - RUST_LOG=info
     ports:
       - "18081:8080"
     volumes:
-      - ${BASTION_A_CONFIG:-./tests/fixtures/mesh/bastion-a.toml}:/bastion.toml:ro
+      - ${BASTION_A_CONFIG:-./nodes/alice.toml}:/bastion.toml:ro
       - bastion-a-data:/data
     networks:
       - mesh-net
 
   bastion-b:
-    build: .
+    build: ../..
     image: bastion-mesh-e2e:latest
     command: ["daemon"]
+    user: "0:0"
     environment:
       - BASTION_OWNER_ID=bob
       - MESH_OWNER_ID=bob
       - MESH_IDENTITY_KEY=${BOB_AGE_KEY}
       - APP_JWT_SECRET=test-jwt-secret-b
       - BASTION_WEBHOOK_ADDR=0.0.0.0:8080
-      - BASTION_WEBHOOK_OWNERS=token-bob:bob
       - BASTION_CONFIG=/bastion.toml
       - BASTION__AGENT__DEFAULT_MODEL=llama3
       - RUST_LOG=info
     ports:
       - "18082:8080"
     volumes:
-      - ${BASTION_B_CONFIG:-./tests/fixtures/mesh/bastion-b.toml}:/bastion.toml:ro
+      - ${BASTION_B_CONFIG:-./nodes/bob.toml}:/bastion.toml:ro
       - bastion-b-data:/data
     networks:
       - mesh-net

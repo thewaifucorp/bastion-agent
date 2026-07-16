@@ -22,6 +22,5 @@ Welcome. These guides describe the code in this repository—not an older hosted
 - [Testing](testing.md) — Rust, Python-skill, and integration checks.
 - [Installer notes](how-to-install.md) — current installer scope and limitations.
 - [VPS deployment](vps-setup.md) — a deployment checklist, not a copy-paste internet exposure guide.
-- [ClawHub migration](../clawhub-migration.md) — review imported skills before activating them.
 
 For the stable substrate beneath this application, see [bastion-core](https://github.com/thewaifucorp/bastion-core).

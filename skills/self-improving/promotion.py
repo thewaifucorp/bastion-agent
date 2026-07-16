@@ -572,7 +572,7 @@ def conflict_resolution(pattern_a: Pattern, pattern_b: Pattern) -> Pattern:
 
 
 # ---------------------------------------------------------------------------
-# CLI Interface for OpenClaw Agent
+# Bastion CLI interface
 # ---------------------------------------------------------------------------
 def main() -> None:
     import argparse

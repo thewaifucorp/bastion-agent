@@ -147,9 +147,13 @@ pub async fn handle_command(
                     let code = generate_otc();
                     store.write().await.insert(
                         code.clone(),
-                        (device.to_string(), std::time::Instant::now()),
+                        crate::channel::webhook::PairingGrant {
+                            owner_id: owner.to_string(),
+                            device_name: device.to_string(),
+                            issued_at: std::time::Instant::now(),
+                        },
                     );
-                    tracing::info!(event = "connect_app_otc_issued", device = %device);
+                    tracing::info!(event = "connect_app_otc_issued", owner = %owner, device = %device);
                     Ok(CommandResult::Handled(format!(
                         "One-time pairing code for '{device}': {code}\n\
                          Enter it in the app within 5 minutes (POST /auth/exchange)."
@@ -717,17 +721,18 @@ mod tests {
         // Exactly one code, mapped to the supplied device name, freshly issued.
         let guard = store.read().await;
         assert_eq!(guard.len(), 1, "one OTC must be inserted");
-        let (code, (device, issued_at)) = guard.iter().next().unwrap();
+        let (code, grant) = guard.iter().next().unwrap();
         assert!(
             code.starts_with("BAST-"),
             "stored key is the BAST- code: {code}"
         );
         assert_eq!(
-            device, "my-phone",
+            grant.device_name, "my-phone",
             "device name must be the /connect-app arg"
         );
+        assert_eq!(grant.owner_id, "_local", "OTC must retain canonical owner");
         assert!(
-            issued_at.elapsed().as_secs() < 5,
+            grant.issued_at.elapsed().as_secs() < 5,
             "issued just now (well within 5-min TTL)"
         );
     }

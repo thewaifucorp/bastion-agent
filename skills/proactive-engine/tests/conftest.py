@@ -45,7 +45,7 @@ def mock_memupalace():
 
 
 @pytest.fixture
-def mock_clawhub():
+def mock_skill_registry():
     mock = AsyncMock()
     mock.get_cves.return_value = []
     mock.get_batch_cves.return_value = {}

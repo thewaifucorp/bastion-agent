@@ -20,12 +20,12 @@ email_address = "mario@example.com"
 
 | Canal | Configuração | Requisito |
 | --- | --- | --- |
-| Telegram | `TELEGRAM_BOT_TOKEN` | Mapeie a conversa Telegram. |
-| Webhook/mobile | `BASTION_WEBHOOK_ADDR` e `APP_JWT_SECRET` | Proteja o endereço alcançável. |
+| Telegram | Habilite `[channels.telegram]` e defina `TELEGRAM_BOT_TOKEN` | Mapeie a conversa Telegram. |
+| Webhook/mobile/TUI | Habilite `[channels.webhook]`; defina `BASTION_WEBHOOK_ADDR` e `APP_JWT_SECRET` | Pareamento e `bastion chat` usam esta superfície. |
 | WhatsApp | `[channels.whatsapp]` e quatro valores `WHATSAPP_*` | Exige bind de webhook e valida assinatura Meta. |
 | Discord | `[channels.discord]` e `DISCORD_BOT_TOKEN` | Ative Message Content Intent no portal Discord. |
 | Slack | `[channels.slack]`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` | Usa Socket Mode; os dois tokens são diferentes. |
-| E-mail | `[channels.email]` e credenciais correspondentes | E-mail recebido é sempre não confiável. |
+| E-mail | `[channels.email]`, endereço, senha, IMAP e SMTP | E-mail recebido é sempre não confiável. |
 | Voz | `[channels.voice]` | Microfone/alto-falante local; wake word é opt-in. |
 
 Mensagens públicas de Discord e Slack são não confiáveis; DMs não. WhatsApp valida a assinatura antes de interpretar o corpo. Essas classificações alimentam decisões de capacidade e egress do runtime.

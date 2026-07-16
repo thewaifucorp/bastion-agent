@@ -48,7 +48,7 @@ fn config_layering_mcp_servers_folded_in() {
     );
     assert_eq!(
         cfg.mcp.servers["memupalace"].url,
-        "http://memupalace:8001/mcp"
+        "http://127.0.0.1:8001/mcp"
     );
 }
 

@@ -1,6 +1,7 @@
 """Query sanitizer — removes system-prompt prefix before embedding (MUPL-05).
 
-Vendorizado do mempalace upstream (MIT). Dependency-free.
+Adapted from https://github.com/MemPalace/mempalace (MIT).
+See NOTICE.md in this directory. Dependency-free.
 4-step mitigation que recupera recall de ~1% para >= 70% quando system prompt
 é prepended à query pelo LLM antes de chamar memory_search.
 """

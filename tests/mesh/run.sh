@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-COMPOSE_FILE="docker-compose.mesh-e2e.yml"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+COMPOSE_FILE="$ROOT/tests/mesh/docker-compose.yml"
 PROJECT_NAME="bastion-mesh-e2e"
 TMP_DIR="$(mktemp -d)"
 HELPER_DIR="$TMP_DIR/mesh-helper"
@@ -23,7 +24,7 @@ need_cmd cargo
 need_cmd curl
 need_cmd docker
 
-cargo test mesh::allowlist --lib >/dev/null
+(cd "$ROOT" && cargo test mesh::allowlist --lib >/dev/null)
 
 mkdir -p "$HELPER_DIR/src"
 cat >"$HELPER_DIR/Cargo.toml" <<'TOML'
@@ -102,8 +103,8 @@ BOB_AGE_KEY="$(cat "$TMP_DIR/bob.key")"
 ALICE_PUB="$(cat "$TMP_DIR/alice.pub")"
 BOB_PUB="$(cat "$TMP_DIR/bob.pub")"
 
-sed "s/BOB_AGE_PUBKEY_PLACEHOLDER/$BOB_PUB/g" bastion-a.toml >"$TMP_DIR/bastion-a.toml"
-sed "s/ALICE_AGE_PUBKEY_PLACEHOLDER/$ALICE_PUB/g" bastion-b.toml >"$TMP_DIR/bastion-b.toml"
+sed "s/BOB_AGE_PUBKEY_PLACEHOLDER/$BOB_PUB/g" "$ROOT/tests/mesh/nodes/alice.toml" >"$TMP_DIR/bastion-a.toml"
+sed "s/ALICE_AGE_PUBKEY_PLACEHOLDER/$ALICE_PUB/g" "$ROOT/tests/mesh/nodes/bob.toml" >"$TMP_DIR/bastion-b.toml"
 
 export ALICE_AGE_KEY BOB_AGE_KEY
 export BASTION_A_CONFIG="$TMP_DIR/bastion-a.toml"
@@ -160,7 +161,7 @@ code="$(post_mesh "http://localhost:18082" token-bob "$TMP_DIR/wrong-owner.json"
 echo "OK: cross-owner rejection works"
 
 echo "Test 3: tag+tier filter"
-cargo test mesh::allowlist --lib >/dev/null
+(cd "$ROOT" && cargo test mesh::allowlist --lib >/dev/null)
 echo "OK: tag+tier filter unit tests pass"
 
 echo "Test 4: age key mismatch"

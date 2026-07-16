@@ -14,9 +14,16 @@ O GitHub Actions roda esses comandos em pull requests e pushes para `main`, alé
 
 ## Testes de skills
 
+Instale as dependências compartilhadas de teste e as dependências de runtime do
+sidecar testado. Rode cada suíte a partir do diretório da própria skill; coletar
+todo `skills/` no mesmo processo pytest causa colisão entre módulos chamados
+`tests`.
+
 ```bash
-python3 -m pytest skills/ -q
-python3 -m pytest skills/weight-system/tests/ -v --rootdir=.
+python3 -m pip install -r requirements-dev.txt
+(cd skills/skill-writer && python3 -m pytest -q)
+(cd skills/proactive-engine && python3 -m pytest -q)
+(cd skills/weight-system && python3 -m pytest -q)
 ```
 
 Use a segunda forma para focar em uma skill. Instale primeiro as dependências daquela skill; o projeto não assume um único ambiente Python para todos os componentes opcionais.

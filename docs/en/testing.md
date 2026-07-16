@@ -14,9 +14,16 @@ The GitHub Actions workflow runs these commands on pushes to `main` and on pull 
 
 ## Skill tests
 
+Install the shared test dependencies plus the runtime requirements of the
+sidecar you are testing. Run each suite from its own skill directory; collecting
+all of `skills/` in one pytest process causes duplicate `tests` module names to
+collide.
+
 ```bash
-python3 -m pytest skills/ -q
-python3 -m pytest skills/weight-system/tests/ -v --rootdir=.
+python3 -m pip install -r requirements-dev.txt
+(cd skills/skill-writer && python3 -m pytest -q)
+(cd skills/proactive-engine && python3 -m pytest -q)
+(cd skills/weight-system && python3 -m pytest -q)
 ```
 
 Use the second form to focus on one skill. Install the relevant skill’s Python dependencies first; this repository intentionally does not pretend that every optional skill has a single shared dependency environment.

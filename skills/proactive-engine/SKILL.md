@@ -73,8 +73,8 @@ python3 skills/proactive-engine/main.py run-weekly \
 | `PROACTIVE_STALENESS_DAYS` | `14` | Days before marking memory stale |
 | `PROACTIVE_LIFELOG_WINDOW` | `50` | Records to include in LLM context |
 | `PROACTIVE_DEDUP_WINDOW_HOURS` | `6` | Event dedup window (hours) |
-| `CLAWHUB_URL` | _(empty)_ | ClawHub base URL — CVE checks disabled if unset |
-| `CLAWHUB_API_KEY` | _(empty)_ | ClawHub API key |
+| `BASTION_SKILL_REGISTRY_URL` | _(empty)_ | Optional compatible skill-vulnerability registry; CVE checks are disabled if unset |
+| `BASTION_SKILL_REGISTRY_TOKEN` | _(empty)_ | Bearer token for that registry |
 | `OPENROUTER_API_KEY` | _(required)_ | OpenRouter API key for LLM calls |
 
 ---

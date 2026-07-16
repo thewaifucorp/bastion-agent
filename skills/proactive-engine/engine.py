@@ -18,7 +18,7 @@ from layer0.temporal import TemporalPatternDetector
 from layer1.suggestion_generator import SuggestionGenerator
 from layer1.weekly_synthesizer import WeeklySynthesizer
 from models import DetectionEvent
-from protocols import ClawHubClient, LifeLogProtocol, MemupalaceProtocol, PersonaConfig
+from protocols import SkillRegistryClient, LifeLogProtocol, MemupalaceProtocol, PersonaConfig
 from settings import ProactiveSettings
 
 logger = logging.getLogger(__name__)
@@ -30,14 +30,14 @@ class ProactiveEngine:
         settings: ProactiveSettings,
         life_log: LifeLogProtocol,
         memupalace: MemupalaceProtocol | None,
-        clawhub: ClawHubClient,
+        skill_registry: SkillRegistryClient,
         personas: list[PersonaConfig] | None = None,
         installed_skills: list[str] | None = None,
     ) -> None:
         self._settings = settings
         self._life_log = life_log
         self._memupalace = memupalace
-        self._clawhub = clawhub
+        self._skill_registry = skill_registry
         self._personas = personas or []
         self._installed_skills = installed_skills or []
         self._bus = EventBus(settings)
@@ -98,7 +98,7 @@ class ProactiveEngine:
     async def run_cve_check(self) -> None:
         """CVEDetector.run() + immediate EventBus.flush()."""
         try:
-            detector = CVEDetector(self._clawhub, self._bus, self._settings)
+            detector = CVEDetector(self._skill_registry, self._bus, self._settings)
             await detector.run(self._installed_skills)
         except Exception:
             logger.warning("run_cve_check: CVEDetector failed", exc_info=True)

@@ -16,7 +16,7 @@ from typing import Any
 
 from engine import ProactiveEngine
 from models import DetectionEvent
-from protocols import ClawHubClient, InteractionRecord, LifeLogProtocol, MemupalaceProtocol, PersonaConfig
+from protocols import SkillRegistryClient, InteractionRecord, LifeLogProtocol, MemupalaceProtocol, PersonaConfig
 from settings import ProactiveSettings
 
 logger = logging.getLogger(__name__)
@@ -90,12 +90,12 @@ class _LifeLogAdapter:
 
 
 # ---------------------------------------------------------------------------
-# Adapter: wraps ClawHub HTTP client
+# Adapter: wraps skill registry HTTP client
 # ---------------------------------------------------------------------------
 
 
-class _HttpClawHubClient:
-    """Simple HTTP adapter for ClawHub API."""
+class _HttpSkillRegistryClient:
+    """Simple HTTP adapter for skill registry API."""
 
     def __init__(self, base_url: str, api_key: str) -> None:
         self._base_url = base_url.rstrip("/")
@@ -133,8 +133,8 @@ class _HttpClawHubClient:
             raise
 
 
-class _NullClawHubClient:
-    """No-op client used when ClawHub is not configured."""
+class _NullSkillRegistryClient:
+    """No-op client used when skill registry is not configured."""
 
     async def get_cves(self, skill_name: str) -> list[dict[str, str]]:
         return []
@@ -151,7 +151,7 @@ class _NullClawHubClient:
 def create_engine(
     settings: ProactiveSettings,
     life_log: LifeLogProtocol | None = None,
-    clawhub: ClawHubClient | None = None,
+    skill_registry: SkillRegistryClient | None = None,
     memupalace: MemupalaceProtocol | None = None,
     personas: list[PersonaConfig] | None = None,
     installed_skills: list[str] | None = None,
@@ -192,21 +192,21 @@ def create_engine(
             logger.warning("create_engine: memupalace unavailable — degraded mode", exc_info=True)
             memupalace = None
 
-    # --- ClawHub client ---
-    if clawhub is None:
-        clawhub_url = os.environ.get("CLAWHUB_URL", "")
-        clawhub_key = os.environ.get("CLAWHUB_API_KEY", "")
-        if clawhub_url:
-            clawhub = _HttpClawHubClient(clawhub_url, clawhub_key)
+    # --- skill registry client ---
+    if skill_registry is None:
+        skill_registry_url = os.environ.get("BASTION_SKILL_REGISTRY_URL", "")
+        skill_registry_key = os.environ.get("BASTION_SKILL_REGISTRY_TOKEN", "")
+        if skill_registry_url:
+            skill_registry = _HttpSkillRegistryClient(skill_registry_url, skill_registry_key)
         else:
-            logger.info("create_engine: CLAWHUB_URL not set — CVE checks disabled")
-            clawhub = _NullClawHubClient()
+            logger.info("create_engine: BASTION_SKILL_REGISTRY_URL not set — CVE checks disabled")
+            skill_registry = _NullSkillRegistryClient()
 
     return ProactiveEngine(
         settings=settings,
         life_log=life_log,
         memupalace=memupalace,
-        clawhub=clawhub,
+        skill_registry=skill_registry,
         personas=personas or [],
         installed_skills=installed_skills or [],
     )

@@ -17,6 +17,15 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test
+      - run: bash tests/test-installer.sh
+
+  distribution:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./installer.sh --prepare-only --non-interactive
+      - run: docker compose config --quiet
+      - run: docker build --tag bastion-ci .
 
   # Decision #18 (corporate-name scrub) — this repo is public; a leaked
   # proprietary name in a doc, comment, or config file is as much a leak as

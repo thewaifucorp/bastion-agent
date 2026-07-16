@@ -357,7 +357,7 @@ def adjust_weight(
 
 
 # ---------------------------------------------------------------------------
-# CLI Interface for OpenClaw Agent
+# Bastion CLI interface
 # ---------------------------------------------------------------------------
 def main() -> None:
     import argparse

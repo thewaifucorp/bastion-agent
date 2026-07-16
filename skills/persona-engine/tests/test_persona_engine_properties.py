@@ -57,7 +57,7 @@ def _persona_strategy(
         current_weight=w,
         domains=st.lists(_text, min_size=1, max_size=5),
         trigger_keywords=st.lists(_keyword, min_size=1, max_size=8),
-        clawhub_skills=st.lists(_keyword, min_size=0, max_size=4),
+        skills=st.lists(_keyword, min_size=0, max_size=4),
     )
 
 
@@ -73,7 +73,7 @@ def _persona_strategy(
             _text,                                          # name
             st.lists(_text, min_size=1, max_size=3),       # domains
             st.lists(_keyword, min_size=1, max_size=5),    # trigger_keywords
-            st.lists(_keyword, min_size=0, max_size=3),    # clawhub_skills
+            st.lists(_keyword, min_size=0, max_size=3),    # skills
             _weight,                                        # base_weight
         ),
         min_size=1,
@@ -100,7 +100,7 @@ def test_property1_onboarding_creates_n_personas_for_n_areas(
             name=name,
             domains=domains,
             trigger_keywords=keywords,
-            clawhub_skills=skills,
+            skills=skills,
             base_weight=weight,
             persistence=persistence,
         )
@@ -122,14 +122,14 @@ def test_property1_onboarding_creates_n_personas_for_n_areas(
 # Validates: Requirements 2.2
 # ---------------------------------------------------------------------------
 
-REQUIRED_SOUL_FIELDS = ("name", "slug", "base_weight", "domains", "trigger_keywords", "clawhub_skills")
+REQUIRED_SOUL_FIELDS = ("name", "slug", "base_weight", "domains", "trigger_keywords", "skills")
 
 
 @given(
     name=_text,
     domains=st.lists(_text, min_size=1, max_size=5),
     trigger_keywords=st.lists(_keyword, min_size=1, max_size=8),
-    clawhub_skills=st.lists(_keyword, min_size=0, max_size=4),
+    skills=st.lists(_keyword, min_size=0, max_size=4),
     base_weight=_weight,
 )
 @settings(max_examples=50)
@@ -137,7 +137,7 @@ def test_property2_created_persona_has_all_required_soul_fields(
     name: str,
     domains: list[str],
     trigger_keywords: list[str],
-    clawhub_skills: list[str],
+    skills: list[str],
     base_weight: float,
 ) -> None:
     """
@@ -145,7 +145,7 @@ def test_property2_created_persona_has_all_required_soul_fields(
 
     For any persona created by Persona_Engine, the SOUL.md frontmatter must
     contain all required fields: name, slug, base_weight, domains,
-    trigger_keywords, and clawhub_skills.
+    trigger_keywords, and skills.
 
     **Validates: Requirements 2.2**
     """
@@ -155,7 +155,7 @@ def test_property2_created_persona_has_all_required_soul_fields(
         name=name,
         domains=domains,
         trigger_keywords=trigger_keywords,
-        clawhub_skills=clawhub_skills,
+        skills=skills,
         base_weight=base_weight,
         persistence=persistence,
     )
@@ -172,7 +172,7 @@ def test_property2_created_persona_has_all_required_soul_fields(
     assert 0.0 <= persona.base_weight <= 1.0, "base_weight must be in [0.0, 1.0]"
     assert isinstance(persona.domains, list), "domains must be a list"
     assert isinstance(persona.trigger_keywords, list), "trigger_keywords must be a list"
-    assert isinstance(persona.clawhub_skills, list), "clawhub_skills must be a list"
+    assert isinstance(persona.skills, list), "skills must be a list"
 
     # Verify the persona was persisted (SOUL.md written)
     stored = persistence.read_soul_md(persona.slug)

@@ -9,7 +9,7 @@ Este guia coloca um processo Bastion local e inspecionável para funcionar. Ele 
 - Configuração de um provedor de modelo compatível com seu ambiente.
 - Docker e Docker Compose apenas se for usar o deploy por Compose.
 
-O repositório consome crates `bastion-core` por uma tag Git fixada; portanto, o primeiro `cargo build` pode baixar e compilar mais dependências que um CLI pequeno.
+O repositório consome crates `bastion-core` por um commit Git fixado; portanto, o primeiro build pode baixar e compilar mais dependências que uma CLI pequena.
 
 ## Execute o primeiro turno
 
@@ -20,9 +20,13 @@ O repositório consome crates `bastion-core` por uma tag Git fixada; portanto, o
    cd bastion-agent
    ```
 
-2. Revise `bastion.toml`. Ele contém padrões não secretos, como modelo, caminho de sessão, canais habilitados e servidores MCP.
+2. Revise `installer.sh` e prepare o `.env` com os segredos internos obrigatórios.
 
-3. Coloque credenciais do provedor e tokens de canais em um `.env` local. O binário carrega `.env` quando ele existe; o arquivo é ignorado pelo Git.
+   ```bash
+   ./installer.sh --prepare-only
+   ```
+
+3. Revise `bastion.toml`. Ele contém os padrões não secretos, caminhos locais, canais e servidores MCP.
 
 4. Compile e faça uma solicitação.
 
@@ -36,15 +40,18 @@ O repositório consome crates `bastion-core` por uma tag Git fixada; portanto, o
    cargo run -- daemon
    ```
 
+   Com um daemon em execução, `cargo run -- chat` abre a TUI remota oficial. Ela
+   aceita uma sessão pareada ou `BASTION_TOKEN` durante o bootstrap.
+
 ## Execute a stack Compose
 
 O arquivo Compose incluso compila o core e os sidecars locais. Ele monta `bastion.toml` como somente leitura e guarda o estado em volumes nomeados.
 
 ```bash
-docker compose up --build
+./installer.sh
 ```
 
-Na configuração fornecida, o core expõe a porta `8080`. Trate-a como superfície administrativa: restrinja o bind ou o firewall, defina `APP_JWT_SECRET` e não a publique amplamente apenas para testar.
+Na configuração fornecida, o core expõe a porta `8080`. Trate-a como superfície administrativa e restrinja bind/firewall. O instalador gera `APP_JWT_SECRET`, `BASTION_INFER_TOKEN` e um token de bootstrap limitado ao proprietário.
 
 ## Confirme que está saudável
 

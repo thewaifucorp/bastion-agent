@@ -1,16 +1,16 @@
-# Bastion mesh E2E config: alice node (09-04)
+# Test-only Bastion mesh config: Bob node.
 
 [agent]
 default_model = "llama3"
 daily_budget_usd = 0.50
 
 [session]
-db_path = "/data/bastion-a.db"
+db_path = "/data/bastion-b.db"
 autocompact_threshold = 0.80
 keep_last_n = 50
 
 [logging]
-log_path = "/data/bastion-a.log"
+log_path = "/data/bastion-b.log"
 
 [mcp]
 tool_call_timeout_secs = 30
@@ -21,11 +21,15 @@ enabled = false
 [channels.webhook]
 enabled = true
 
+[[identity]]
+owner_id = "bob"
+webhook_token = "token-bob"
+
 [mesh]
 sync_interval = 1
 
 [[mesh.peer]]
-owner_id = "bob"
-peer_url = "http://bastion-b:8080"
-age_pubkey = "BOB_AGE_PUBKEY_PLACEHOLDER"
+owner_id = "alice"
+peer_url = "http://bastion-a:8080"
+age_pubkey = "ALICE_AGE_PUBKEY_PLACEHOLDER"
 allowed_tags = ["test"]

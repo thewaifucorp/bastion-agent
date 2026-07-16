@@ -9,7 +9,7 @@ cargo build
 cargo test
 ```
 
-`bastion-agent` depends on the `bastion-core` crates through Git-pinned dependencies. A working Git installation and network access to those dependencies are therefore needed for a clean build.
+`bastion-agent` depends on `bastion-core` crates pinned to an exact public commit. A working Git installation and network access are therefore needed for a clean build.
 
 For the Python skill suites, install their declared dependencies in an isolated environment before running pytest. Each skill that needs Python dependencies declares its own requirements or project metadata.
 
@@ -18,12 +18,13 @@ For the Python skill suites, install their declared dependencies in an isolated 
 | Command | Purpose |
 | --- | --- |
 | `cargo run -- daemon` | Start the local interactive daemon. |
+| `cargo run -- chat` | Open the official remote terminal UI. |
 | `cargo run -- agent --message "…"` | Run one terminal turn and exit. |
 | `cargo build --all-features` | Compile optional product features. |
 | `cargo fmt --check` | Verify Rust formatting. |
 | `cargo clippy --all-targets --all-features -- -D warnings` | Run the same strict Clippy gate used by CI. |
 | `cargo test` | Run Rust tests. |
-| `python3 -m pytest skills/ -q` | Run Python skill tests. |
+| `(cd skills/<name> && python3 -m pytest -q)` | Run one Python skill suite without cross-suite module collisions. |
 | `bash scripts/check-scope-and-scrub.sh` | Run the repository’s public-scope scrub check. |
 
 ## Code conventions

@@ -62,7 +62,7 @@ class MemupalaceProtocol(Protocol):
 
 
 @runtime_checkable
-class ClawHubClient(Protocol):
+class SkillRegistryClient(Protocol):
     async def get_cves(self, skill_name: str) -> list[dict[str, str]]:
         """Return CVE records for the given skill."""
         ...

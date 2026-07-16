@@ -17,12 +17,12 @@ from settings import ProactiveSettings
 
 
 @pytest.fixture
-def full_engine(default_settings, mock_life_log, mock_memupalace, mock_clawhub):
+def full_engine(default_settings, mock_life_log, mock_memupalace, mock_skill_registry):
     return ProactiveEngine(
         settings=default_settings,
         life_log=mock_life_log,
         memupalace=mock_memupalace,
-        clawhub=mock_clawhub,
+        skill_registry=mock_skill_registry,
         personas=[
             PersonaConfig(slug="carreira", current_weight=0.8),
             PersonaConfig(slug="estudos", current_weight=0.5),
@@ -52,9 +52,9 @@ async def test_full_run_cycle_writes_pending_and_heartbeat(
 
 
 @pytest.mark.asyncio
-async def test_cve_check_writes_cve_event(full_engine, default_settings, mock_clawhub):
+async def test_cve_check_writes_cve_event(full_engine, default_settings, mock_skill_registry):
     """run_cve_check emits CVE event and flushes to pending-events.json."""
-    mock_clawhub.get_batch_cves.return_value = {
+    mock_skill_registry.get_batch_cves.return_value = {
         "life-log": [{"cve_id": "CVE-2026-001", "severity": "CRITICAL", "description": "RCE"}]
     }
     await full_engine.run_cve_check()
@@ -85,12 +85,12 @@ async def test_weekly_run_with_events(full_engine, default_settings):
 
 
 @pytest.mark.asyncio
-async def test_factory_creates_engine(default_settings, mock_life_log, mock_clawhub):
+async def test_factory_creates_engine(default_settings, mock_life_log, mock_skill_registry):
     """create_engine returns a ProactiveEngine in degraded mode when memupalace=None."""
     engine = create_engine(
         settings=default_settings,
         life_log=mock_life_log,
-        clawhub=mock_clawhub,
+        skill_registry=mock_skill_registry,
         memupalace=None,
     )
     assert isinstance(engine, ProactiveEngine)

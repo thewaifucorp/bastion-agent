@@ -24,5 +24,5 @@ def sample_persona() -> Persona:
         current_weight=0.9,
         domains=["code", "architecture"],
         trigger_keywords=["PR", "deploy", "bug"],
-        clawhub_skills=["github-integration"],
+        skills=["github-integration"],
     )

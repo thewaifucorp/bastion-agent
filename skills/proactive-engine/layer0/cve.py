@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from event_bus import EventBus
 from models import DetectionEvent
-from protocols import ClawHubClient
+from protocols import SkillRegistryClient
 from settings import ProactiveSettings
 
 logger = logging.getLogger(__name__)
@@ -18,20 +18,20 @@ _DEDUP_HOURS = 24
 class CVEDetector:
     def __init__(
         self,
-        clawhub: ClawHubClient,
+        skill_registry: SkillRegistryClient,
         bus: EventBus,
         settings: ProactiveSettings,
     ) -> None:
-        self._clawhub = clawhub
+        self._skill_registry = skill_registry
         self._bus = bus
         self._settings = settings
 
     async def run(self, installed_skills: list[str]) -> None:
         """
-        Check CVEs for each installed skill via ClawHub API.
+        Check CVEs for each installed skill via skill registry API.
         Consolidates all CVEs into a single DetectionEvent[cve] per cycle.
         Uses 24h dedup window (overrides the default 6h).
-        If ClawHub unavailable: log warning, no event emitted.
+        If skill registry unavailable: log warning, no event emitted.
         """
         if not installed_skills:
             return
@@ -39,9 +39,9 @@ class CVEDetector:
         now = datetime.now(tz=timezone.utc)
 
         try:
-            batch_cves = await self._clawhub.get_batch_cves(installed_skills)
+            batch_cves = await self._skill_registry.get_batch_cves(installed_skills)
         except Exception:
-            logger.warning("CVEDetector: ClawHub unavailable — skipping CVE check", exc_info=True)
+            logger.warning("CVEDetector: skill registry unavailable — skipping CVE check", exc_info=True)
             return
 
         all_cves: list[dict] = []

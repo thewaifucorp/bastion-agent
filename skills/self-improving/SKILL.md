@@ -131,7 +131,7 @@ To swap the backend (e.g., database), implement a new adapter that satisfies `Pr
 ## Comandos CLI
 
 > IMPORTANT: CLI Command
-> As you are an OpenClaw agent, you must invoke all operations via command line (`exec python3 ...`). Do not attempt to interpret Python code natively.
+> When running inside Bastion, invoke these operations through the declared tool interface. Do not simulate tool results.
 
 
 

@@ -1,18 +1,36 @@
-# Notas de instalação
+# Instale o Bastion
 
-O caminho de instalação auditável é clonar este repositório e compilá-lo com Cargo, ou construir a stack Compose inclusa. `installer.sh` é um script operacional em manutenção: leia-o antes de rodar, pois ele pode preparar o host, verificar Docker, clonar arquivos e instalar skills opcionais.
+## Stack self-hosted completa
+
+Requisitos: Git, Docker Engine e Docker Compose v2.
 
 ```bash
 git clone https://github.com/thewaifucorp/bastion-agent.git
 cd bastion-agent
-cargo build
+less installer.sh
+./installer.sh
+```
+
+O instalador é idempotente: preserva `.env`, gera segredos internos ausentes,
+valida o Compose, reconstrói as imagens e inicia a stack. Ele não instala Node,
+registry externo de skills, bootstrap legado de plugins nem cria um segundo formato de configuração.
+
+Modos úteis:
+
+```bash
+./installer.sh --prepare-only       # prepara .env sem exigir Docker
+./installer.sh --no-start           # configura e compila sem iniciar
+./installer.sh --non-interactive    # usa chaves exportadas no ambiente
+./installer.sh --dir /opt/bastion   # caminho explícito
+```
+
+## Rust nativo
+
+```bash
+./installer.sh --prepare-only
+cargo build --locked
 cargo run -- daemon
 ```
 
-Para o deploy local multi-serviço:
-
-```bash
-docker compose up --build
-```
-
-Antes de qualquer caminho, revise `bastion.toml`, crie `.env` privado para segredos e leia [Configuração](configuracao.md). Não use comandos `curl | shell` sem verificar de forma independente o endpoint, a URL do repositório e a versão.
+O `bastion.toml` versionado usa caminhos locais e URLs MCP em loopback. O Compose
+sobrescreve esses valores para sua rede e volumes. Veja [Configuração](configuracao.md).

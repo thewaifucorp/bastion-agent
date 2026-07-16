@@ -122,28 +122,38 @@ you ──► channel / CLI / mobile
 
 ## Start in minutes
 
-Start with the terminal before handing a messaging token to anything.
+Clone the repository, inspect the installer, then let it prepare secrets and build the
+full stack. It preserves an existing `.env` and never prints generated credentials.
 
 ```bash
 git clone https://github.com/thewaifucorp/bastion-agent.git
 cd bastion-agent
-cargo build
-cargo run -- agent --message "What can you safely do in this installation?"
+./installer.sh
 ```
 
-Then run the persistent daemon:
+Verify the installed daemon with the owner-scoped bootstrap token:
 
 ```bash
+export BASTION_TOKEN="$(sed -n 's/^BASTION_BOOTSTRAP_TOKEN=//p' .env)"
+curl -sS http://127.0.0.1:8080/webhook \
+  -H "x-bastion-token: $BASTION_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"text":"What can you safely do in this installation?"}'
+```
+
+For a native Rust workflow, prepare the same configuration without starting Docker,
+then use the one-shot command, daemon REPL, or official TUI:
+
+```bash
+./installer.sh --prepare-only
+cargo run -- agent --message "Summarize my current priorities."
 cargo run -- daemon
+BASTION_TOKEN="$BASTION_TOKEN" cargo run -- chat
 ```
 
-For the full local stack—core, memory, skill-writing, self-improvement, and voice sidecars—review configuration and run:
-
-```bash
-docker compose up --build
-```
-
-Put secrets in `.env`; keep non-secret behavior in `bastion.toml`. Before enabling a channel, map its allowed owner and read the security model.
+`bastion.toml` controls non-secret behavior; `.env` contains credentials. A channel
+starts only when it is enabled in TOML and its required secret exists. Before exposing
+one, map its sender to a canonical owner and read the security model.
 
 ## Documentation
 
@@ -165,6 +175,17 @@ Put secrets in `.env`; keep non-secret behavior in `bastion.toml`. Before enabli
 </p>
 
 If Bastion is useful to you, sponsor the work by supporting [wAIfu Corp](https://waifucorp.org). Support keeps the runtime independent, maintainable, and pointed at the difficult problems—durable memory, safe authority, and user-owned agents—instead of chasing the next chatbot wrapper.
+
+## Inspiration and credits
+
+Bastion's memory system synthesizes ideas from
+[Mem0](https://github.com/mem0ai/mem0) and
+[MemPalace](https://github.com/MemPalace/mempalace). Mem0 inspired the persistent,
+personalized memory lifecycle; MemPalace inspired local-first verbatim storage,
+spatial organization, and scoped retrieval. Bastion adds its governed Rust layer:
+provenance, temporal validity, canonical-owner isolation, contestation, correction,
+revocation, and authority-aware use. Detailed lineage lives in the
+[bastion-core memory architecture](https://github.com/thewaifucorp/bastion-core/blob/main/docs/MEMORY.md).
 
 ## Contributing
 

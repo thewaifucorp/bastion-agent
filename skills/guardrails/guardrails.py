@@ -117,7 +117,7 @@ class GuardrailResult:
 
 @dataclass
 class SkillMetadata:
-    """Metadata for a ClawHub skill installation check."""
+    """Metadata for a third-party skill installation check."""
 
     name: str
     verified: bool
@@ -309,7 +309,7 @@ class GuardrailEngine:
 
     def check_skill_installation(self, skill: SkillMetadata) -> GuardrailResult:
         """
-        Block installation of ClawHub skills that don't meet minimum criteria.
+        Block installation of third-party skills that don't meet minimum criteria.
 
         Criteria (for non-bastion/* skills):
           - Badge "Verified" (required for skills with filesystem or network access)
@@ -368,7 +368,7 @@ class GuardrailEngine:
 
 
 # ---------------------------------------------------------------------------
-# CLI Interface for OpenClaw Agent
+# Bastion CLI interface
 # ---------------------------------------------------------------------------
 def main() -> None:
     import argparse

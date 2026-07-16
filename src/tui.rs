@@ -1,4 +1,4 @@
-//! Terminal UI client for the Bastion webhook + SSE API — the same surface the
+//! Official Bastion terminal UI for the webhook + SSE API — the same surface the
 //! mobile companion app pairs with (`/auth/exchange`, `/webhook`, `/events`).
 //!
 //! Pairing: on the machine running the daemon, type `/connect-app <device-name>`
@@ -10,7 +10,6 @@
 //! of tool calls. The SSE panel is wired up so it starts working the day that lands.
 
 use anyhow::{bail, Context, Result};
-use clap::Parser;
 use crossterm::event::{
     Event as CEvent, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
@@ -33,16 +32,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
-#[derive(Parser)]
-struct Args {
-    /// Base URL of the Bastion daemon's webhook server.
-    #[arg(long, env = "POKEDEV_URL", default_value = "http://127.0.0.1:8080")]
-    url: String,
-}
-
 #[derive(Serialize, Deserialize, Clone)]
 struct Session {
     jwt: String,
+    owner_id: String,
     device_name: String,
 }
 
@@ -54,7 +47,8 @@ struct WebhookOut {
 fn token_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home)
-        .join(".pokedev-cli")
+        .join(".config")
+        .join("bastion")
         .join("session.json")
 }
 
@@ -66,7 +60,7 @@ fn load_session() -> Option<Session> {
 fn save_session(session: &Session) -> Result<()> {
     let path = token_path();
     if let Some(dir) = path.parent() {
-        ensure_private_dir(dir).context("creating ~/.pokedev-cli")?;
+        ensure_private_dir(dir).context("creating ~/.config/bastion")?;
     }
     write_private_file(&path, serde_json::to_string_pretty(session)?.as_bytes())
         .context("saving session")
@@ -116,8 +110,8 @@ fn clear_session() {
 /// are entered (and again, suspended back to plain mode, if a session expires
 /// mid-run), so it stays simple stdin/stdout instead of an in-TUI text field.
 async fn pair(client: &Client, base_url: &str) -> Result<Session> {
-    println!("👾 Nenhuma sessão pareada encontrada.");
-    println!("Na máquina onde o daemon está rodando, digite: /connect-app pokedev-cli");
+    println!("◈ Nenhuma sessão Bastion pareada encontrada.");
+    println!("Em um canal já autorizado, digite: /connect-app terminal");
     println!("Depois cole o código impresso (formato BAST-XXXX-XXXX).");
     print!("código> ");
     io::stdout().flush()?;
@@ -149,7 +143,10 @@ async fn pair(client: &Client, base_url: &str) -> Result<Session> {
         .await
         .context("resposta inesperada de /auth/exchange")?;
     save_session(&session)?;
-    println!("Pareado como '{}'. 👾\n", session.device_name);
+    println!(
+        "Pareado como '{}' (dispositivo '{}'). ◈\n",
+        session.owner_id, session.device_name
+    );
     Ok(session)
 }
 
@@ -165,11 +162,11 @@ enum Line {
 }
 
 /// Builds the boxed welcome banner shown once at the top of a session.
-fn welcome_banner(device_name: &str, base_url: &str) -> Vec<String> {
+fn welcome_banner(owner_id: &str, device_name: &str, base_url: &str) -> Vec<String> {
     vec![
-        "👾 Pokédev — companheiro de bolso do dev".to_string(),
+        "◈ BASTION // LIFE OS".to_string(),
         String::new(),
-        format!("pareado como '{device_name}'"),
+        format!("owner: {owner_id} · device: {device_name}"),
         format!("daemon: {base_url}"),
         String::new(),
         "Enter envia · Esc/Ctrl+C sai · Ctrl+U limpa a linha".to_string(),
@@ -306,6 +303,7 @@ fn command_matches(input: &str) -> Vec<&'static CommandInfo> {
 }
 
 struct App {
+    owner_id: String,
     device_name: String,
     base_url: String,
     lines: Vec<Line>,
@@ -439,13 +437,16 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
 
     let header = Paragraph::new(RLine::from(vec![
         Span::styled(
-            " 👾 Pokédev ",
+            " ◈ BASTION ",
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Magenta)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(format!(" {} · {} ", app.device_name, app.base_url)),
+        Span::raw(format!(
+            " {} @ {} · {} ",
+            app.owner_id, app.device_name, app.base_url
+        )),
     ]));
     f.render_widget(header, chunks[0]);
 
@@ -473,7 +474,7 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
             Line::Bastion(t) => {
                 text_lines.push(RLine::from(vec![
                     Span::styled(
-                        "👾 Pokédev  ",
+                        "◈ Bastion  ",
                         Style::default()
                             .fg(Color::Magenta)
                             .add_modifier(Modifier::BOLD),
@@ -581,9 +582,14 @@ async fn run_app(
     );
 
     let mut app = App {
+        owner_id: session.owner_id.clone(),
         device_name: session.device_name.clone(),
         base_url: base_url.to_string(),
-        lines: vec![Line::Banner(welcome_banner(&session.device_name, base_url))],
+        lines: vec![Line::Banner(welcome_banner(
+            &session.owner_id,
+            &session.device_name,
+            base_url,
+        ))],
         input: String::new(),
         thinking: false,
         spinner_idx: 0,
@@ -690,6 +696,7 @@ async fn run_app(
                         *session = new_session;
                         enable_raw_mode()?;
                         execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                        app.owner_id = session.owner_id.clone();
                         app.device_name = session.device_name.clone();
                         app.lines.push(Line::System(format!(
                             "repareado como '{}'.",
@@ -713,19 +720,24 @@ fn install_panic_hook() {
     }));
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let args = Args::parse();
+pub async fn run(url: &str, token: Option<&str>, owner: &str) -> Result<()> {
     let client = Client::new();
 
-    let mut session = match load_session() {
-        Some(s) => s,
-        None => pair(&client, &args.url).await?,
+    let mut session = match token {
+        Some(jwt) => Session {
+            jwt: jwt.to_string(),
+            owner_id: owner.to_string(),
+            device_name: "terminal".to_string(),
+        },
+        None => match load_session() {
+            Some(s) => s,
+            None => pair(&client, url).await?,
+        },
     };
 
     println!(
-        "👾 Pareado como '{}' em {}. Entrando no Pokédev…",
-        session.device_name, args.url
+        "◈ Bastion conectado como '{}' em {}.",
+        session.owner_id, url
     );
 
     install_panic_hook();
@@ -733,7 +745,7 @@ async fn main() -> Result<()> {
     execute!(io::stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
-    let result = run_app(&mut terminal, &client, &args.url, &mut session).await;
+    let result = run_app(&mut terminal, &client, url, &mut session).await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;

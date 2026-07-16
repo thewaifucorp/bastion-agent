@@ -37,7 +37,7 @@ class Persona:
     current_weight: float
     domains: list[str]
     trigger_keywords: list[str]
-    clawhub_skills: list[str]
+    skills: list[str]
 
 
 @dataclass
@@ -143,7 +143,7 @@ def create_persona(
     name: str,
     domains: list[str],
     trigger_keywords: list[str],
-    clawhub_skills: list[str],
+    skills: list[str],
     base_weight: float,
     persistence: PersonaPersistenceProtocol,
 ) -> Persona:
@@ -154,7 +154,7 @@ def create_persona(
         name: Human-readable persona name.
         domains: List of knowledge/responsibility domains.
         trigger_keywords: Keywords that activate this persona.
-        clawhub_skills: ClawHub skill identifiers for this persona.
+        skills: Local Bastion skill identifiers assigned to this persona.
         base_weight: Fixed priority weight in [0.0, 1.0].
         persistence: Adapter that handles SOUL.md I/O.
 
@@ -173,7 +173,7 @@ def create_persona(
         current_weight=base_weight,  # initialised equal to base_weight
         domains=list(domains),
         trigger_keywords=list(trigger_keywords),
-        clawhub_skills=list(clawhub_skills),
+        skills=list(skills),
     )
 
     persistence.write_soul_md(persona)
@@ -237,7 +237,7 @@ def match_personas(
 
 
 # ---------------------------------------------------------------------------
-# CLI Interface for OpenClaw Agent
+# Bastion CLI interface
 # ---------------------------------------------------------------------------
 def main() -> None:
     import argparse
@@ -251,7 +251,7 @@ def main() -> None:
     create_parser.add_argument("--name", required=True)
     create_parser.add_argument("--domains", default="[]")
     create_parser.add_argument("--trigger-keywords", default="[]")
-    create_parser.add_argument("--clawhub-skills", default="[]")
+    create_parser.add_argument("--skills", default="[]")
     create_parser.add_argument("--base-weight", type=float, default=0.5)
 
     # match
@@ -274,7 +274,7 @@ def main() -> None:
     if args.command == "create":
         domains = json.loads(args.domains)
         t_keywords = json.loads(args.trigger_keywords)
-        c_skills = json.loads(args.clawhub_skills)
+        c_skills = json.loads(args.skills)
         p = create_persona(
             args.name, domains, t_keywords, c_skills, args.base_weight, DummyPersistence()
         )
@@ -291,7 +291,7 @@ def main() -> None:
                     current_weight=rp.get("current_weight", 0.5),
                     domains=rp.get("domains", []),
                     trigger_keywords=rp.get("trigger_keywords", []),
-                    clawhub_skills=rp.get("clawhub_skills", []),
+                    skills=rp.get("skills", []),
                 )
             )
         res = match_personas(args.message, p_list)

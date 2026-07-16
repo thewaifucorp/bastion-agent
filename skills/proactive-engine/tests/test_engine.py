@@ -15,12 +15,12 @@ from protocols import PersonaConfig
 from settings import ProactiveSettings
 
 
-def make_engine(default_settings, mock_life_log, mock_memupalace, mock_clawhub, personas=None):
+def make_engine(default_settings, mock_life_log, mock_memupalace, mock_skill_registry, personas=None):
     return ProactiveEngine(
         settings=default_settings,
         life_log=mock_life_log,
         memupalace=mock_memupalace,
-        clawhub=mock_clawhub,
+        skill_registry=mock_skill_registry,
         personas=personas or [PersonaConfig(slug="carreira", current_weight=0.8)],
         installed_skills=["life-log"],
     )
@@ -28,10 +28,10 @@ def make_engine(default_settings, mock_life_log, mock_memupalace, mock_clawhub, 
 
 @pytest.mark.asyncio
 async def test_run_cycle_failure_in_one_step_does_not_stop_others(
-    default_settings, mock_life_log, mock_memupalace, mock_clawhub
+    default_settings, mock_life_log, mock_memupalace, mock_skill_registry
 ):
     """A failure in one step must not prevent subsequent steps from running."""
-    engine = make_engine(default_settings, mock_life_log, mock_memupalace, mock_clawhub)
+    engine = make_engine(default_settings, mock_life_log, mock_memupalace, mock_skill_registry)
 
     # Make InactivityDetector raise
     mock_life_log.get_persona_summary.side_effect = RuntimeError("DB error")
@@ -48,9 +48,9 @@ async def test_run_cycle_failure_in_one_step_does_not_stop_others(
 
 @pytest.mark.asyncio
 async def test_run_cycle_updates_heartbeat_state(
-    default_settings, mock_life_log, mock_memupalace, mock_clawhub
+    default_settings, mock_life_log, mock_memupalace, mock_skill_registry
 ):
-    engine = make_engine(default_settings, mock_life_log, mock_memupalace, mock_clawhub)
+    engine = make_engine(default_settings, mock_life_log, mock_memupalace, mock_skill_registry)
     await engine.run_cycle()
 
     path = Path(default_settings.heartbeat_state_path)
@@ -62,14 +62,14 @@ async def test_run_cycle_updates_heartbeat_state(
 
 @pytest.mark.asyncio
 async def test_run_cycle_degraded_mode_memupalace_none(
-    default_settings, mock_life_log, mock_clawhub
+    default_settings, mock_life_log, mock_skill_registry
 ):
     """Engine with memupalace=None should complete run_cycle without error."""
     engine = ProactiveEngine(
         settings=default_settings,
         life_log=mock_life_log,
         memupalace=None,
-        clawhub=mock_clawhub,
+        skill_registry=mock_skill_registry,
         personas=[PersonaConfig(slug="carreira", current_weight=0.8)],
     )
     await engine.run_cycle()  # must not raise
@@ -77,12 +77,12 @@ async def test_run_cycle_degraded_mode_memupalace_none(
 
 @pytest.mark.asyncio
 async def test_run_cve_check_flushes_bus(
-    default_settings, mock_life_log, mock_memupalace, mock_clawhub
+    default_settings, mock_life_log, mock_memupalace, mock_skill_registry
 ):
-    mock_clawhub.get_batch_cves.return_value = {
+    mock_skill_registry.get_batch_cves.return_value = {
         "life-log": [{"cve_id": "CVE-001", "severity": "HIGH", "description": "test"}]
     }
-    engine = make_engine(default_settings, mock_life_log, mock_memupalace, mock_clawhub)
+    engine = make_engine(default_settings, mock_life_log, mock_memupalace, mock_skill_registry)
     await engine.run_cve_check()
 
     path = Path(default_settings.pending_events_path)
@@ -91,7 +91,7 @@ async def test_run_cve_check_flushes_bus(
 
 @pytest.mark.asyncio
 async def test_run_weekly_no_events_returns(
-    default_settings, mock_life_log, mock_memupalace, mock_clawhub
+    default_settings, mock_life_log, mock_memupalace, mock_skill_registry
 ):
-    engine = make_engine(default_settings, mock_life_log, mock_memupalace, mock_clawhub)
+    engine = make_engine(default_settings, mock_life_log, mock_memupalace, mock_skill_registry)
     await engine.run_weekly()  # must not raise

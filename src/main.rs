@@ -60,6 +60,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Open the official terminal UI and connect to a Bastion daemon
+    Chat {
+        /// Base URL of the daemon webhook server
+        #[arg(long, env = "BASTION_URL", default_value = "http://127.0.0.1:8080")]
+        url: String,
+        /// Existing owner token; prefer the BASTION_TOKEN environment variable
+        #[arg(long, env = "BASTION_TOKEN")]
+        token: Option<String>,
+        /// Canonical owner associated with --token
+        #[arg(long, env = "BASTION_OWNER_ID", default_value = "_local")]
+        owner: String,
+    },
     /// Execute a single-turn agent call and exit
     Agent {
         #[arg(short = 'm', long, help = "Message to send to the agent")]
@@ -98,6 +110,11 @@ async fn main() -> anyhow::Result<()> {
     // Load .env (if present) before any std::env::var read. Real shell env wins.
     dotenvy::dotenv().ok();
 
+    let cli = Cli::parse();
+    if let Command::Chat { url, token, owner } = &cli.command {
+        return bastion::tui::run(url, token.as_deref(), owner).await;
+    }
+
     // Load bastion.toml config (non-secret config only; secrets stay in .env)
     let config_path = std::env::var("BASTION_CONFIG").unwrap_or_else(|_| "bastion.toml".to_owned());
     let cfg = bastion::config::load_config(&config_path)?;
@@ -118,8 +135,6 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(log_file)
         .init();
-
-    let cli = Cli::parse();
 
     // Init SessionManager
     let db_path = cfg.session.db_path.clone();
@@ -327,6 +342,7 @@ async fn main() -> anyhow::Result<()> {
         ));
 
     match cli.command {
+        Command::Chat { .. } => unreachable!("chat is handled before daemon initialization"),
         Command::Agent { message } => {
             let response = agent.run_turn(&message).await?;
             println!("{}", response);
@@ -580,7 +596,14 @@ async fn daemon_loop(
     // scattered per-channel env vars (BASTION_WEBHOOK_OWNERS/BASTION_TELEGRAM_OWNERS).
     // This is the plan 10-09 deliverable that makes CHAN-02's "unified owner-based
     // routing" claim literally true — one mechanism, not N.
-    let webhook_owner_map = bastion::config::owner_map_for_webhook(&cfg.identity);
+    let mut webhook_owner_map = bastion::config::owner_map_for_webhook(&cfg.identity);
+    if let Ok(token) = std::env::var("BASTION_BOOTSTRAP_TOKEN") {
+        if !token.trim().is_empty() {
+            let owner = std::env::var("BASTION_OWNER_ID")
+                .unwrap_or_else(|_| bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string());
+            webhook_owner_map.0.insert(token, owner);
+        }
+    }
     let telegram_owner_map = bastion::config::owner_map_for_telegram(&cfg.identity);
     #[cfg(feature = "channels-extra")]
     let whatsapp_owner_map = bastion::config::owner_map_for_whatsapp(&cfg.identity);
@@ -591,232 +614,244 @@ async fn daemon_loop(
     #[cfg(feature = "channels-extra")]
     let email_owner_map = bastion::config::owner_map_for_email(&cfg.identity);
 
-    // Spawn webhook channel if BASTION_WEBHOOK_ADDR is set.
-    if let Ok(addr) = std::env::var("BASTION_WEBHOOK_ADDR") {
-        let h = agent_handle.clone();
-        let owner_map = webhook_owner_map;
-        // Phase 6: mesh connectivity — load peers from config, create broadcast channel for SSE.
-        let (events_tx, _) = tokio::sync::broadcast::channel::<String>(128);
-        let peer_map_initial = bastion::config::load_mesh_peers(cfg);
-        let mesh_peer_map = Arc::new(RwLock::new(peer_map_initial));
-        // WR-01/CR-04: APP_JWT_SECRET must be set — no insecure fallback. This is the
-        // actual `bastion daemon` startup path (serve_with_mesh performs no validation
-        // of its own); only `WebhookChannel::run`, which daemon_loop never calls, had
-        // the fail-closed check. Fail here instead of silently signing/verifying JWTs
-        // with a well-known default that anyone reading this public repo can use to
-        // impersonate any owner.
-        //
-        // Loop 3-D: resolved BY REFERENCE through the injected
-        // `SecretResolver` (env var today; a mounted-file/hosted secret
-        // manager transparently for an operator that sets
-        // `BASTION_SECRETS_DIR` or injects their own resolver in `main()`)
-        // rather than reading `std::env::var` directly — same contract as
-        // `BASTION_INFER_TOKEN` below.
-        let jwt_secret = secret_resolver
-            .resolve("APP_JWT_SECRET")
-            .map_err(|_| {
-                tracing::error!(
-                    event = "webhook_no_jwt_secret",
-                    "APP_JWT_SECRET is not set — refusing to start"
+    // A channel starts only when it is enabled in bastion.toml AND its required
+    // secret/address is present in the environment.
+    if cfg.channels.webhook.enabled {
+        if let Ok(addr) = std::env::var("BASTION_WEBHOOK_ADDR") {
+            let h = agent_handle.clone();
+            let owner_map = webhook_owner_map;
+            // Phase 6: mesh connectivity — load peers from config, create broadcast channel for SSE.
+            let (events_tx, _) = tokio::sync::broadcast::channel::<String>(128);
+            let peer_map_initial = bastion::config::load_mesh_peers(cfg);
+            let mesh_peer_map = Arc::new(RwLock::new(peer_map_initial));
+            // WR-01/CR-04: APP_JWT_SECRET must be set — no insecure fallback. This is the
+            // actual `bastion daemon` startup path (serve_with_mesh performs no validation
+            // of its own); only `WebhookChannel::run`, which daemon_loop never calls, had
+            // the fail-closed check. Fail here instead of silently signing/verifying JWTs
+            // with a well-known default that anyone reading this public repo can use to
+            // impersonate any owner.
+            //
+            // Loop 3-D: resolved BY REFERENCE through the injected
+            // `SecretResolver` (env var today; a mounted-file/hosted secret
+            // manager transparently for an operator that sets
+            // `BASTION_SECRETS_DIR` or injects their own resolver in `main()`)
+            // rather than reading `std::env::var` directly — same contract as
+            // `BASTION_INFER_TOKEN` below.
+            let jwt_secret = secret_resolver
+                .resolve("APP_JWT_SECRET")
+                .map_err(|_| {
+                    tracing::error!(
+                        event = "webhook_no_jwt_secret",
+                        "APP_JWT_SECRET is not set — refusing to start"
+                    );
+                    anyhow::anyhow!(
+                        "APP_JWT_SECRET must be set; refusing to start with a hardcoded default"
+                    )
+                })?
+                .expose_secret()
+                .to_string();
+
+            // Phase 6 Wave 2: P2PTransport + MeshSliceProvider when MESH_IDENTITY_KEY is set.
+            let (mesh_transport, mesh_slice_store) = if let Ok(identity_key) =
+                std::env::var("MESH_IDENTITY_KEY")
+            {
+                let local_owner = std::env::var("BASTION_OWNER_ID")
+                    .unwrap_or_else(|_| bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string());
+                let transport = bastion_mesh::mesh::p2p::P2PTransport::new(
+                    local_owner.clone(),
+                    identity_key,
+                    mesh_peer_map.clone(),
+                    events_tx.clone(),
                 );
-                anyhow::anyhow!(
-                    "APP_JWT_SECRET must be set; refusing to start with a hardcoded default"
-                )
-            })?
-            .expose_secret()
-            .to_string();
+                let shared: bastion_mesh::mesh::SharedMeshTransport = Arc::new(transport);
 
-        // Phase 6 Wave 2: P2PTransport + MeshSliceProvider when MESH_IDENTITY_KEY is set.
-        let (mesh_transport, mesh_slice_store) = if let Ok(identity_key) =
-            std::env::var("MESH_IDENTITY_KEY")
-        {
-            let local_owner = std::env::var("BASTION_OWNER_ID")
-                .unwrap_or_else(|_| bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string());
-            let transport = bastion_mesh::mesh::p2p::P2PTransport::new(
-                local_owner.clone(),
-                identity_key,
-                mesh_peer_map.clone(),
-                events_tx.clone(),
-            );
-            let shared: bastion_mesh::mesh::SharedMeshTransport = Arc::new(transport);
+                // MeshSliceProvider::new returns (provider, store); build the `from_store`
+                // provider here (M2 P5 despejo — `add_mesh_slice_provider` is gone from the
+                // loop; it only receives an already-built `TurnContextProvider` boxed now).
+                let (_, store) = bastion_mesh::mesh::context_provider::MeshSliceProvider::new(
+                    local_owner.clone(),
+                );
+                // WR-06: mirrors the removed `add_mesh_slice_provider`'s OWN owner
+                // resolution exactly (BASTION_OWNER_ID, then MESH_OWNER_ID, then
+                // DEFAULT_OWNER) — deliberately NOT the outer `local_owner` above (no
+                // MESH_OWNER_ID fallback there); preserved verbatim, not reconciled.
+                let local_owner_for_mesh_provider = std::env::var("BASTION_OWNER_ID")
+                    .or_else(|_| std::env::var("MESH_OWNER_ID"))
+                    .unwrap_or_else(|_| bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string());
+                let mesh_provider =
+                    bastion_mesh::mesh::context_provider::MeshSliceProvider::from_store(
+                        local_owner_for_mesh_provider,
+                        store.clone(),
+                    );
+                agent.add_context_provider(Box::new(mesh_provider));
+                tracing::info!(
+                    event = "mesh_slice_provider_registered",
+                    "MeshSliceProvider registered in context_providers (SEAM #2)"
+                );
 
-            // MeshSliceProvider::new returns (provider, store); build the `from_store`
-            // provider here (M2 P5 despejo — `add_mesh_slice_provider` is gone from the
-            // loop; it only receives an already-built `TurnContextProvider` boxed now).
-            let (_, store) =
-                bastion_mesh::mesh::context_provider::MeshSliceProvider::new(local_owner.clone());
-            // WR-06: mirrors the removed `add_mesh_slice_provider`'s OWN owner
-            // resolution exactly (BASTION_OWNER_ID, then MESH_OWNER_ID, then
-            // DEFAULT_OWNER) — deliberately NOT the outer `local_owner` above (no
-            // MESH_OWNER_ID fallback there); preserved verbatim, not reconciled.
-            let local_owner_for_mesh_provider = std::env::var("BASTION_OWNER_ID")
-                .or_else(|_| std::env::var("MESH_OWNER_ID"))
-                .unwrap_or_else(|_| bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string());
-            let mesh_provider = bastion_mesh::mesh::context_provider::MeshSliceProvider::from_store(
-                local_owner_for_mesh_provider,
-                store.clone(),
-            );
-            agent.add_context_provider(Box::new(mesh_provider));
-            tracing::info!(
-                event = "mesh_slice_provider_registered",
-                "MeshSliceProvider registered in context_providers (SEAM #2)"
-            );
+                // Periodic mesh sync (mesh.sync_interval minutes, default 15; 0 = disable)
+                let sync_interval = cfg.mesh.sync_interval;
+                let _mesh_sync_handle = bastion_mesh::scheduler::cron::spawn_mesh_sync_job(
+                    shared.clone(),
+                    mesh_peer_map.clone(),
+                    agent.memory.clone(),
+                    local_owner,
+                    sync_interval,
+                );
+                tracing::info!(
+                    event = "mesh_transport_enabled",
+                    sync_interval_minutes = sync_interval
+                );
 
-            // Periodic mesh sync (mesh.sync_interval minutes, default 15; 0 = disable)
-            let sync_interval = cfg.mesh.sync_interval;
-            let _mesh_sync_handle = bastion_mesh::scheduler::cron::spawn_mesh_sync_job(
-                shared.clone(),
-                mesh_peer_map.clone(),
-                agent.memory.clone(),
-                local_owner,
-                sync_interval,
-            );
-            tracing::info!(
-                event = "mesh_transport_enabled",
-                sync_interval_minutes = sync_interval
-            );
+                (Some(shared), Some(store))
+            } else {
+                tracing::info!(
+                    event = "mesh_transport_disabled",
+                    "MESH_IDENTITY_KEY not set — mesh disabled"
+                );
+                (None, None)
+            };
 
-            (Some(shared), Some(store))
-        } else {
-            tracing::info!(
-                event = "mesh_transport_disabled",
-                "MESH_IDENTITY_KEY not set — mesh disabled"
-            );
-            (None, None)
-        };
+            // agent_identity was already loaded above (line ~170) — reuse outer scope.
+            let agent_name =
+                std::env::var("BASTION_AGENT_NAME").unwrap_or_else(|_| "bastion".to_string());
 
-        // agent_identity was already loaded above (line ~170) — reuse outer scope.
-        let agent_name =
-            std::env::var("BASTION_AGENT_NAME").unwrap_or_else(|_| "bastion".to_string());
-
-        // Build MCP Streamable HTTP server if enabled.
-        // M3-05: compiled only under the `mcp-server` feature; without it,
-        // `mcp_routes` is always `None` (and an enabled config is warned about).
-        #[cfg(feature = "mcp-server")]
-        let mcp_routes = if cfg.mcp_server.enabled {
-            // Clone AgentLoop components that BastionMcpServer needs.
-            let cap_registry = Arc::new(agent.capability_registry.clone());
-            let mem = agent.memory.clone();
-            let personas = Arc::new(registry_for_product.clone());
-            let goals = goals_for_product.clone();
-            let local_owner = std::env::var("BASTION_OWNER_ID")
-                .unwrap_or_else(|_| bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string());
-            let token_perms = build_token_perms(cfg);
-            // WR-06: after CR-01's fail-closed auth fix, an empty token map means the
-            // server is enabled but permanently unreachable (no token can ever match) —
-            // the safe direction, but still a likely operator mistake worth surfacing
-            // instead of a silent "MCP server doesn't work" support report.
-            if token_perms.is_empty() {
-                tracing::warn!(
+            // Build MCP Streamable HTTP server if enabled.
+            // M3-05: compiled only under the `mcp-server` feature; without it,
+            // `mcp_routes` is always `None` (and an enabled config is warned about).
+            #[cfg(feature = "mcp-server")]
+            let mcp_routes = if cfg.mcp_server.enabled {
+                // Clone AgentLoop components that BastionMcpServer needs.
+                let cap_registry = Arc::new(agent.capability_registry.clone());
+                let mem = agent.memory.clone();
+                let personas = Arc::new(registry_for_product.clone());
+                let goals = goals_for_product.clone();
+                let local_owner = std::env::var("BASTION_OWNER_ID")
+                    .unwrap_or_else(|_| bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string());
+                let token_perms = build_token_perms(cfg);
+                // WR-06: after CR-01's fail-closed auth fix, an empty token map means the
+                // server is enabled but permanently unreachable (no token can ever match) —
+                // the safe direction, but still a likely operator mistake worth surfacing
+                // instead of a silent "MCP server doesn't work" support report.
+                if token_perms.is_empty() {
+                    tracing::warn!(
                     event = "mcp_server_no_tokens_configured",
                     "mcp_server.enabled=true but [mcp_server.tokens] is empty — no client can authenticate"
                 );
-            }
-            let router = bastion::mcp::server::build_mcp_axum_router(
-                cap_registry,
-                mem,
-                personas,
-                goals,
-                token_perms,
-                local_owner,
-                &cfg.mcp_server.mount_path,
-            );
-            tracing::info!(
-                event = "mcp_server_enabled",
-                mount_path = %cfg.mcp_server.mount_path,
-            );
-            Some(router)
-        } else {
-            tracing::info!(event = "mcp_server_disabled");
-            None
-        };
-        #[cfg(not(feature = "mcp-server"))]
-        let mcp_routes: Option<axum::Router> = {
-            if cfg.mcp_server.enabled {
-                tracing::warn!(
+                }
+                let router = bastion::mcp::server::build_mcp_axum_router(
+                    cap_registry,
+                    mem,
+                    personas,
+                    goals,
+                    token_perms,
+                    local_owner,
+                    &cfg.mcp_server.mount_path,
+                );
+                tracing::info!(
+                    event = "mcp_server_enabled",
+                    mount_path = %cfg.mcp_server.mount_path,
+                );
+                Some(router)
+            } else {
+                tracing::info!(event = "mcp_server_disabled");
+                None
+            };
+            #[cfg(not(feature = "mcp-server"))]
+            let mcp_routes: Option<axum::Router> = {
+                if cfg.mcp_server.enabled {
+                    tracing::warn!(
                     event = "mcp_server_not_compiled",
                     "mcp_server.enabled=true but this binary was built without the `mcp-server` feature"
                 );
-            }
-            None
-        };
-
-        // CR-02: create an OtcStore and pass it to serve_with_mesh so skill commands
-        // can insert BAST-XXXX codes for /auth/exchange and /mesh/pair.
-        // The same Arc is injected into the agent so the /connect-app REPL command
-        // writes codes the webhook server reads (06-08 OTC-writer wiring).
-        let otc_store = bastion::channel::webhook::new_otc_store();
-        command_resources.otc_store = Some(otc_store.clone());
-
-        // SEC-03: mirrors the OTC store wiring above — inject the same ComposioOAuth
-        // Arc into both the command dispatch (for /connect-app-composio) and
-        // serve_with_mesh (for the /auth/composio/callback route), only when configured.
-        if let Some(oauth) = &composio_oauth {
-            command_resources.composio_oauth = Some(oauth.clone());
-        }
-
-        // WhatsApp (CHAN-01): reuses this same webhook router (10-RESEARCH.md
-        // Pattern 1) — no second axum server. `WHATSAPP_PHONE_NUMBER_ID` presence
-        // gates whether we attempt to build a sender at all.
-        // M3-05: runtime wiring gated under `channels-extra` (the module itself
-        // always compiles — its types thread through the webhook router).
-        #[cfg(feature = "channels-extra")]
-        let whatsapp_config = if std::env::var("WHATSAPP_PHONE_NUMBER_ID").is_ok() {
-            match bastion::channel::whatsapp::WhatsAppSender::from_env() {
-                Ok(sender) => Some(bastion::channel::whatsapp::WhatsAppConfig {
-                    owner_map: whatsapp_owner_map,
-                    sender: std::sync::Arc::new(sender),
-                }),
-                Err(e) => {
-                    tracing::warn!(event = "whatsapp_start_failed", error = %e);
-                    None
                 }
+                None
+            };
+
+            // CR-02: create an OtcStore and pass it to serve_with_mesh so skill commands
+            // can insert BAST-XXXX codes for /auth/exchange and /mesh/pair.
+            // The same Arc is injected into the agent so the /connect-app REPL command
+            // writes codes the webhook server reads (06-08 OTC-writer wiring).
+            let otc_store = bastion::channel::webhook::new_otc_store();
+            command_resources.otc_store = Some(otc_store.clone());
+
+            // SEC-03: mirrors the OTC store wiring above — inject the same ComposioOAuth
+            // Arc into both the command dispatch (for /connect-app-composio) and
+            // serve_with_mesh (for the /auth/composio/callback route), only when configured.
+            if let Some(oauth) = &composio_oauth {
+                command_resources.composio_oauth = Some(oauth.clone());
             }
-        } else {
-            None
-        };
-        #[cfg(not(feature = "channels-extra"))]
-        let whatsapp_config: Option<bastion::channel::whatsapp::WhatsAppConfig> = {
-            if std::env::var("WHATSAPP_PHONE_NUMBER_ID").is_ok() {
-                tracing::warn!(
+
+            // WhatsApp (CHAN-01): reuses this same webhook router (10-RESEARCH.md
+            // Pattern 1) — no second axum server. `WHATSAPP_PHONE_NUMBER_ID` presence
+            // gates whether we attempt to build a sender at all.
+            // M3-05: runtime wiring gated under `channels-extra` (the module itself
+            // always compiles — its types thread through the webhook router).
+            #[cfg(feature = "channels-extra")]
+            let whatsapp_config = if cfg.channels.whatsapp.as_ref().is_some_and(|c| c.enabled)
+                && std::env::var("WHATSAPP_PHONE_NUMBER_ID").is_ok()
+            {
+                match bastion::channel::whatsapp::WhatsAppSender::from_env() {
+                    Ok(sender) => Some(bastion::channel::whatsapp::WhatsAppConfig {
+                        owner_map: whatsapp_owner_map,
+                        sender: std::sync::Arc::new(sender),
+                    }),
+                    Err(e) => {
+                        tracing::warn!(event = "whatsapp_start_failed", error = %e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            #[cfg(not(feature = "channels-extra"))]
+            let whatsapp_config: Option<bastion::channel::whatsapp::WhatsAppConfig> = {
+                if std::env::var("WHATSAPP_PHONE_NUMBER_ID").is_ok() {
+                    tracing::warn!(
                     event = "whatsapp_not_compiled",
                     "WHATSAPP_PHONE_NUMBER_ID is set but this binary was built without the `channels-extra` feature"
                 );
-            }
-            None
-        };
+                }
+                None
+            };
 
-        // Cloned BEFORE the `async move` block below — `readiness`/`lifecycle`
-        // are used again later in `daemon_loop` (readiness.mark_channels_ready()
-        // right before the select! loop; the shutdown/reload arms inside it),
-        // so the ORIGINAL bindings must survive this spawn, not be moved into it.
-        let readiness_for_webhook = readiness.clone();
-        let lifecycle_for_webhook = lifecycle.clone();
-        tokio::spawn(async move {
-            if let Err(e) = bastion::channel::webhook::serve_with_mesh(
-                h,
-                &addr,
-                owner_map,
-                events_tx,
-                mesh_peer_map,
-                jwt_secret,
-                mesh_transport,
-                mesh_slice_store,
-                otc_store,
-                agent_identity,
-                agent_name,
-                mcp_routes,
-                whatsapp_config,
-                composio_oauth.clone(),
-                readiness_for_webhook,
-                lifecycle_for_webhook,
-            )
-            .await
-            {
-                tracing::error!(event = "webhook_error", error = %e, "webhook channel terminated");
-            }
-        });
-        tracing::info!(event = "webhook_started", addr = %std::env::var("BASTION_WEBHOOK_ADDR").unwrap_or_default());
+            // Cloned BEFORE the `async move` block below — `readiness`/`lifecycle`
+            // are used again later in `daemon_loop` (readiness.mark_channels_ready()
+            // right before the select! loop; the shutdown/reload arms inside it),
+            // so the ORIGINAL bindings must survive this spawn, not be moved into it.
+            let readiness_for_webhook = readiness.clone();
+            let lifecycle_for_webhook = lifecycle.clone();
+            tokio::spawn(async move {
+                if let Err(e) = bastion::channel::webhook::serve_with_mesh(
+                    h,
+                    &addr,
+                    owner_map,
+                    events_tx,
+                    mesh_peer_map,
+                    jwt_secret,
+                    mesh_transport,
+                    mesh_slice_store,
+                    otc_store,
+                    agent_identity,
+                    agent_name,
+                    mcp_routes,
+                    whatsapp_config,
+                    composio_oauth.clone(),
+                    readiness_for_webhook,
+                    lifecycle_for_webhook,
+                )
+                .await
+                {
+                    tracing::error!(event = "webhook_error", error = %e, "webhook channel terminated");
+                }
+            });
+            tracing::info!(event = "webhook_started", addr = %std::env::var("BASTION_WEBHOOK_ADDR").unwrap_or_default());
+        } else {
+            tracing::warn!(
+                event = "webhook_enabled_without_addr",
+                "channels.webhook.enabled=true but BASTION_WEBHOOK_ADDR is not set"
+            );
+        }
     } else {
         #[cfg(feature = "channels-extra")]
         if std::env::var("WHATSAPP_PHONE_NUMBER_ID").is_ok() {
@@ -827,8 +862,7 @@ async fn daemon_loop(
         }
     }
 
-    // Spawn Telegram channel if TELEGRAM_BOT_TOKEN is set.
-    if std::env::var("TELEGRAM_BOT_TOKEN").is_ok() {
+    if cfg.channels.telegram.enabled && std::env::var("TELEGRAM_BOT_TOKEN").is_ok() {
         match bastion::channel::telegram::TelegramChannel::from_env() {
             Ok(tg) => {
                 let tg = tg.with_owner_map(telegram_owner_map);
@@ -850,7 +884,9 @@ async fn daemon_loop(
     // Spawn Discord channel if DISCORD_BOT_TOKEN is set (CHAN-03).
     // M3-05: compiled only under `channels-extra` (serenity dep).
     #[cfg(feature = "channels-extra")]
-    if std::env::var("DISCORD_BOT_TOKEN").is_ok() {
+    if cfg.channels.discord.as_ref().is_some_and(|c| c.enabled)
+        && std::env::var("DISCORD_BOT_TOKEN").is_ok()
+    {
         match bastion::channel::discord::DiscordChannel::from_env() {
             Ok(ch) => {
                 let ch = ch.with_owner_map(discord_owner_map);
@@ -872,7 +908,10 @@ async fn daemon_loop(
     // Spawn Slack channel if SLACK_BOT_TOKEN and SLACK_APP_TOKEN are set (CHAN-03).
     // M3-05: compiled only under `channels-extra` (slack-morphism dep).
     #[cfg(feature = "channels-extra")]
-    if std::env::var("SLACK_BOT_TOKEN").is_ok() && std::env::var("SLACK_APP_TOKEN").is_ok() {
+    if cfg.channels.slack.as_ref().is_some_and(|c| c.enabled)
+        && std::env::var("SLACK_BOT_TOKEN").is_ok()
+        && std::env::var("SLACK_APP_TOKEN").is_ok()
+    {
         match bastion::channel::slack::SlackChannel::from_env() {
             Ok(ch) => {
                 let ch = ch.with_owner_map(slack_owner_map);
@@ -894,7 +933,9 @@ async fn daemon_loop(
     // Spawn Email channel if EMAIL_ADDRESS is set (CHAN-03).
     // M3-05: compiled only under `channels-extra` (lettre/async-imap deps).
     #[cfg(feature = "channels-extra")]
-    if std::env::var("EMAIL_ADDRESS").is_ok() {
+    if cfg.channels.email.as_ref().is_some_and(|c| c.enabled)
+        && std::env::var("EMAIL_ADDRESS").is_ok()
+    {
         match bastion::channel::email::EmailChannel::from_env() {
             Ok(ch) => {
                 let ch = ch.with_owner_map(email_owner_map);
