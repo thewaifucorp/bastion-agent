@@ -178,6 +178,8 @@ rustpotter     = { version = "3.0.2", optional = true }
 # transitive dependency — not a Bastion bug; `half` isn't used anywhere else
 # in this workspace (`cargo tree -i half` shows only the rustpotter subtree).
 half           = { version = "=2.4.1", optional = true }
+ratatui-image = { version = "11.0.6", default-features = false, features = ["crossterm"] }
+image = { version = "0.25.10", default-features = false }
 
 [dev-dependencies]
 tokio-test   = "0.4"
@@ -190,6 +192,11 @@ rstest       = "0.25"
 [[test]]
 name = "evals"
 path = "tests/evals/mod.rs"
+
+[profile.dev]
+# Full debuginfo across the heavy ML deps (candle/gemm) inflates target/ past
+# 8 GiB; line tables keep panics/backtraces readable at a fraction of the size.
+debug = "line-tables-only"
 
 [profile.release]
 opt-level     = "z"   # size-optimize (not speed)

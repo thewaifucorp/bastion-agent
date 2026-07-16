@@ -43,8 +43,8 @@ for how that differs from the library crates it depends on).
 - Official `bastion chat` terminal UI, with daemon URL, owner, and token
   configuration through CLI flags or `BASTION_*` environment variables.
 - Bootstrap-token access for a fresh self-hosted deployment.
-- Docker and installer smoke coverage in CI, plus a dedicated
-  `requirements-dev.txt` for Python skill suites.
+- Docker and installer smoke coverage in CI, plus a dedicated Python
+  development dependency group for skill suites.
 - Explicit memory-system lineage and attribution for the ideas combined from
   Mem0 and MemPalace.
 

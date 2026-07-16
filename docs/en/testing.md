@@ -20,7 +20,8 @@ all of `skills/` in one pytest process causes duplicate `tests` module names to
 collide.
 
 ```bash
-python3 -m pip install -r requirements-dev.txt
+python3 -m pip install --upgrade "pip>=25.1"
+python3 -m pip install --group dev
 (cd skills/skill-writer && python3 -m pytest -q)
 (cd skills/proactive-engine && python3 -m pytest -q)
 (cd skills/weight-system && python3 -m pytest -q)

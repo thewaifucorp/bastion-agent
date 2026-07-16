@@ -95,21 +95,21 @@ fn default_interval_ms() -> u64 {
 impl PetPack {
     pub(super) fn load(path: &Path) -> Result<Self> {
         let metadata = std::fs::metadata(path)
-            .with_context(|| format!("lendo pet pack {}", path.display()))?;
+            .with_context(|| format!("reading pet pack {}", path.display()))?;
         if metadata.len() > MAX_PACK_BYTES {
-            bail!("pet pack excede o limite de {MAX_PACK_BYTES} bytes");
+            bail!("pet pack exceeds the limit of {MAX_PACK_BYTES} bytes");
         }
         let contents = std::fs::read_to_string(path)
-            .with_context(|| format!("lendo pet pack {}", path.display()))?;
+            .with_context(|| format!("reading pet pack {}", path.display()))?;
         let pack: Self = toml::from_str(&contents)
-            .with_context(|| format!("pet pack TOML inválido em {}", path.display()))?;
+            .with_context(|| format!("invalid pet pack TOML at {}", path.display()))?;
         pack.validate()?;
         Ok(pack)
     }
 
     fn validate(&self) -> Result<()> {
         if self.schema != 1 {
-            bail!("pet pack usa schema {}, esperado 1", self.schema);
+            bail!("pet pack uses schema {}, expected 1", self.schema);
         }
         let id_parts: Vec<&str> = self.id.split('/').collect();
         if id_parts.len() != 2
@@ -120,10 +120,10 @@ impl PetPack {
                         .any(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
             })
         {
-            bail!("pet pack id deve usar publisher/name em lowercase");
+            bail!("pet pack id must use lowercase publisher/name");
         }
         if self.name.trim().is_empty() || self.name.chars().count() > 32 {
-            bail!("pet pack name deve ter entre 1 e 32 caracteres");
+            bail!("pet pack name must be between 1 and 32 characters");
         }
         if let Some(color) = &self.palette.primary {
             validate_hex(color)?;
@@ -161,14 +161,14 @@ impl PetPack {
 impl Animation {
     fn validate(&self, state: &str) -> Result<()> {
         if !(90..=10_000).contains(&self.interval_ms) {
-            bail!("estado {state}: interval_ms deve estar entre 90 e 10000");
+            bail!("state {state}: interval_ms must be between 90 and 10000");
         }
         if self.frames.is_empty() || self.frames.len() > 16 {
-            bail!("estado {state}: frames deve conter entre 1 e 16 quadros");
+            bail!("state {state}: frames must contain between 1 and 16 frames");
         }
         for (frame_index, frame) in self.frames.iter().enumerate() {
             if frame.is_empty() || frame.len() > MAX_FRAME_ROWS {
-                bail!("estado {state}, frame {frame_index}: use 1 a {MAX_FRAME_ROWS} linhas");
+                bail!("state {state}, frame {frame_index}: use 1 to {MAX_FRAME_ROWS} rows");
             }
             for line in frame {
                 validate_line(state, frame_index, line)?;
@@ -180,11 +180,11 @@ impl Animation {
 
 fn validate_line(state: &str, frame_index: usize, line: &str) -> Result<()> {
     if line.chars().any(|c| c.is_control()) {
-        bail!("estado {state}, frame {frame_index}: caracteres de controle não são permitidos");
+        bail!("state {state}, frame {frame_index}: control characters are not allowed");
     }
     let visible = strip_markup(line)?;
     if visible.width() > MAX_FRAME_WIDTH {
-        bail!("estado {state}, frame {frame_index}: largura máxima é {MAX_FRAME_WIDTH} colunas");
+        bail!("state {state}, frame {frame_index}: max width is {MAX_FRAME_WIDTH} columns");
     }
     Ok(())
 }
@@ -196,17 +196,17 @@ pub(super) fn strip_markup(line: &str) -> Result<String> {
         visible.push_str(&rest[..start]);
         let after = &rest[start + 1..];
         let Some(end) = after.find('}') else {
-            bail!("markup de cor sem fechamento");
+            bail!("color markup without a closing brace");
         };
         let tag = &after[..end];
         if !ALLOWED_MARKUP.contains(&tag) {
-            bail!("markup de cor desconhecido: {{{tag}}}");
+            bail!("unknown color markup: {{{tag}}}");
         }
         rest = &after[end + 1..];
     }
     visible.push_str(rest);
     if visible.contains('}') {
-        bail!("markup de cor com fechamento inesperado");
+        bail!("color markup with an unexpected closing brace");
     }
     Ok(visible)
 }
@@ -214,7 +214,7 @@ pub(super) fn strip_markup(line: &str) -> Result<String> {
 fn validate_hex(value: &str) -> Result<()> {
     let value = value.strip_prefix('#').unwrap_or(value);
     if value.len() != 6 || !value.chars().all(|c| c.is_ascii_hexdigit()) {
-        bail!("cor inválida '{value}'; use #RRGGBB");
+        bail!("invalid color '{value}'; use #RRGGBB");
     }
     Ok(())
 }
@@ -278,7 +278,7 @@ impl CompanionState {
 
     pub(super) fn save(&self) -> Result<()> {
         let path = state_path();
-        let parent = path.parent().context("companion state sem diretório")?;
+        let parent = path.parent().context("companion state without a parent directory")?;
         super::ensure_private_dir(parent)?;
         super::write_private_file(&path, serde_json::to_string_pretty(self)?.as_bytes())
     }
@@ -369,7 +369,7 @@ impl CompanionState {
 
     pub(super) fn needs_status(&self) -> String {
         format!(
-            "{} água · {} comida · {} brincar · {} descanso",
+            "{} water · {} food · {} play · {} rest",
             need_label(self.active_since_water_secs, WATER_DUE_SECS),
             need_label(self.active_since_food_secs, FOOD_DUE_SECS),
             need_label(self.active_since_play_secs, PLAY_DUE_SECS),
@@ -399,7 +399,7 @@ impl CompanionState {
     pub(super) fn status(&self) -> String {
         let (current, target) = self.progress();
         format!(
-            "LV {} · XP {current}/{target} · {} turnos",
+            "LV {} · XP {current}/{target} · {} turns",
             self.level(),
             self.successful_turns
         )
@@ -423,9 +423,9 @@ fn unix_now() -> u64 {
 
 fn need_label(active: u64, due: u64) -> &'static str {
     if active >= due {
-        "agora"
+        "now"
     } else if active * 4 >= due * 3 {
-        "logo"
+        "soon"
     } else {
         "ok"
     }

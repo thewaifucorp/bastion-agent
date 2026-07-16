@@ -138,6 +138,13 @@ runtime, waits for readiness, consumes the owner-scoped bootstrap token from
 the installation, and opens the TUI. A pairing code is only requested when
 connecting to a remote Bastion that has no cached session.
 
+> **Mascot rendering:** the TUI draws the pixel-art Keeper as a real image on
+> terminals with a graphics protocol — Kitty, WezTerm, Ghostty, foot, Konsole,
+> iTerm2, and VS Code with `"terminal.integrated.enableImages": true`. On
+> terminals without one (Zed's built-in terminal, stock GNOME Terminal), it
+> falls back to a minimal glyph face. Set `BASTION_TUI_GRAPHICS=off` to force
+> the fallback.
+
 To verify the HTTP surface directly:
 
 ```bash

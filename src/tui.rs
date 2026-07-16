@@ -168,16 +168,16 @@ async fn runtime_ready(client: &Client, base_url: &str) -> bool {
 }
 
 fn start_compose(compose_dir: &Path) -> Result<bool> {
-    println!("◈ Runtime local ausente; iniciando o Bastion com Docker Compose…");
+    println!("◈ Local runtime missing; starting Bastion with Docker Compose…");
     match Command::new("docker")
         .args(["compose", "up", "-d"])
         .current_dir(compose_dir)
         .status()
     {
         Ok(status) if status.success() => Ok(true),
-        Ok(status) => bail!("Docker Compose terminou com {status}"),
+        Ok(status) => bail!("Docker Compose exited with {status}"),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error).context("não foi possível executar docker compose"),
+        Err(error) => Err(error).context("could not run docker compose"),
     }
 }
 
@@ -186,7 +186,7 @@ fn ensure_compose_port(compose_dir: &Path) -> Result<()> {
         .args(["compose", "port", "core", "8080"])
         .current_dir(compose_dir)
         .output()
-        .context("verificando a porta publicada pelo Docker Compose")?;
+        .context("checking the port published by Docker Compose")?;
     let published = String::from_utf8_lossy(&output.stdout);
     if output.status.success() && !published.trim().is_empty() {
         return Ok(());
@@ -194,21 +194,21 @@ fn ensure_compose_port(compose_dir: &Path) -> Result<()> {
 
     let detail = String::from_utf8_lossy(&output.stderr);
     bail!(
-        "o container core iniciou sem publicar a porta HTTP; verifique se BASTION_PUBLISH_HOST e BASTION_HTTP_PORT estão livres ({})",
+        "the core container started without publishing the HTTP port; check that BASTION_PUBLISH_HOST and BASTION_HTTP_PORT are free ({})",
         detail.trim()
     )
 }
 
 fn start_native_daemon() -> Result<()> {
-    println!("◈ Iniciando daemon Bastion local em background…");
-    let executable = std::env::current_exe().context("localizando o executável do Bastion")?;
+    println!("◈ Starting the local Bastion daemon in the background…");
+    let executable = std::env::current_exe().context("locating the Bastion executable")?;
     let mut child = Command::new(executable)
         .arg("daemon")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()
-        .context("iniciando daemon Bastion local")?;
+        .context("starting the local Bastion daemon")?;
     std::thread::spawn(move || {
         let _ = child.wait();
     });
@@ -221,11 +221,11 @@ async fn ensure_runtime(client: &Client, base_url: &str, auto_start: bool) -> Re
     }
 
     if !is_local_url(base_url) {
-        bail!("runtime remoto indisponível ou ainda não pronto em {base_url}");
+        bail!("remote runtime unavailable or not ready yet at {base_url}");
     }
     if !auto_start {
         bail!(
-            "runtime local indisponível em {base_url}; inicie `bastion daemon` ou remova --no-auto-start"
+            "local runtime unavailable at {base_url}; start `bastion daemon` or drop --no-auto-start"
         );
     }
 
@@ -249,14 +249,14 @@ async fn ensure_runtime(client: &Client, base_url: &str, auto_start: bool) -> Re
     let started_at = Instant::now();
     while started_at.elapsed() < STARTUP_TIMEOUT {
         if runtime_ready(client, base_url).await {
-            println!("◈ Runtime Bastion pronto.");
+            println!("◈ Bastion runtime ready.");
             return Ok(());
         }
         tokio::time::sleep(STARTUP_POLL_INTERVAL).await;
     }
 
     bail!(
-        "o runtime foi iniciado, mas não ficou pronto em {}s; verifique `docker compose logs core` ou `.bastion/bastion.log`",
+        "the runtime started but was not ready within {}s; check `docker compose logs core` or `.bastion/bastion.log`",
         STARTUP_TIMEOUT.as_secs()
     )
 }
@@ -265,16 +265,16 @@ async fn ensure_runtime(client: &Client, base_url: &str, auto_start: bool) -> Re
 /// are entered (and again, suspended back to plain mode, if a session expires
 /// mid-run), so it stays simple stdin/stdout instead of an in-TUI text field.
 async fn pair(client: &Client, base_url: &str) -> Result<Session> {
-    println!("◈ Nenhuma sessão Bastion pareada encontrada.");
-    println!("Em um canal já autorizado, digite: /connect-app terminal");
-    println!("Depois cole o código impresso (formato BAST-XXXX-XXXX).");
-    print!("código> ");
+    println!("◈ No paired Bastion session found.");
+    println!("In an already-authorized channel, type: /connect-app terminal");
+    println!("Then paste the printed code (format BAST-XXXX-XXXX).");
+    print!("code> ");
     io::stdout().flush()?;
     let mut otc = String::new();
     io::stdin().read_line(&mut otc)?;
     let otc = otc.trim();
     if otc.is_empty() {
-        bail!("pareamento cancelado — nenhum código informado");
+        bail!("pairing cancelled — no code entered");
     }
 
     let resp = client
@@ -283,12 +283,12 @@ async fn pair(client: &Client, base_url: &str) -> Result<Session> {
         .send()
         .await
         .context(
-            "não foi possível conectar ao daemon — BASTION_WEBHOOK_ADDR está setado e o daemon rodando?",
+            "could not reach the daemon — is BASTION_WEBHOOK_ADDR set and the daemon running?",
         )?;
 
     if !resp.status().is_success() {
         bail!(
-            "pareamento falhou: HTTP {} (código expirado ou desconhecido?)",
+            "pairing failed: HTTP {} (expired or unknown code?)",
             resp.status()
         );
     }
@@ -296,10 +296,10 @@ async fn pair(client: &Client, base_url: &str) -> Result<Session> {
     let session: Session = resp
         .json()
         .await
-        .context("resposta inesperada de /auth/exchange")?;
+        .context("unexpected response from /auth/exchange")?;
     save_session(&session)?;
     println!(
-        "Pareado como '{}' (dispositivo '{}'). ◈\n",
+        "Paired as '{}' (device '{}'). ◈\n",
         session.owner_id, session.device_name
     );
     Ok(session)
@@ -345,170 +345,170 @@ struct CommandInfo {
 const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "/pet",
-        usage: "/pet <ação>",
-        desc: "cuida e configura o companion — digite espaço para ver as ações",
+        usage: "/pet <action>",
+        desc: "care for and configure the companion — type space to see actions",
         remote: false,
     },
     CommandInfo {
         name: "/theme",
         usage: "/theme <nome|#RRGGBB>",
-        desc: "troca as cores da TUI na hora — digite espaço para ver os temas",
+        desc: "switch the TUI colors instantly — type space to see themes",
         remote: false,
     },
     CommandInfo {
         name: "/help",
         usage: "/help",
-        desc: "mostra os comandos",
+        desc: "list the commands",
         remote: true,
     },
     CommandInfo {
         name: "/contest",
         usage: "/contest <id>",
-        desc: "revoga uma crença por ID",
+        desc: "revoke a belief by ID",
         remote: true,
     },
     CommandInfo {
         name: "/model",
         usage: "/model <nome>",
-        desc: "troca o modelo — console-only, afeta o daemon inteiro",
+        desc: "switch the model — console-only, affects the whole daemon",
         remote: false,
     },
     CommandInfo {
         name: "/as",
         usage: "/as <persona>",
-        desc: "força persona no próximo turno — console-only",
+        desc: "force a persona for the next turn — console-only",
         remote: false,
     },
     CommandInfo {
         name: "/cabinet",
         usage: "/cabinet [personas..]",
-        desc: "convoca o Cabinet — console-only",
+        desc: "convene the Cabinet — console-only",
         remote: false,
     },
     CommandInfo {
         name: "/logs",
         usage: "/logs",
-        desc: "erros recentes do daemon — console-only",
+        desc: "recent daemon errors — console-only",
         remote: false,
     },
     CommandInfo {
         name: "/stop",
         usage: "/stop",
-        desc: "desliga o daemon — console-only",
+        desc: "shut down the daemon — console-only",
         remote: false,
     },
     CommandInfo {
         name: "/connect-app",
         usage: "/connect-app <device>",
-        desc: "pareia um novo dispositivo — console-only",
+        desc: "pair a new device — console-only",
         remote: false,
     },
 ];
 
-/// Ações locais do `/pet`, expandidas no menu assim que o usuário digita o
-/// espaço — cada entrada é o comando completo para Tab/Enter completarem
-/// direto, sem argumento a adivinhar (exceto `use`, que pede um caminho).
+/// Local `/pet` actions, expanded in the menu as soon as the user types the
+/// space — each entry is the full command so Tab/Enter complete it directly,
+/// with no argument to guess (except `use`, which takes a path).
 const PET_COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "/pet stats",
         usage: "/pet stats",
-        desc: "nível, XP e necessidades do companion",
+        desc: "companion level, XP, and needs",
         remote: false,
     },
     CommandInfo {
         name: "/pet game on",
         usage: "/pet game on",
-        desc: "liga o game mode — XP por turno concluído",
+        desc: "turn game mode on — XP per completed turn",
         remote: false,
     },
     CommandInfo {
         name: "/pet game off",
         usage: "/pet game off",
-        desc: "desliga o game mode",
+        desc: "turn game mode off",
         remote: false,
     },
     CommandInfo {
         name: "/pet water",
         usage: "/pet water",
-        desc: "hidrata o companion (beba água você também)",
+        desc: "hydrate the companion (drink some water yourself too)",
         remote: false,
     },
     CommandInfo {
         name: "/pet feed",
         usage: "/pet feed",
-        desc: "alimenta o companion",
+        desc: "feed the companion",
         remote: false,
     },
     CommandInfo {
         name: "/pet play",
         usage: "/pet play",
-        desc: "registra uma pausa curta — alongar, caminhar, respirar",
+        desc: "log a short break — stretch, walk, breathe",
         remote: false,
     },
     CommandInfo {
         name: "/pet sleep",
         usage: "/pet sleep",
-        desc: "descansa o companion e zera as necessidades",
+        desc: "rest the companion and reset its needs",
         remote: false,
     },
     CommandInfo {
         name: "/pet use",
         usage: "/pet use <pet.toml|builtin>",
-        desc: "troca o pet pack ativo",
+        desc: "switch the active pet pack",
         remote: false,
     },
 ];
 
-/// Temas nomeados do `/theme`, expandidos no menu após o espaço — mesma
-/// mecânica do `/pet`. Cores hex (`/theme #RRGGBB`) são digitadas direto.
+/// Named `/theme` themes, expanded in the menu after the space — same
+/// mechanic as `/pet`. Hex colors (`/theme #RRGGBB`) are typed directly.
 const THEME_COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "/theme rgb",
         usage: "/theme rgb",
-        desc: "ciclo de cores por estado — o padrão vivo",
+        desc: "state-driven color cycle — the lively default",
         remote: false,
     },
     CommandInfo {
         name: "/theme cyan",
         usage: "/theme cyan",
-        desc: "monocromático ciano",
+        desc: "monochrome cyan",
         remote: false,
     },
     CommandInfo {
         name: "/theme blue",
         usage: "/theme blue",
-        desc: "monocromático azul",
+        desc: "monochrome blue",
         remote: false,
     },
     CommandInfo {
         name: "/theme magenta",
         usage: "/theme magenta",
-        desc: "monocromático magenta",
+        desc: "monochrome magenta",
         remote: false,
     },
     CommandInfo {
         name: "/theme amber",
         usage: "/theme amber",
-        desc: "monocromático âmbar",
+        desc: "monochrome amber",
         remote: false,
     },
     CommandInfo {
         name: "/theme green",
         usage: "/theme green",
-        desc: "monocromático verde — modo matrix",
+        desc: "monochrome green — matrix mode",
         remote: false,
     },
     CommandInfo {
         name: "/theme mono",
         usage: "/theme mono",
-        desc: "sem cor de destaque",
+        desc: "no accent color",
         remote: false,
     },
 ];
 
 /// Matches while typing the command token; a space normally closes the menu
 /// (the user is typing arguments), except after `/pet ` and `/theme `, where
-/// the menu switches to the subcommand list so as opções ficam visíveis.
+/// the menu switches to the subcommand list so the options stay visible.
 fn command_matches(input: &str) -> Vec<&'static CommandInfo> {
     if input.is_empty() || !input.starts_with('/') {
         return vec![];
@@ -534,8 +534,8 @@ fn command_matches(input: &str) -> Vec<&'static CommandInfo> {
         .collect()
 }
 
-/// `/theme` é resolvido inteiro na TUI: aplica na hora e persiste em
-/// `~/.config/bastion/tui.json` (bastion.toml continua valendo como base).
+/// `/theme` is fully resolved in the TUI: applies instantly and persists in
+/// `~/.config/bastion/tui.json` (bastion.toml still provides the base).
 fn theme_command(app: &mut App, input: &str) -> Option<String> {
     let mut parts = input.split_whitespace();
     if parts.next()? != "/theme" {
@@ -543,16 +543,16 @@ fn theme_command(app: &mut App, input: &str) -> Option<String> {
     }
     let response = match parts.next() {
         None => format!(
-            "{}\nUso: /theme <{}|#RRGGBB>",
+            "{}\nUsage: /theme <{}|#RRGGBB>",
             app.appearance.theme_status(),
             visual::THEME_NAMES.join("|")
         ),
         Some(value) if value.starts_with('#') => match app.appearance.apply_accent(value) {
-            Ok(()) => format!("Accent {value} aplicado e salvo."),
+            Ok(()) => format!("Accent {value} applied and saved."),
             Err(error) => format!("{error}"),
         },
         Some(name) => match app.appearance.apply_theme(name) {
-            Ok(()) => format!("Tema {name} aplicado e salvo."),
+            Ok(()) => format!("Theme {name} applied and saved."),
             Err(error) => format!("{error}"),
         },
     };
@@ -568,13 +568,13 @@ fn companion_command(app: &mut App, input: &str) -> Option<(String, VisualMode)>
     let mut mode = VisualMode::Success;
     let response = match command {
         "stats" => format!(
-            "Companion: {}\nNecessidades: {}\nGame mode: {}",
+            "Companion: {}\nNeeds: {}\nGame mode: {}",
             app.companion.status(),
             app.companion.needs_status(),
             if app.companion.game_enabled {
-                "ligado"
+                "on"
             } else {
-                "desligado"
+                "off"
             }
         ),
         "game" => match parts.next() {
@@ -582,37 +582,37 @@ fn companion_command(app: &mut App, input: &str) -> Option<(String, VisualMode)>
                 app.companion.game_enabled = true;
                 save_companion(
                     app,
-                    "Game mode ligado. O progresso recompensa turnos concluídos, nunca volume de tokens.",
+                    "Game mode on. Progress rewards completed turns, never token volume.",
                 )
             }
             Some("off") => {
                 app.companion.game_enabled = false;
                 save_companion(
                     app,
-                    "Game mode desligado. O companion visual continua ativo.",
+                    "Game mode off. The visual companion stays active.",
                 )
             }
-            _ => "Uso: /pet game <on|off>".into(),
+            _ => "Usage: /pet game <on|off>".into(),
         },
         "water" | "drink" => {
             app.companion.care(CareAction::Water);
             save_companion(
                 app,
-                "Keeper hidratado. Bom momento para você beber água também.",
+                "Keeper hydrated. Good moment to drink some water yourself.",
             )
         }
         "feed" => {
             app.companion.care(CareAction::Feed);
             save_companion(
                 app,
-                "Keeper alimentado. O cuidado do companion fica separado do seu progresso.",
+                "Keeper fed. Companion care stays separate from your progress.",
             )
         }
         "play" => {
             app.companion.care(CareAction::Play);
             save_companion(
                 app,
-                "Pausa para brincar concluída. Alongue, caminhe, respire ou escolha qualquer reset curto que funcione para você.",
+                "Play break logged. Stretch, walk, breathe, or pick any short reset that works for you.",
             )
         }
         "sleep" | "rest" => {
@@ -620,37 +620,37 @@ fn companion_command(app: &mut App, input: &str) -> Option<(String, VisualMode)>
             mode = VisualMode::Sleep;
             save_companion(
                 app,
-                "Companion descansando. Seu progresso está seguro; considere encerrar sua sessão longa também.",
+                "Companion resting. Your progress is safe; consider wrapping up your long session too.",
             )
         }
         "use" => match parts.next() {
             Some("builtin") => {
                 app.appearance.pet = None;
                 app.companion.pet_path = None;
-                save_companion(app, "Usando a família nativa de companions do Bastion.")
+                save_companion(app, "Using Bastion's native companion family.")
             }
             Some(path) => {
                 let path = PathBuf::from(path);
                 match app.appearance.use_pet(&path) {
                     Ok(()) => {
                         app.companion.pet_path = Some(path);
-                        save_companion(app, "Pet pack customizado carregado.")
+                        save_companion(app, "Custom pet pack loaded.")
                     }
-                    Err(error) => format!("Não foi possível carregar o pet pack: {error}"),
+                    Err(error) => format!("Could not load the pet pack: {error}"),
                 }
             }
-            None => "Uso: /pet use <pet.toml|builtin>".into(),
+            None => "Usage: /pet use <pet.toml|builtin>".into(),
         },
         _ => {
             mode = VisualMode::Unknown;
-            "Uso: /pet <stats|game on|off|feed|water|play|sleep|use>".into()
+            "Usage: /pet <stats|game on|off|feed|water|play|sleep|use>".into()
         }
     };
     Some((response, mode))
 }
 
-/// Quanto tempo o rosto de um estado local fica na tela antes de voltar ao
-/// guard — descanso e dúvida merecem uma pausa maior que um sucesso.
+/// How long a local state face stays on screen before settling back to
+/// guard — rest and doubt deserve a longer beat than a success.
 fn settle_after(mode: VisualMode) -> Duration {
     match mode {
         VisualMode::Sleep => Duration::from_millis(4000),
@@ -659,9 +659,9 @@ fn settle_after(mode: VisualMode) -> Duration {
     }
 }
 
-/// Comando de barra que não existe nem local nem no daemon (COMMANDS espelha
-/// `src/agent/command.rs`): responde na hora com o Keeper em dúvida, sem
-/// gastar um turno do runtime.
+/// Slash command that exists neither locally nor in the daemon (COMMANDS
+/// mirrors `src/agent/command.rs`): answers instantly with the Keeper in
+/// doubt, without spending a runtime turn.
 fn unknown_command(text: &str) -> Option<String> {
     if !text.starts_with('/') {
         return None;
@@ -671,23 +671,23 @@ fn unknown_command(text: &str) -> Option<String> {
         return None;
     }
     Some(format!(
-        "Comando desconhecido: {first}. Digite / para ver o menu ou /help para a lista completa."
+        "Unknown command: {first}. Type / to open the menu or /help for the full list."
     ))
 }
 
 fn save_companion(app: &App, success: &str) -> String {
     match app.companion.save() {
         Ok(()) => success.to_string(),
-        Err(error) => format!("A mudança vale nesta sessão, mas não pôde ser salva: {error}"),
+        Err(error) => format!("The change applies to this session but could not be saved: {error}"),
     }
 }
 
 fn care_cue(cue: CareCue) -> &'static str {
     match cue {
-        CareCue::Water => "Keeper está com sede — /pet water (e pegue água para você também).",
-        CareCue::Feed => "Keeper está com fome — /pet feed para alimentá-lo.",
-        CareCue::Play => "Keeper quer um reset curto — /pet play quando você escolher pausar.",
-        CareCue::Sleep => "Esta sessão ativa está longa — /pet sleep quando for hora de parar.",
+        CareCue::Water => "Keeper is thirsty — /pet water (grab some water for yourself too).",
+        CareCue::Feed => "Keeper is hungry — /pet feed to feed it.",
+        CareCue::Play => "Keeper wants a short reset — /pet play whenever you choose to pause.",
+        CareCue::Sleep => "This active session is getting long — /pet sleep when it's time to stop.",
     }
 }
 
@@ -712,14 +712,14 @@ pub fn companion_event(kind: &str, source: &str) -> Result<String> {
         _ => bail!("unknown companion event '{kind}'"),
     }
     state.save()?;
-    Ok(format!("evento do companion registrado: {kind} ({source})"))
+    Ok(format!("companion event recorded: {kind} ({source})"))
 }
 
 fn companion_activity(state: &mut CompanionState, source: &str) -> Result<String> {
     let cue = state.record_source_activity(source);
     state.save()?;
     Ok(cue.map_or_else(
-        || format!("evento do companion registrado: activity ({source})"),
+        || format!("companion event recorded: activity ({source})"),
         |due| care_cue(due).to_string(),
     ))
 }
@@ -727,10 +727,10 @@ fn companion_activity(state: &mut CompanionState, source: &str) -> Result<String
 pub fn companion_care(action: &str) -> Result<String> {
     let mut state = CompanionState::load(false);
     let (care, message) = match action {
-        "water" => (CareAction::Water, "companion hidratado"),
-        "feed" => (CareAction::Feed, "companion alimentado"),
-        "play" => (CareAction::Play, "pausa do companion registrada"),
-        "sleep" | "rest" => (CareAction::Sleep, "companion descansando"),
+        "water" => (CareAction::Water, "companion hydrated"),
+        "feed" => (CareAction::Feed, "companion fed"),
+        "play" => (CareAction::Play, "companion break logged"),
+        "sleep" | "rest" => (CareAction::Sleep, "companion resting"),
         _ => bail!("unknown companion care action '{action}'"),
     };
     state.care(care);
@@ -745,9 +745,9 @@ pub fn companion_status() -> String {
         state.status(),
         state.needs_status(),
         if state.game_enabled {
-            "ligado"
+            "on"
         } else {
-            "desligado"
+            "off"
         }
     )
 }
@@ -768,6 +768,10 @@ struct App {
     /// the input text changes so it never points past the new match set.
     suggestion_idx: usize,
     companion: CompanionState,
+    /// Graphics-protocol handle from startup; `None` means text fallback.
+    picker: Option<ratatui_image::picker::Picker>,
+    /// One cached protocol per native sprite, keyed by sprite name.
+    sprites: std::collections::HashMap<&'static str, ratatui_image::protocol::StatefulProtocol>,
 }
 
 fn spawn_key_reader(tx: UnboundedSender<AppMsg>) {
@@ -847,10 +851,10 @@ fn spawn_turn(
             Ok(resp) if resp.status() == StatusCode::UNAUTHORIZED => TurnOutcome::Unauthorized,
             Ok(resp) if resp.status().is_success() => match resp.json::<WebhookOut>().await {
                 Ok(out) => TurnOutcome::Reply(out.reply),
-                Err(e) => TurnOutcome::Error(format!("resposta inválida: {e}")),
+                Err(e) => TurnOutcome::Error(format!("invalid response: {e}")),
             },
             Ok(resp) => TurnOutcome::Error(format!("HTTP {}", resp.status())),
-            Err(e) => TurnOutcome::Error(format!("requisição falhou: {e}")),
+            Err(e) => TurnOutcome::Error(format!("request failed: {e}")),
         };
         let _ = tx.send(AppMsg::Turn(outcome));
     });
@@ -878,7 +882,7 @@ fn suggestion_height(input: &str) -> u16 {
     }
 }
 
-fn draw(f: &mut ratatui::Frame, app: &App) {
+fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let area = f.area();
     let identity_height = visual::identity_height(area, &app.appearance);
     let mut companion_parts = Vec::new();
@@ -903,6 +907,21 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
         ])
         .split(area);
 
+    // O sprite via protocolo gráfico só vale para o mascote nativo; um pet
+    // pack customizado continua desenhando frames de texto.
+    let sprite = match (&app.picker, app.appearance.pet.is_none()) {
+        (Some(picker), true) => {
+            let blink = app.appearance.animations && app.animation_tick % 32 < 3;
+            let (key, map) = visual::native_sprite(app.visual_mode, blink);
+            Some(
+                app.sprites
+                    .entry(key)
+                    .or_insert_with(|| picker.new_resize_protocol(visual::sprite_image(&map))),
+            )
+        }
+        _ => None,
+    };
+
     visual::render_identity(
         f,
         chunks[0],
@@ -914,6 +933,7 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
             mode: app.visual_mode,
             tick: app.animation_tick,
             companion: companion_status.as_deref(),
+            sprite,
         },
     );
 
@@ -1021,14 +1041,14 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
         let suggestion_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(app.appearance.muted()))
-            .title(" ↑↓ escolhe · Tab/Enter completa ");
+            .title(" ↑↓ select · Tab/Enter completes ");
         f.render_widget(Paragraph::new(items).block(suggestion_block), chunks[2]);
     }
 
     let input_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(app.appearance.accent(app.visual_mode)))
-        .title(" mensagem — Enter envia · Esc/Ctrl+C sai · Ctrl+U limpa ");
+        .title(" message — Enter sends · Esc/Ctrl+C quits · Ctrl+U clears ");
     let input = Paragraph::new(app.input.as_str())
         .style(Style::default().fg(app.appearance.text()))
         .block(input_block);
@@ -1044,6 +1064,7 @@ async fn run_app(
     client: &Client,
     base_url: &str,
     session: &mut Session,
+    picker: Option<ratatui_image::picker::Picker>,
 ) -> Result<()> {
     let (tx, mut rx) = unbounded_channel::<AppMsg>();
 
@@ -1057,6 +1078,7 @@ async fn run_app(
     );
 
     let mut appearance = Appearance::load();
+    appearance.graphics = picker.is_some();
     let companion = CompanionState::load(appearance.game_default);
     if let Some(path) = &companion.pet_path {
         let _ = appearance.use_pet(path);
@@ -1066,7 +1088,7 @@ async fn run_app(
         device_name: session.device_name.clone(),
         base_url: base_url.to_string(),
         lines: vec![Line::Event(
-            "Bastion pronto. Conte o que precisa cuidar agora.".to_string(),
+            "Bastion ready. Tell me what needs attention.".to_string(),
         )],
         input: String::new(),
         thinking: false,
@@ -1077,10 +1099,12 @@ async fn run_app(
         appearance,
         suggestion_idx: 0,
         companion,
+        picker,
+        sprites: std::collections::HashMap::new(),
     };
 
     loop {
-        terminal.draw(|f| draw(f, &app))?;
+        terminal.draw(|f| draw(f, &mut app))?;
 
         let Some(msg) = rx.recv().await else {
             break;
@@ -1207,12 +1231,12 @@ async fn run_app(
                         let completed_mode = app.visual_mode;
                         if let Some(level) = app.companion.award_success(completed_mode) {
                             app.lines.push(Line::Event(format!(
-                                "Companion chegou ao nível {level}. Nenhuma capability ou permissão mudou."
+                                "Companion reached level {level}. No capabilities or permissions changed."
                             )));
                         }
                         if let Err(error) = app.companion.save() {
                             app.lines.push(Line::Event(format!(
-                                "Progresso do companion não pôde ser salvo: {error}"
+                                "Companion progress could not be saved: {error}"
                             )));
                         }
                         app.visual_mode = VisualMode::Success;
@@ -1222,21 +1246,21 @@ async fn run_app(
                     TurnOutcome::Error(e) => {
                         app.visual_mode = VisualMode::Alert;
                         app.settle_at = None;
-                        app.lines.push(Line::System(format!("erro: {e}")));
+                        app.lines.push(Line::System(format!("error: {e}")));
                     }
                     TurnOutcome::Unauthorized => {
                         app.visual_mode = VisualMode::Alert;
                         app.lines.push(Line::System(
-                            "sessão expirada — repareando (tela suspensa)…".into(),
+                            "session expired — re-pairing (screen suspended)…".into(),
                         ));
-                        terminal.draw(|f| draw(f, &app))?;
+                        terminal.draw(|f| draw(f, &mut app))?;
                         clear_session();
                         disable_raw_mode()?;
                         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                         let new_session = match local_bootstrap_token(base_url) {
                             Some(token) => token_session(&token, &session.owner_id),
                             None if is_local_url(base_url) => bail!(
-                                "sessão local expirou e BASTION_BOOTSTRAP_TOKEN não está disponível"
+                                "local session expired and BASTION_BOOTSTRAP_TOKEN is not available"
                             ),
                             None => pair(client, base_url).await?,
                         };
@@ -1281,22 +1305,35 @@ pub async fn run(url: &str, token: Option<&str>, owner: &str, auto_start: bool) 
         (None, Some(saved), _) => saved,
         (None, None, Some(local_token)) => token_session(&local_token, owner),
         (None, None, None) if is_local_url(url) => bail!(
-            "runtime local pronto, mas BASTION_BOOTSTRAP_TOKEN não foi encontrado; execute a partir da instalação que contém `.env` ou passe --token"
+            "local runtime ready, but BASTION_BOOTSTRAP_TOKEN was not found; run from the installation containing `.env` or pass --token"
         ),
         (None, None, None) => pair(&client, url).await?,
     };
 
     println!(
-        "◈ Bastion conectado como '{}' em {}.",
+        "◈ Bastion connected as '{}' at {}.",
         session.owner_id, url
     );
+
+    // Ask the terminal for a graphics protocol (sixel/kitty/iTerm2) before
+    // entering the alternate screen; the query talks over stdio. When only
+    // the half-block fallback is available, our own text renderer is nicer.
+    let graphics_off = std::env::var("BASTION_TUI_GRAPHICS")
+        .map(|value| matches!(value.trim(), "0" | "false" | "no" | "off"))
+        .unwrap_or(false);
+    let picker = (!graphics_off)
+        .then(|| ratatui_image::picker::Picker::from_query_stdio().ok())
+        .flatten()
+        .filter(|picker| {
+            picker.protocol_type() != ratatui_image::picker::ProtocolType::Halfblocks
+        });
 
     install_panic_hook();
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
-    let result = run_app(&mut terminal, &client, url, &mut session).await;
+    let result = run_app(&mut terminal, &client, url, &mut session, picker).await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;

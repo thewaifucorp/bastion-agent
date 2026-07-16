@@ -1,5 +1,5 @@
 use anyhow::{bail, Context};
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -24,10 +24,10 @@ pub(super) enum VisualMode {
     Cabinet,
     Success,
     Alert,
-    /// Comando de barra que não existe — o Keeper fica em dúvida (olhos
-    /// abertos, não felizes) com uma interrogação âmbar.
+    /// Slash command that does not exist — the Keeper is in doubt (open eyes,
+    /// not happy ones) with an amber question mark.
     Unknown,
-    /// `/pet sleep` / fim de sessão longa — rosto de descanso com zzz.
+    /// `/pet sleep` / end of a long session — resting face with zzz.
     Sleep,
 }
 
@@ -61,9 +61,9 @@ enum Theme {
 pub(super) const THEME_NAMES: &[&str] =
     &["rgb", "cyan", "blue", "magenta", "amber", "green", "mono"];
 
-/// Preferências de tema persistidas pelo `/theme` — vivem fora do
-/// `bastion.toml` para o comando poder salvar sem reescrever config de
-/// projeto. Precedência: bastion.toml < tui.json < variáveis de ambiente.
+/// Theme preferences persisted by `/theme` — they live outside
+/// `bastion.toml` so the command can save without rewriting project config.
+/// Precedence: bastion.toml < tui.json < environment variables.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct ThemePrefs {
     theme: Option<String>,
@@ -88,7 +88,7 @@ impl ThemePrefs {
 
     fn save(&self) -> anyhow::Result<()> {
         let path = theme_prefs_path();
-        let parent = path.parent().context("tema sem diretório")?;
+        let parent = path.parent().context("theme prefs without a parent directory")?;
         super::ensure_private_dir(parent)?;
         super::write_private_file(&path, serde_json::to_string_pretty(self)?.as_bytes())
     }
@@ -102,6 +102,9 @@ pub(super) struct Appearance {
     pub(super) animations: bool,
     pub(super) game_default: bool,
     pub(super) pet: Option<PetPack>,
+    /// True when the terminal answered the graphics-protocol query at startup
+    /// (sixel/kitty/iTerm2) — the native mascot then renders as a real image.
+    pub(super) graphics: bool,
     no_color: bool,
     prefs: ThemePrefs,
 }
@@ -131,6 +134,7 @@ impl Default for Appearance {
             animations: true,
             game_default: false,
             pet: None,
+            graphics: false,
             no_color: std::env::var_os("NO_COLOR").is_some(),
             prefs: ThemePrefs::default(),
         }
@@ -190,18 +194,19 @@ impl Appearance {
             animations: raw.animations.unwrap_or(true),
             game_default: raw.game.unwrap_or(false),
             pet,
+            graphics: false,
             no_color: std::env::var_os("NO_COLOR").is_some(),
             prefs: ThemePrefs::default(),
         }
     }
 
-    /// Aplica um tema nomeado na hora e persiste em `tui.json`. Um tema
-    /// nomeado limpa o accent customizado — senão o accent continuaria
-    /// mascarando a troca.
+    /// Applies a named theme instantly and persists it in `tui.json`. A named
+    /// theme clears the custom accent — otherwise the accent would keep
+    /// masking the switch.
     pub(super) fn apply_theme(&mut self, name: &str) -> anyhow::Result<()> {
         let name = name.trim().to_ascii_lowercase();
         if !THEME_NAMES.contains(&name.as_str()) {
-            bail!("tema desconhecido '{name}'; use {}", THEME_NAMES.join("|"));
+            bail!("unknown theme '{name}'; use {}", THEME_NAMES.join("|"));
         }
         self.theme = parse_theme(&name);
         self.accent = None;
@@ -210,10 +215,10 @@ impl Appearance {
         self.prefs.save()
     }
 
-    /// Aplica uma cor de accent `#RRGGBB` na hora e persiste em `tui.json`.
+    /// Applies a `#RRGGBB` accent color instantly and persists it in `tui.json`.
     pub(super) fn apply_accent(&mut self, hex: &str) -> anyhow::Result<()> {
         let Some(color) = parse_hex_color(hex) else {
-            bail!("cor inválida '{hex}'; use #RRGGBB");
+            bail!("invalid color '{hex}'; use #RRGGBB");
         };
         self.accent = Some(color);
         self.prefs.accent = Some(hex.trim().to_string());
@@ -227,8 +232,8 @@ impl Appearance {
             .clone()
             .unwrap_or_else(|| format!("{:?}", self.theme).to_ascii_lowercase());
         match &self.prefs.accent {
-            Some(accent) => format!("tema {theme} · accent {accent}"),
-            None => format!("tema {theme}"),
+            Some(accent) => format!("theme {theme} · accent {accent}"),
+            None => format!("theme {theme}"),
         }
     }
 
@@ -384,10 +389,24 @@ pub(super) fn mode_for_event(event: &str) -> Option<VisualMode> {
 pub(super) fn identity_height(area: Rect, appearance: &Appearance) -> u16 {
     if !appearance.mascot || area.width < 56 || area.height < 18 {
         1
-    } else if area.width < 82 || area.height < 28 {
-        6
+    } else if appearance.pet.is_some() {
+        // Pet packs draw text frames of up to 6 lines — they keep the older
+        // panel and collapse on tight terminals.
+        if area.width < 82 || area.height < 28 {
+            6
+        } else {
+            9
+        }
+    } else if appearance.graphics {
+        // Real pixels via sixel/kitty/iTerm2: small panel, one size only.
+        7
     } else {
-        10
+        // Glyph-face text fallback: 3 lines full, eye line only when tight.
+        if area.width < 82 || area.height < 28 {
+            4
+        } else {
+            5
+        }
     }
 }
 
@@ -398,6 +417,9 @@ pub(super) struct Identity<'a> {
     pub(super) mode: VisualMode,
     pub(super) tick: usize,
     pub(super) companion: Option<&'a str>,
+    /// Present when the terminal supports a graphics protocol: the mascot is
+    /// drawn as a real image instead of text cells.
+    pub(super) sprite: Option<&'a mut ratatui_image::protocol::StatefulProtocol>,
 }
 
 pub(super) fn render_identity(
@@ -438,20 +460,36 @@ pub(super) fn render_identity(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    let mascot_width = if identity.sprite.is_some() {
+        18
+    } else if appearance.pet.is_some() {
+        23
+    } else {
+        // Glyph face: 9-cell box + fixed seal slot.
+        14
+    };
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(26), Constraint::Min(20)])
+        .constraints([Constraint::Length(mascot_width), Constraint::Min(20)])
         .split(inner);
-    frame.render_widget(
-        Paragraph::new(mascot_lines(
-            identity.mode,
-            identity.tick,
-            appearance,
-            area.height < 9,
-        ))
-        .alignment(Alignment::Center),
-        columns[0],
-    );
+    match identity.sprite {
+        Some(protocol) => {
+            let image = ratatui_image::StatefulImage::new().resize(
+                ratatui_image::Resize::Fit(Some(image::imageops::FilterType::Nearest)),
+            );
+            frame.render_stateful_widget(image, columns[0].inner(Margin::new(1, 0)), protocol);
+        }
+        None => frame.render_widget(
+            Paragraph::new(mascot_lines(
+                identity.mode,
+                identity.tick,
+                appearance,
+                area.height < 5,
+            ))
+            .alignment(Alignment::Center),
+            columns[0],
+        ),
+    }
 
     let mut brand = vec![Span::styled("╺ ", Style::default().fg(appearance.muted()))];
     brand.extend(logo_spans(appearance, identity.tick));
@@ -459,7 +497,7 @@ pub(super) fn render_identity(
     let mut info = vec![Line::from(brand)];
     if area.height >= 9 || identity.companion.is_none() {
         info.push(Line::styled(
-            "LIFE OS // confiável por design",
+            "LIFE OS // trustworthy by design",
             Style::default().fg(appearance.muted()),
         ));
     }
@@ -511,27 +549,151 @@ fn mascot_lines(
     if let Some(pack) = &appearance.pet {
         return custom_pet_lines(pack, mode, tick, appearance, compact);
     }
-    let blink = appearance.animations && tick % 32 < 3;
-    let map: &[&str] = match mode {
-        VisualMode::Onboarding | VisualMode::Guard => {
-            if blink {
-                &KEEPER_GUARD_BLINK
-            } else {
-                &KEEPER_GUARD
-            }
-        }
-        VisualMode::Thinking | VisualMode::Build => &KEEPER_THINKING,
-        VisualMode::Cabinet => &PATCHWORK_CABINET,
-        VisualMode::Success => &KEEPER_SUCCESS,
-        VisualMode::Alert => &KEEPER_ERROR,
-        VisualMode::Unknown => &KEEPER_UNKNOWN,
-        VisualMode::Sleep => &KEEPER_SLEEP,
-    };
-    sprite_lines(map, compact, appearance.no_color)
+    glyph_face(mode, appearance.animations && tick % 32 < 3, appearance, compact)
 }
 
-/// Paleta dos sprites nativos — o traço aprovado do teste de mascote:
-/// aço claro, moldura azul, visor escuro e rosto colorido por estado.
+/// Text fallback (no graphics protocol): a minimal glyph face — real font
+/// glyphs render crisp at any size, unlike block-cell pixel art, which reads
+/// as a wall of squares at text resolution. Eyes only, no mouth; the state
+/// seal sits in a fixed slot on the right so nothing ever shifts.
+fn glyph_face(
+    mode: VisualMode,
+    blink: bool,
+    appearance: &Appearance,
+    compact: bool,
+) -> Vec<Line<'static>> {
+    let steel = Color::Rgb(142, 163, 186);
+    let blue = Color::Rgb(79, 141, 253);
+    let cyan = Color::Rgb(56, 217, 245);
+    let green = Color::Rgb(62, 224, 140);
+    let magenta = Color::Rgb(232, 107, 240);
+    let amber = Color::Rgb(245, 177, 61);
+    let white = Color::Rgb(232, 242, 252);
+
+    // ASCII-only face: geometric glyphs (◉ ◠ ○ …) are East-Asian-ambiguous
+    // width — some terminals (Zed) draw them 2 cells wide while ratatui
+    // counts 1, shearing the frame. ASCII and block elements are safe.
+    let (eyes, face, seal, seal_color): (&str, Color, &str, Color) = match mode {
+        VisualMode::Onboarding | VisualMode::Guard => {
+            (if blink { "-   -" } else { "^   ^" }, cyan, " ", green)
+        }
+        VisualMode::Thinking | VisualMode::Build => ("o   o", cyan, ".", cyan),
+        VisualMode::Success => ("^   ^", green, "*", green),
+        VisualMode::Alert => ("x   x", magenta, "!", magenta),
+        VisualMode::Unknown => ("o   o", amber, "?", amber),
+        VisualMode::Sleep => ("-   -", blue, "z", cyan),
+        VisualMode::Cabinet => ("^   ^", white, "+", magenta),
+    };
+    // Cabinet is Patchwork: frame stitched blue|green instead of steel.
+    let (frame_left, frame_right) = if mode == VisualMode::Cabinet {
+        (blue, green)
+    } else {
+        (steel, steel)
+    };
+
+    let style = |color: Color| {
+        if appearance.no_color {
+            Style::default()
+        } else {
+            Style::default().fg(color)
+        }
+    };
+    let eye_line = Line::from(vec![
+        Span::styled("▌ ", style(frame_left)),
+        Span::styled(eyes.to_string(), style(face).add_modifier(Modifier::BOLD)),
+        Span::styled(" ▐ ", style(frame_right)),
+        Span::styled(seal.to_string(), style(seal_color).add_modifier(Modifier::BOLD)),
+    ]);
+    if compact {
+        return vec![eye_line];
+    }
+    // Every line must have the SAME width (the eye line carries a 2-cell seal
+    // slot) — the paragraph is center-aligned, so unequal widths shift the
+    // middle line sideways and tear the frame apart.
+    let cap = |glyph: char| {
+        Line::from(vec![
+            Span::styled(format!(" {}", glyph.to_string().repeat(4)), style(frame_left)),
+            Span::styled(format!("{} ", glyph.to_string().repeat(3)), style(frame_right)),
+            Span::raw("  "),
+        ])
+    };
+    vec![cap('▄'), eye_line, cap('▀')]
+}
+
+// Reaction seals rendered BESIDE the head (right side) — never on top, so
+// they are always visible, including in the compact eye-band crop.
+const SEAL_QUESTION: [&str; 7] = [
+    ".aaa.", "aa.aa", "...aa", "..aa.", "..a..", ".....", "..a..",
+];
+const SEAL_BANG: [&str; 6] = ["mm", "mm", "mm", "mm", "..", "mm"];
+const SEAL_ZZZ: [&str; 5] = ["ccccc", "...c.", "..c..", ".c...", "ccccc"];
+const SEAL_DOTS: [&str; 1] = ["c.c.c"];
+const SEAL_SHIELD: [&str; 6] = ["ggggg", "ggggg", "ggwgg", "ggggg", ".ggg.", "..g.."];
+const SEAL_CHECK: [&str; 4] = ["....g", "...gg", "g.gg.", ".gg.."];
+
+/// Every state reserves the same seal slot so the head NEVER shifts sideways
+/// when a seal appears or changes — and the protocol image keeps a constant
+/// aspect ratio (constant head size under `Resize::Fit`).
+const SEAL_SLOT: usize = 5;
+
+fn seal_for(mode: VisualMode) -> Option<&'static [&'static str]> {
+    match mode {
+        VisualMode::Onboarding | VisualMode::Guard => Some(&SEAL_SHIELD),
+        VisualMode::Success => Some(&SEAL_CHECK),
+        VisualMode::Unknown => Some(&SEAL_QUESTION),
+        VisualMode::Alert => Some(&SEAL_BANG),
+        VisualMode::Sleep => Some(&SEAL_ZZZ),
+        VisualMode::Thinking | VisualMode::Build => Some(&SEAL_DOTS),
+        VisualMode::Cabinet => None, // Patchwork carries its own right-side marks
+    }
+}
+
+/// Head + optional seal, side by side, padded to a fixed total width.
+/// `seal_top` is the pixel row where the seal starts.
+fn compose(head: &[&str], seal: Option<&[&str]>, seal_top: usize) -> Vec<String> {
+    const GAP: usize = 1;
+    let head_width = head.iter().map(|row| row.chars().count()).max().unwrap_or(0);
+    let total = head_width + GAP + SEAL_SLOT;
+    head.iter()
+        .enumerate()
+        .map(|(y, row)| {
+            let mut line = format!("{row:<head_width$}");
+            line.push_str(&".".repeat(GAP));
+            if let Some(seal_row) = seal.and_then(|s| y.checked_sub(seal_top).and_then(|i| s.get(i)))
+            {
+                line.push_str(seal_row);
+            }
+            while line.chars().count() < total {
+                line.push('.');
+            }
+            line
+        })
+        .collect()
+}
+
+/// Protocol sprite (24×15 head + seal) for terminals with real graphics. The
+/// key names the sprite for protocol caches; blink swaps the guard frame.
+pub(super) fn native_sprite(mode: VisualMode, blink: bool) -> (&'static str, Vec<String>) {
+    let (key, head): (&'static str, &[&str]) = match mode {
+        VisualMode::Onboarding | VisualMode::Guard => {
+            if blink {
+                ("guard-blink", &KEEPER_GUARD_BLINK)
+            } else {
+                ("guard", &KEEPER_GUARD)
+            }
+        }
+        VisualMode::Thinking | VisualMode::Build => ("thinking", &KEEPER_THINKING),
+        VisualMode::Cabinet => ("cabinet", &PATCHWORK_CABINET),
+        VisualMode::Success => ("success", &KEEPER_SUCCESS),
+        VisualMode::Alert => ("alert", &KEEPER_ERROR),
+        VisualMode::Unknown => ("unknown", &KEEPER_UNKNOWN),
+        VisualMode::Sleep => ("sleep", &KEEPER_SLEEP),
+    };
+    (key, compose(head, seal_for(mode), 3))
+}
+
+/// Native sprite palette — the approved mascot-test stroke: light steel,
+/// blue frame, dark visor, and a face colored per state.
 fn sprite_color(ch: char) -> Option<Color> {
     match ch {
         's' => Some(Color::Rgb(142, 163, 186)),
@@ -547,8 +709,8 @@ fn sprite_color(ch: char) -> Option<Color> {
     }
 }
 
-// Cabeça do Keeper, 24×15 px. Cada estado troca apenas o rosto (linhas 5-9)
-// e o selo no canto superior direito (?, !, z, …).
+// Keeper head, 24×15 px. Each state swaps only the face (rows 5-9) and the
+// seal in the top-right corner (?, !, z, …).
 macro_rules! keeper {
     ($r0:literal, $r5:literal, $r6:literal, $r7:literal, $r8:literal, $r9:literal) => {
         [
@@ -590,7 +752,7 @@ const KEEPER_GUARD_BLINK: [&str; 15] = keeper!(
 );
 
 const KEEPER_THINKING: [&str; 15] = keeper!(
-    "....ssssssssssssssssc.c.",
+    "....ssssssssssssssss....",
     "sssbkkcckkkkkkkkcckkbsss",
     "sssbkkcckkkkkkkkcckkbsss",
     "sssbkkkkkkkkkkkkkkkkbsss",
@@ -599,7 +761,7 @@ const KEEPER_THINKING: [&str; 15] = keeper!(
 );
 
 const KEEPER_UNKNOWN: [&str; 15] = keeper!(
-    "....ssssssssssssssss.aa.",
+    "....ssssssssssssssss....",
     "sssbkkkaakkkkkkaakkkbsss",
     "sssbkkkaakkkkkkaakkkbsss",
     "sssbkkkkkkkkkkkkkkkkbsss",
@@ -608,7 +770,7 @@ const KEEPER_UNKNOWN: [&str; 15] = keeper!(
 );
 
 const KEEPER_ERROR: [&str; 15] = keeper!(
-    "....ssssssssssssssss.mm.",
+    "....ssssssssssssssss....",
     "sssbkkmkmkkkkkkmkmkkbsss",
     "sssbkkkmkkkkkkkkmkkkbsss",
     "sssbkkmkmkkkkkkmkmkkbsss",
@@ -626,7 +788,7 @@ const KEEPER_SUCCESS: [&str; 15] = keeper!(
 );
 
 const KEEPER_SLEEP: [&str; 15] = keeper!(
-    "....sssssssssssssssscccc",
+    "....ssssssssssssssss....",
     "sssbkkkkkkkkkkkkkkkkbsss",
     "sssbkkbbbbkkkkbbbbkkbsss",
     "sssbkkkkkkkkkkkkkkkkbsss",
@@ -634,8 +796,8 @@ const KEEPER_SLEEP: [&str; 15] = keeper!(
     ".ssbkkkkkkkbbkkkkkkkbss."
 );
 
-// Patchwork, 24×12 px: cabeça de olhos quadrados + coração de domínio ao
-// lado — aparece quando o Cabinet é convocado.
+// Patchwork, 24×12 px: square-eyed head + a domain heart beside it — shows
+// up when the Cabinet is convened.
 const PATCHWORK_CABINET: [&str; 12] = [
     "...ssssssssssss.........",
     "..ssssssssssssss..mm.mm.",
@@ -651,49 +813,32 @@ const PATCHWORK_CABINET: [&str; 12] = [
     "...ssssssssssss.........",
 ];
 
-/// Converte um mapa de pixels em linhas de meio-bloco: cada célula de texto
-/// carrega dois pixels (fg no ▀ de cima, bg no de baixo). Com NO_COLOR o
-/// sprite degrada para ocupação monocromática.
-fn sprite_lines(map: &[&str], compact: bool, no_color: bool) -> Vec<Line<'static>> {
-    let rows: Vec<&str> = if compact {
-        map.iter().skip(4).take(8).copied().collect()
-    } else {
-        map.to_vec()
-    };
-    let mut lines = Vec::new();
-    for pair in rows.chunks(2) {
-        let top = pair[0];
-        let bottom = pair.get(1).copied().unwrap_or("");
-        let width = top.chars().count().max(bottom.chars().count());
-        let top: Vec<char> = top.chars().collect();
-        let bottom: Vec<char> = bottom.chars().collect();
-        let mut spans = Vec::new();
-        for x in 0..width {
-            let t = top.get(x).copied().unwrap_or('.');
-            let b = bottom.get(x).copied().unwrap_or('.');
-            let (t_color, b_color) = if no_color {
-                (
-                    sprite_color(t).map(|_| Color::White),
-                    sprite_color(b).map(|_| Color::White),
-                )
-            } else {
-                (sprite_color(t), sprite_color(b))
+/// Renders a sprite map as a real RGBA image for terminals with a graphics
+/// protocol (sixel/kitty/iTerm2) — the exact pixel-art from the mascot test,
+/// no character-grid compromises. Upscaled ×8 with hard edges so any protocol
+/// downscale keeps the pixels crisp. Empty pixels stay transparent.
+pub(super) fn sprite_image(map: &[String]) -> image::DynamicImage {
+    const SCALE: u32 = 8;
+    let height = map.len() as u32;
+    let width = map.iter().map(|row| row.chars().count()).max().unwrap_or(0) as u32;
+    let mut img = image::RgbaImage::new(width * SCALE, height * SCALE);
+    for (y, row) in map.iter().enumerate() {
+        for (x, ch) in row.chars().enumerate() {
+            let Some(Color::Rgb(r, g, b)) = sprite_color(ch) else {
+                continue;
             };
-            spans.push(match (t_color, b_color) {
-                (None, None) => Span::raw(" "),
-                (Some(color), None) => Span::styled("▀", Style::default().fg(color)),
-                (None, Some(color)) => Span::styled("▄", Style::default().fg(color)),
-                (Some(tc), Some(bc)) if tc == bc => {
-                    Span::styled("█", Style::default().fg(tc))
+            for dy in 0..SCALE {
+                for dx in 0..SCALE {
+                    img.put_pixel(
+                        x as u32 * SCALE + dx,
+                        y as u32 * SCALE + dy,
+                        image::Rgba([r, g, b, 255]),
+                    );
                 }
-                (Some(tc), Some(bc)) => {
-                    Span::styled("▀", Style::default().fg(tc).bg(bc))
-                }
-            });
+            }
         }
-        lines.push(Line::from(spans));
     }
-    lines
+    image::DynamicImage::ImageRgba8(img)
 }
 
 fn custom_pet_lines(
@@ -848,10 +993,29 @@ mod tests {
             no_color: false,
             ..Appearance::default()
         };
-        assert_eq!(identity_height(Rect::new(0, 0, 100, 40), &appearance), 10);
-        assert_eq!(identity_height(Rect::new(0, 0, 70, 24), &appearance), 6);
+        assert_eq!(identity_height(Rect::new(0, 0, 100, 40), &appearance), 5);
+        assert_eq!(identity_height(Rect::new(0, 0, 70, 24), &appearance), 4);
         assert_eq!(identity_height(Rect::new(0, 0, 50, 40), &appearance), 1);
+
+        let graphics = Appearance {
+            graphics: true,
+            ..Appearance::default()
+        };
+        assert_eq!(identity_height(Rect::new(0, 0, 100, 40), &graphics), 7);
+        assert_eq!(identity_height(Rect::new(0, 0, 70, 24), &graphics), 7);
     }
+
+    const ALL_MODES: [VisualMode; 9] = [
+        VisualMode::Onboarding,
+        VisualMode::Guard,
+        VisualMode::Thinking,
+        VisualMode::Build,
+        VisualMode::Cabinet,
+        VisualMode::Success,
+        VisualMode::Alert,
+        VisualMode::Unknown,
+        VisualMode::Sleep,
+    ];
 
     #[test]
     fn built_in_sprites_fit_the_identity_panel() {
@@ -859,24 +1023,14 @@ mod tests {
             no_color: false,
             ..Appearance::default()
         };
-        for mode in [
-            VisualMode::Onboarding,
-            VisualMode::Guard,
-            VisualMode::Thinking,
-            VisualMode::Build,
-            VisualMode::Cabinet,
-            VisualMode::Success,
-            VisualMode::Alert,
-            VisualMode::Unknown,
-            VisualMode::Sleep,
-        ] {
+        for mode in ALL_MODES {
             let full = mascot_lines(mode, 1, &appearance, false);
-            assert!(full.len() <= 8, "{mode:?}: sprite alto demais");
+            assert_eq!(full.len(), 3, "{mode:?}: glyph face is 3 lines");
             let compact = mascot_lines(mode, 1, &appearance, true);
-            assert_eq!(compact.len(), 4, "{mode:?}: compacto deve ter 4 linhas");
-            for line in &full {
+            assert_eq!(compact.len(), 1, "{mode:?}: compact is the eye line");
+            for line in full.iter().chain(compact.iter()) {
                 let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-                assert!(width <= 24, "{mode:?}: sprite largo demais ({width})");
+                assert!(width <= 12, "{mode:?}: face too wide ({width})");
             }
         }
     }
@@ -896,6 +1050,41 @@ mod tests {
     }
 
     #[test]
+    fn sprite_images_have_constant_dimensions_across_states() {
+        // Fixed seal slot: every Keeper state renders 30×15 px so the head
+        // never changes size or position when the seal appears/changes.
+        // (Cabinet is Patchwork — a different character with its own size.)
+        for mode in ALL_MODES {
+            if mode == VisualMode::Cabinet {
+                continue;
+            }
+            let (_, map) = native_sprite(mode, false);
+            let image = sprite_image(&map);
+            assert_eq!(image.width(), 30 * 8, "{mode:?}");
+            assert_eq!(image.height(), 15 * 8, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn glyph_faces_have_constant_dimensions_across_states() {
+        let appearance = Appearance::default();
+        for mode in ALL_MODES {
+            let full = glyph_face(mode, false, &appearance, false);
+            assert_eq!(full.len(), 3, "{mode:?}");
+            let widths: Vec<usize> = full
+                .iter()
+                .map(|l| l.spans.iter().map(|s| s.content.chars().count()).sum())
+                .collect();
+            // Center-aligned paragraph: unequal widths shear the frame.
+            assert!(
+                widths.iter().all(|w| *w == 11),
+                "{mode:?}: all lines must be 11 wide, got {widths:?}"
+            );
+            assert_eq!(glyph_face(mode, false, &appearance, true).len(), 1, "{mode:?}");
+        }
+    }
+
+    #[test]
     fn sprite_maps_have_consistent_row_widths() {
         for map in [
             KEEPER_GUARD.as_slice(),
@@ -908,10 +1097,10 @@ mod tests {
             PATCHWORK_CABINET.as_slice(),
         ] {
             for row in map {
-                assert_eq!(row.chars().count(), 24, "linha com largura errada: {row}");
+                assert_eq!(row.chars().count(), 24, "row with wrong width: {row}");
                 assert!(
                     row.chars().all(|c| c == '.' || sprite_color(c).is_some()),
-                    "caractere fora da paleta: {row}"
+                    "character outside the palette: {row}"
                 );
             }
         }

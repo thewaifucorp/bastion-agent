@@ -36,6 +36,14 @@ convocado. Estados extras locais: um comando de barra desconhecido mostra o
 Keeper em dúvida (olhos abertos e uma interrogação âmbar) e `/pet sleep`
 mostra o rosto de descanso com zzz.
 
+Em terminais com protocolo gráfico (Kitty, WezTerm, Ghostty, foot, Konsole,
+iTerm2 e VS Code com `terminal.integrated.enableImages`), o mascote é
+desenhado como imagem de verdade — pixel art idêntica ao mark do README,
+pequena e nítida, com o selo de estado (escudo, ?, !, zzz…) num slot fixo à
+direita da cabeça. Sem protocolo (terminal do Zed, GNOME Terminal padrão),
+cai para um rosto mínimo de glifos — só os olhos e o selo, nítido em
+qualquer fonte. `BASTION_TUI_GRAPHICS=off` força o modo texto.
+
 ## Cuidado e progressão
 
 O game mode recompensa turnos concluídos, nunca volume de tokens. Turnos de

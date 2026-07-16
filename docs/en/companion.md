@@ -36,6 +36,14 @@ convened. Extra local states: an unknown slash command shows the Keeper in
 doubt (open eyes and an amber question mark) and `/pet sleep` shows the
 resting face with zzz.
 
+On terminals with a graphics protocol (Kitty, WezTerm, Ghostty, foot, Konsole,
+iTerm2, and VS Code with `terminal.integrated.enableImages`), the mascot is
+drawn as a real image — pixel art identical to the README mark, small and
+crisp, with the state seal (shield, ?, !, zzz…) in a fixed slot beside the
+head. Without a protocol (Zed's built-in terminal, stock GNOME Terminal) it
+falls back to a minimal glyph face — eyes and seal only, crisp in any font.
+`BASTION_TUI_GRAPHICS=off` forces text mode.
+
 ## Care and progression
 
 Game mode rewards completed turns, never token volume. Build and Cabinet turns
