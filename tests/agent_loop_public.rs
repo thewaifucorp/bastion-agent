@@ -86,11 +86,11 @@ async fn make_loop(db_path: &str) -> AgentLoop {
         Box::new(SqliteMemory::new(db_path)) as Box<dyn bastion_memory::Memory>
     ));
 
-    // connect_all with non-existent path returns empty client (load_mcp_config returns {})
+    // connect_from_config with an empty map returns an empty client
     let mcp = Arc::new(
-        bastion_mcp::McpClient::connect_all("nonexistent_mcp.json")
+        bastion_mcp::McpClient::connect_from_config(&std::collections::HashMap::new())
             .await
-            .expect("connect_all empty"),
+            .expect("empty MCP config"),
     );
 
     AgentLoop::new(
@@ -713,9 +713,9 @@ async fn cloud_ok_persona_tool_loop_passes_egress_gate() {
         Box::new(SqliteMemory::new(&path)) as Box<dyn bastion_memory::Memory>
     ));
     let mcp = Arc::new(
-        bastion_mcp::McpClient::connect_all("nonexistent_mcp.json")
+        bastion_mcp::McpClient::connect_from_config(&std::collections::HashMap::new())
             .await
-            .expect("connect_all empty"),
+            .expect("empty MCP config"),
     );
 
     let mut personas = HashMap::new();

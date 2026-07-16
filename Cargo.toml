@@ -61,13 +61,6 @@ mcp-server     = [
   "rmcp/transport-streamable-http-server",
   "rmcp/transport-io",
 ]
-# A-09 (docs/revamp/BACKLOG.md): forwards to bastion-providers' feature of the same name.
-# OFF by default — the default `bastion` binary no longer links the deprecated
-# TerminalAgentProvider bridge (superseded by AgentRuntime, A-03/A-04). Not removed: an
-# operator who still needs the legacy bridge for one deprecation window can opt back in with
-# `cargo build --features legacy-terminal-agent`.
-legacy-terminal-agent = ["bastion-providers/legacy-terminal-agent"]
-
 [dependencies]
 ## Pinned to a public Core commit so a standalone clone, CI and Docker all
 ## resolve the exact same substrate without requiring a sibling checkout.

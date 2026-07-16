@@ -94,12 +94,12 @@ async fn make_agent(db_path: &str) -> (AgentLoop, SharedMemory) {
         Box::new(SqliteMemory::new(db_path)) as Box<dyn Memory>
     ));
 
-    // connect_all with a non-existent path returns an empty (zero-tool) client — no
+    // connect_from_config with an empty map returns a zero-tool client — no
     // network I/O, mirrors the existing test convention in src/agent/loop_.rs::tests.
     let mcp = Arc::new(
-        McpClient::connect_all("nonexistent_mcp.json")
+        McpClient::connect_from_config(&std::collections::HashMap::new())
             .await
-            .expect("connect_all empty"),
+            .expect("empty MCP config"),
     );
 
     let provider: SharedProvider =

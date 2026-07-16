@@ -3,11 +3,17 @@ use bastion_mcp::registry::ToolRegistry;
 #[test]
 fn registry_register_and_lookup() {
     let mut reg = ToolRegistry::new();
-    reg.register(
-        "composio",
-        vec!["github_star".into(), "calendar_event".into()],
-        false,
-    );
+    for name in ["github_star", "calendar_event"] {
+        reg.register_with_schema(
+            "composio",
+            name.into(),
+            serde_json::json!({"type": "object", "properties": {}}),
+            String::new(),
+            false,
+            false,
+            false,
+        );
+    }
     let names = reg.list_tool_names();
     assert!(names.contains(&"github_star"));
     assert!(names.contains(&"calendar_event"));
@@ -18,8 +24,24 @@ fn registry_register_and_lookup() {
 #[test]
 fn registry_multi_server() {
     let mut reg = ToolRegistry::new();
-    reg.register("composio", vec!["tool_a".into()], false);
-    reg.register("local", vec!["tool_b".into()], false);
+    reg.register_with_schema(
+        "composio",
+        "tool_a".into(),
+        serde_json::json!({"type": "object", "properties": {}}),
+        String::new(),
+        false,
+        false,
+        false,
+    );
+    reg.register_with_schema(
+        "local",
+        "tool_b".into(),
+        serde_json::json!({"type": "object", "properties": {}}),
+        String::new(),
+        false,
+        false,
+        false,
+    );
     assert_eq!(reg.server_for("tool_a"), Some("composio"));
     assert_eq!(reg.server_for("tool_b"), Some("local"));
 }
@@ -48,21 +70,8 @@ fn registry_schema_stored_and_retrieved() {
 }
 
 #[tokio::test]
-async fn connect_all_empty_config() {
-    // Create a temp config with empty mcpServers
-    let dir = tempfile::tempdir().unwrap();
-    let cfg_path = dir.path().join("mcp-servers.json");
-    std::fs::write(&cfg_path, r#"{"mcpServers":{}}"#).unwrap();
-    let client = bastion_mcp::McpClient::connect_all(cfg_path.to_str().unwrap())
-        .await
-        .unwrap();
-    assert!(client.registry().list_tool_names().is_empty());
-}
-
-#[tokio::test]
-async fn connect_all_missing_config() {
-    // Missing file should return empty client (graceful — Composio not configured)
-    let client = bastion_mcp::McpClient::connect_all("/tmp/nonexistent-mcp-servers.json")
+async fn connect_from_empty_config() {
+    let client = bastion_mcp::McpClient::connect_from_config(&std::collections::HashMap::new())
         .await
         .unwrap();
     assert!(client.registry().list_tool_names().is_empty());

@@ -366,12 +366,12 @@ async fn make_agent(db_path: &str) -> AgentLoop {
         Box::new(SqliteMemory::new(db_path)) as Box<dyn Memory>
     ));
 
-    // connect_all against a non-existent path returns an empty (zero-tool) client —
+    // connect_from_config with an empty map returns a zero-tool client —
     // no network I/O, mirrors tests/prompt_cache_prefix.rs's convention.
     let mcp = Arc::new(
-        McpClient::connect_all("nonexistent_mcp.json")
+        McpClient::connect_from_config(&std::collections::HashMap::new())
             .await
-            .expect("connect_all empty"),
+            .expect("empty MCP config"),
     );
 
     let provider: SharedProvider =
@@ -583,13 +583,13 @@ async fn tool_source_gate_blocks_dispatch_on_local_only_tier() {
 /// error a `CloudOk` tier gets once the gate lets it through to dispatch.
 #[tokio::test]
 async fn mcp_tool_source_gates_egress_before_attempting_dispatch() {
-    // connect_all against a non-existent path returns an empty (zero-tool)
+    // connect_from_config with an empty map returns a zero-tool
     // client — no network I/O (same convention as `make_agent` above and
     // tests/prompt_cache_prefix.rs).
     let mcp = std::sync::Arc::new(
-        McpClient::connect_all("nonexistent_mcp.json")
+        McpClient::connect_from_config(&std::collections::HashMap::new())
             .await
-            .expect("connect_all empty"),
+            .expect("empty MCP config"),
     );
     let source = bastion_mcp::McpToolSource::new(mcp);
 

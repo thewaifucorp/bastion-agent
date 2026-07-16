@@ -346,7 +346,7 @@ const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "/pet",
         usage: "/pet <ação>",
-        desc: "cuida e configura o companion — TUI local",
+        desc: "cuida e configura o companion — digite espaço para ver as ações",
         remote: false,
     },
     CommandInfo {
@@ -399,10 +399,74 @@ const COMMANDS: &[CommandInfo] = &[
     },
 ];
 
-/// Matches only while typing the command token itself (no space yet) — once
-/// there's a space the user is typing arguments, so suggestions disappear.
+/// Ações locais do `/pet`, expandidas no menu assim que o usuário digita o
+/// espaço — cada entrada é o comando completo para Tab/Enter completarem
+/// direto, sem argumento a adivinhar (exceto `use`, que pede um caminho).
+const PET_COMMANDS: &[CommandInfo] = &[
+    CommandInfo {
+        name: "/pet stats",
+        usage: "/pet stats",
+        desc: "nível, XP e necessidades do companion",
+        remote: false,
+    },
+    CommandInfo {
+        name: "/pet game on",
+        usage: "/pet game on",
+        desc: "liga o game mode — XP por turno concluído",
+        remote: false,
+    },
+    CommandInfo {
+        name: "/pet game off",
+        usage: "/pet game off",
+        desc: "desliga o game mode",
+        remote: false,
+    },
+    CommandInfo {
+        name: "/pet water",
+        usage: "/pet water",
+        desc: "hidrata o companion (beba água você também)",
+        remote: false,
+    },
+    CommandInfo {
+        name: "/pet feed",
+        usage: "/pet feed",
+        desc: "alimenta o companion",
+        remote: false,
+    },
+    CommandInfo {
+        name: "/pet play",
+        usage: "/pet play",
+        desc: "registra uma pausa curta — alongar, caminhar, respirar",
+        remote: false,
+    },
+    CommandInfo {
+        name: "/pet sleep",
+        usage: "/pet sleep",
+        desc: "descansa o companion e zera as necessidades",
+        remote: false,
+    },
+    CommandInfo {
+        name: "/pet use",
+        usage: "/pet use <pet.toml|builtin>",
+        desc: "troca o pet pack ativo",
+        remote: false,
+    },
+];
+
+/// Matches while typing the command token; a space normally closes the menu
+/// (the user is typing arguments), except after `/pet `, where the menu
+/// switches to the subcommand list so as ações ficam visíveis.
 fn command_matches(input: &str) -> Vec<&'static CommandInfo> {
-    if input.is_empty() || !input.starts_with('/') || input.contains(' ') {
+    if input.is_empty() || !input.starts_with('/') {
+        return vec![];
+    }
+    if input.starts_with("/pet ") {
+        return PET_COMMANDS
+            .iter()
+            .filter(|c| c.name.starts_with(input))
+            .collect();
+    }
+    if input.contains(' ') {
         return vec![];
     }
     COMMANDS
@@ -822,7 +886,7 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
                     Style::default().fg(app.appearance.text())
                 };
                 let marker = if i == selected { "▸ " } else { "  " };
-                let tag = if c.name == "/pet" {
+                let tag = if c.name.starts_with("/pet") {
                     " [TUI]"
                 } else if c.remote {
                     ""
@@ -1144,6 +1208,25 @@ mod tests {
     #[test]
     fn bootstrap_is_never_used_for_remote_targets() {
         assert_eq!(local_bootstrap_token("https://bastion.example.com"), None);
+    }
+
+    #[test]
+    fn pet_subcommands_stay_visible_after_the_space() {
+        let names: Vec<&str> = command_matches("/pet ").iter().map(|c| c.name).collect();
+        assert_eq!(names.len(), PET_COMMANDS.len());
+        assert!(names.contains(&"/pet stats"));
+
+        let game: Vec<&str> = command_matches("/pet game")
+            .iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(game, vec!["/pet game on", "/pet game off"]);
+
+        // Comando completado (com espaço final) fecha o menu para o Enter enviar.
+        assert!(command_matches("/pet stats ").is_empty());
+        // Outros comandos mantêm o comportamento antigo: espaço fecha o menu.
+        assert!(command_matches("/model ").is_empty());
+        assert!(!command_matches("/pe").is_empty());
     }
 
     #[test]

@@ -95,9 +95,9 @@ async fn make_loop(db_path: &str) -> AgentLoop {
     ));
 
     let mcp = Arc::new(
-        bastion_mcp::McpClient::connect_all("nonexistent_mcp.json")
+        bastion_mcp::McpClient::connect_from_config(&std::collections::HashMap::new())
             .await
-            .expect("connect_all empty"),
+            .expect("empty MCP config"),
     );
 
     AgentLoop::new(

@@ -944,7 +944,7 @@ async fn cli_session_deterministic_across_turns() {
     ))
         as Box<dyn bastion_memory::Memory>));
     let mcp = SArc::new(
-        McpClient::connect_all("nonexistent.json")
+        McpClient::connect_from_config(&std::collections::HashMap::new())
             .await
             .expect("mcp"),
     );
