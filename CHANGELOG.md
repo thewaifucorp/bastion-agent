@@ -6,18 +6,30 @@ product/release number (see
 [bastion-core's VERSIONING.md](https://github.com/thewaifucorp/bastion-core/blob/main/docs/VERSIONING.md)
 for how that differs from the library crates it depends on).
 
-## [0.1.1] — 2026-07-16
+## [0.1.2] — 2026-07-16
 
 ### Added
 
 - Official `bastion` terminal UI as the default command. It discovers or starts
   the local runtime, waits for readiness, and consumes local bootstrap access
   automatically; `bastion chat` remains the explicit remote form.
+- Host CLI installation under `~/.local/bin`, backed by the release binary
+  already built in the Docker image.
+
+### Fixed
+
+- First-run local TUI no longer enters the device-pairing flow or requires the
+  user to start a separate daemon manually.
+
+## [0.1.1] — 2026-07-16
+
+### Added
+
+- Official `bastion chat` terminal UI, with daemon URL, owner, and token
+  configuration through CLI flags or `BASTION_*` environment variables.
 - Bootstrap-token access for a fresh self-hosted deployment.
 - Docker and installer smoke coverage in CI, plus a dedicated
   `requirements-dev.txt` for Python skill suites.
-- Host CLI installation under `~/.local/bin`, backed by the release binary
-  already built in the Docker image.
 - Explicit memory-system lineage and attribution for the ideas combined from
   Mem0 and MemPalace.
 
@@ -46,8 +58,6 @@ for how that differs from the library crates it depends on).
 - Container configuration no longer masks the memory model baked into the
   image, and Compose now injects the current MCP URLs and local paths.
 - Remote TUI startup no longer requires a local `bastion.toml`.
-- First-run local TUI no longer enters the device-pairing flow or requires the
-  user to start a separate daemon manually.
 - Python skill-test documentation now avoids cross-suite module-name
   collisions.
 
