@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/bastion-mark.svg" width="720" alt="Bastion — Your agent. Your authority.">
+  <img src="assets/bastion-mark.png" width="720" alt="Bastion — Your agent. Your authority.">
 </p>
 
 <p align="center">
