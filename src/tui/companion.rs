@@ -280,7 +280,9 @@ impl CompanionState {
 
     pub(super) fn save(&self) -> Result<()> {
         let path = state_path();
-        let parent = path.parent().context("companion state without a parent directory")?;
+        let parent = path
+            .parent()
+            .context("companion state without a parent directory")?;
         super::ensure_private_dir(parent)?;
         super::write_private_file(&path, serde_json::to_string_pretty(self)?.as_bytes())
     }

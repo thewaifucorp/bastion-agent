@@ -2,6 +2,7 @@ use bastion_memory::SharedMemory;
 use bastion_personas::persona::PersonaRegistry;
 use bastion_providers::registry::resolve_provider;
 use bastion_providers::SharedProvider;
+use std::path::PathBuf;
 
 /// Every real Bastion slash command — single source of truth so callers (e.g.
 /// main.rs's inbound_rx arm, WEB-CMD-01) can tell "known command that's
@@ -11,7 +12,9 @@ use bastion_providers::SharedProvider;
 pub const KNOWN_COMMANDS: &[&str] = &[
     "/connect-app",
     "/connect-app-composio",
+    "/connect",
     "/model",
+    "/models",
     "/stop",
     "/as",
     "/cabinet",
@@ -38,6 +41,15 @@ pub struct CommandResources {
     pub otc_store: Option<crate::channel::webhook::OtcStore>,
     pub composio_oauth: Option<std::sync::Arc<bastion_mcp::oauth::ComposioOAuth>>,
     pub registry: PersonaRegistry,
+    pub model_selection: Option<ModelSelection>,
+}
+
+/// Persistent, daemon-owned selection used by `/model`. The configured default
+/// remains separate so `/model reset` can always return to it.
+#[derive(Clone)]
+pub struct ModelSelection {
+    pub path: PathBuf,
+    pub default_model: String,
 }
 
 /// Moved to `agent::ports::CommandResult` (M2 step 3b, D3 — it is the type
@@ -85,6 +97,7 @@ impl bastion_runtime::agent::ports::CommandHandler for CockpitCommandHandler {
             self.resources.otc_store.as_ref(),
             self.resources.composio_oauth.as_deref(),
             owner,
+            self.resources.model_selection.as_ref(),
         )
         .await
     }
@@ -103,6 +116,37 @@ fn generate_otc() -> String {
     let g1: String = (0..4).map(|_| pick(&mut rng)).collect();
     let g2: String = (0..4).map(|_| pick(&mut rng)).collect();
     format!("BAST-{}-{}", g1, g2)
+}
+
+async fn switch_model(
+    model: &str,
+    provider: &SharedProvider,
+    model_selection: Option<&ModelSelection>,
+) -> anyhow::Result<String> {
+    let new_provider = resolve_provider(model)?;
+    if let Some(selection) = model_selection {
+        crate::config::save_model_selection(&selection.path, model)?;
+    }
+    // Acquire WRITE lock between turns — blocks until any active stream releases READ lock.
+    *provider.write().await = new_provider;
+    tracing::info!(event = "provider_swapped", model = %model);
+    Ok(if model_selection.is_some() {
+        format!("Switched to model: {model}. Saved for the next restart.")
+    } else {
+        format!("Switched to model: {model}")
+    })
+}
+
+fn connect_instructions(provider: Option<&str>) -> String {
+    match provider {
+        None => "Choose a provider: /connect gemini, /connect anthropic, /connect openai, /connect openrouter, or /connect ollama. Credentials stay outside chat and are never stored in conversation history.".to_string(),
+        Some("gemini") => "Gemini: add GEMINI_API_KEY to .env or your secret manager, restart the daemon, then open /models.".to_string(),
+        Some("anthropic") => "Anthropic: add ANTHROPIC_API_KEY to .env or your secret manager, restart the daemon, then open /models.".to_string(),
+        Some("openai") => "OpenAI: add OPENAI_API_KEY to .env or your secret manager, restart the daemon, then open /models.".to_string(),
+        Some("openrouter") => "OpenRouter: add OPENROUTER_API_KEY to .env or your secret manager, restart the daemon, then open /models.".to_string(),
+        Some("ollama") => "Ollama: start the local Ollama service, then choose one of its installed models from /models. No API key is needed.".to_string(),
+        Some(_) => "Unknown provider. Choose gemini, anthropic, openai, openrouter, or ollama.".to_string(),
+    }
 }
 
 /// Route slash commands from stdin OR a channel (WEB-CMD-01 — webhook/Telegram
@@ -129,6 +173,7 @@ pub async fn handle_command(
     otc_store: Option<&crate::channel::webhook::OtcStore>,
     composio_oauth: Option<&bastion_mcp::oauth::ComposioOAuth>,
     owner: &str,
+    model_selection: Option<&ModelSelection>,
 ) -> anyhow::Result<CommandResult> {
     let trimmed = input.trim();
     let parts: Vec<&str> = trimmed.splitn(2, ' ').collect();
@@ -198,21 +243,52 @@ pub async fn handle_command(
             }
         }
 
+        "/connect" => Ok(CommandResult::Handled(connect_instructions(
+            parts.get(1).map(|value| value.trim()).filter(|value| !value.is_empty()),
+        ))),
+
+        "/models" => {
+            let requested = parts.get(1).map(|value| value.trim()).filter(|value| !value.is_empty());
+            match requested {
+                Some(model) => Ok(CommandResult::Handled(
+                    switch_model(model, provider, model_selection).await?,
+                )),
+                None => {
+                    let current = provider.read().await.model_name().to_string();
+                    Ok(CommandResult::Handled(format!(
+                        "Current model: {current}\nIn the local TUI, type `/models ` to browse recommended models. You can also enter any supported provider/model ID manually."
+                    )))
+                }
+            }
+        }
+
         "/model" => {
-            let model = parts
-                .get(1)
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| {
-                    anyhow::anyhow!("/model requires a model name (e.g. /model claude-sonnet-4-5)")
-                })?;
-            let new_provider = resolve_provider(model)?;
-            // Acquire WRITE lock between turns — blocks until any active stream releases READ lock
-            *provider.write().await = new_provider;
-            tracing::info!(event = "provider_swapped", model = %model);
-            Ok(CommandResult::Handled(format!(
-                "Switched to model: {model}"
-            )))
+            let requested = parts.get(1).map(|value| value.trim()).filter(|value| !value.is_empty());
+            match requested {
+                None => {
+                    let current = provider.read().await.model_name().to_string();
+                    Ok(CommandResult::Handled(format!(
+                        "Current model: {current}\nUse /models to browse and switch, or /model reset to restore the configured default."
+                    )))
+                }
+                Some("reset") => {
+                    let selection = model_selection.ok_or_else(|| anyhow::anyhow!(
+                        "Model reset is unavailable because this daemon has no persistent session storage."
+                    ))?;
+                    let new_provider = resolve_provider(&selection.default_model)?;
+                    crate::config::clear_model_selection(&selection.path)?;
+                    // Acquire WRITE lock between turns — blocks until any active stream releases READ lock.
+                    *provider.write().await = new_provider;
+                    tracing::info!(event = "provider_reset", model = %selection.default_model);
+                    Ok(CommandResult::Handled(format!(
+                        "Restored configured default: {}. The saved override was removed.",
+                        selection.default_model
+                    )))
+                }
+                Some(model) => Ok(CommandResult::Handled(
+                    switch_model(model, provider, model_selection).await?,
+                )),
+            }
         }
 
         "/stop" => {
@@ -333,6 +409,8 @@ pub async fn handle_command(
         "/help" => Ok(CommandResult::Handled(
             "Available commands:\n\
              \x20 /model <name>         Switch LLM provider+model (console only — daemon-wide state)\n\
+             \x20 /models [name]        Browse or select a saved model (console only)\n\
+             \x20 /connect [provider]   Show secure provider setup steps (console only)\n\
              \x20 /stop                 Shut down daemon (console only)\n\
              \x20 /as <persona>         Force persona for next turn (console only — daemon-wide state)\n\
              \x20 /cabinet [personas..] Convene Cabinet with named personas (console only)\n\
@@ -504,6 +582,7 @@ mod tests {
             None,
             None,
             "_local",
+            None,
         )
         .await
         .expect("handle_command");
@@ -538,6 +617,7 @@ mod tests {
             None,
             None,
             "_local",
+            None,
         )
         .await
         .expect("cmd");
@@ -568,6 +648,7 @@ mod tests {
             None,
             None,
             "_local",
+            None,
         )
         .await
         .expect("cmd");
@@ -672,6 +753,7 @@ mod tests {
             None,
             None,
             "_local",
+            None,
         )
         .await
         .expect("cmd");
@@ -713,6 +795,7 @@ mod tests {
             Some(&store),
             None,
             "_local",
+            None,
         )
         .await
         .expect("cmd");
@@ -758,6 +841,7 @@ mod tests {
             None,
             None,
             "_local",
+            None,
         )
         .await
         .expect("cmd");
@@ -811,6 +895,7 @@ mod tests {
             None,
             None,
             "_local",
+            None,
         )
         .await
         .expect("cmd");
@@ -850,6 +935,7 @@ mod tests {
             None,
             None,
             "_local",
+            None,
         )
         .await
         .expect("cmd");
@@ -880,6 +966,7 @@ mod tests {
             None,
             Some(&oauth),
             "_local",
+            None,
         )
         .await
         .expect("cmd");

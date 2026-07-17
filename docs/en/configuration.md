@@ -16,6 +16,17 @@ BASTION__AGENT__DEFAULT_MODEL=your-model-name cargo run -- daemon
 BASTION__SESSION__DB_PATH=/data/sessions.db cargo run -- daemon
 ```
 
+## Provider and model selection
+
+In the local TUI, use `/connect` to see secure setup steps for a provider and
+`/models` to open the searchable picker of recommended models. The selection is
+saved beside the daemon session database and is restored on the next start.
+`/model` shows the active choice; `/model reset` removes the preference and
+returns to `agent.default_model` in `bastion.toml`.
+
+Keys remain outside chat and TOML: configure them in `.env` or the deployment
+secret store before selecting that provider.
+
 ## Core settings
 
 | Area | Setting | Purpose |

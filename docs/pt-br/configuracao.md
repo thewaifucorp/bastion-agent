@@ -11,6 +11,17 @@ BASTION__AGENT__DEFAULT_MODEL=seu-modelo cargo run -- daemon
 BASTION__SESSION__DB_PATH=/data/sessions.db cargo run -- daemon
 ```
 
+## Escolha de provider e modelo
+
+Na TUI local, use `/connect` para ver a configuração segura de um provider e
+`/models` para abrir o seletor pesquisável de modelos recomendados. A escolha
+é salva ao lado do banco de sessões do daemon e volta automaticamente no próximo
+start. `/model` mostra a escolha ativa; `/model reset` remove a preferência e
+restaura `agent.default_model` do `bastion.toml`.
+
+As chaves continuam fora da conversa e do TOML: configure-as no `.env` ou no
+cofre de segredos do deploy antes de selecionar aquele provider.
+
 ## Ajustes principais
 
 | Área | Chave | Finalidade |

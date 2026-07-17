@@ -88,7 +88,9 @@ impl ThemePrefs {
 
     fn save(&self) -> anyhow::Result<()> {
         let path = theme_prefs_path();
-        let parent = path.parent().context("theme prefs without a parent directory")?;
+        let parent = path
+            .parent()
+            .context("theme prefs without a parent directory")?;
         super::ensure_private_dir(parent)?;
         super::write_private_file(&path, serde_json::to_string_pretty(self)?.as_bytes())
     }
@@ -474,9 +476,9 @@ pub(super) fn render_identity(
         .split(inner);
     match identity.sprite {
         Some(protocol) => {
-            let image = ratatui_image::StatefulImage::new().resize(
-                ratatui_image::Resize::Fit(Some(image::imageops::FilterType::Nearest)),
-            );
+            let image = ratatui_image::StatefulImage::new().resize(ratatui_image::Resize::Fit(
+                Some(image::imageops::FilterType::Nearest),
+            ));
             frame.render_stateful_widget(image, columns[0].inner(Margin::new(1, 0)), protocol);
         }
         None => frame.render_widget(
@@ -549,7 +551,12 @@ fn mascot_lines(
     if let Some(pack) = &appearance.pet {
         return custom_pet_lines(pack, mode, tick, appearance, compact);
     }
-    glyph_face(mode, appearance.animations && tick % 32 < 3, appearance, compact)
+    glyph_face(
+        mode,
+        appearance.animations && tick % 32 < 3,
+        appearance,
+        compact,
+    )
 }
 
 /// Text fallback (no graphics protocol): a minimal glyph face — real font
@@ -602,7 +609,10 @@ fn glyph_face(
         Span::styled("▌ ", style(frame_left)),
         Span::styled(eyes.to_string(), style(face).add_modifier(Modifier::BOLD)),
         Span::styled(" ▐ ", style(frame_right)),
-        Span::styled(seal.to_string(), style(seal_color).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            seal.to_string(),
+            style(seal_color).add_modifier(Modifier::BOLD),
+        ),
     ]);
     if compact {
         return vec![eye_line];
@@ -612,8 +622,14 @@ fn glyph_face(
     // middle line sideways and tear the frame apart.
     let cap = |glyph: char| {
         Line::from(vec![
-            Span::styled(format!(" {}", glyph.to_string().repeat(4)), style(frame_left)),
-            Span::styled(format!("{} ", glyph.to_string().repeat(3)), style(frame_right)),
+            Span::styled(
+                format!(" {}", glyph.to_string().repeat(4)),
+                style(frame_left),
+            ),
+            Span::styled(
+                format!("{} ", glyph.to_string().repeat(3)),
+                style(frame_right),
+            ),
             Span::raw("  "),
         ])
     };
@@ -652,14 +668,19 @@ fn seal_for(mode: VisualMode) -> Option<&'static [&'static str]> {
 /// `seal_top` is the pixel row where the seal starts.
 fn compose(head: &[&str], seal: Option<&[&str]>, seal_top: usize) -> Vec<String> {
     const GAP: usize = 1;
-    let head_width = head.iter().map(|row| row.chars().count()).max().unwrap_or(0);
+    let head_width = head
+        .iter()
+        .map(|row| row.chars().count())
+        .max()
+        .unwrap_or(0);
     let total = head_width + GAP + SEAL_SLOT;
     head.iter()
         .enumerate()
         .map(|(y, row)| {
             let mut line = format!("{row:<head_width$}");
             line.push_str(&".".repeat(GAP));
-            if let Some(seal_row) = seal.and_then(|s| y.checked_sub(seal_top).and_then(|i| s.get(i)))
+            if let Some(seal_row) =
+                seal.and_then(|s| y.checked_sub(seal_top).and_then(|i| s.get(i)))
             {
                 line.push_str(seal_row);
             }
@@ -1080,7 +1101,11 @@ mod tests {
                 widths.iter().all(|w| *w == 11),
                 "{mode:?}: all lines must be 11 wide, got {widths:?}"
             );
-            assert_eq!(glyph_face(mode, false, &appearance, true).len(), 1, "{mode:?}");
+            assert_eq!(
+                glyph_face(mode, false, &appearance, true).len(),
+                1,
+                "{mode:?}"
+            );
         }
     }
 

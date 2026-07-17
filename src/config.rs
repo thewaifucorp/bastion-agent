@@ -6,8 +6,9 @@
 //! Secrets (API keys, tokens) NEVER appear in bastion.toml — they come from .env only.
 
 use crate::channel::OwnerMap;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// Single [[mesh.peer]] entry from bastion.toml.
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
@@ -345,6 +346,49 @@ pub struct SessionConfig {
     pub db_path: String,
     pub autocompact_threshold: f64,
     pub keep_last_n: u32,
+}
+
+/// Runtime-owned model selection written by the local `/model` command.
+/// It intentionally lives beside the session database instead of in
+/// `bastion.toml`: operators keep a reviewable default in TOML while a user's
+/// interactive choice survives daemon restarts without rewriting that file.
+#[derive(Debug, Deserialize, Serialize)]
+struct ModelSelection {
+    model: String,
+}
+
+pub fn model_selection_path(cfg: &BastionConfig) -> PathBuf {
+    Path::new(&cfg.session.db_path)
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .join("model-selection.json")
+}
+
+pub fn load_model_selection(cfg: &BastionConfig) -> Option<String> {
+    let raw = std::fs::read_to_string(model_selection_path(cfg)).ok()?;
+    let selection: ModelSelection = serde_json::from_str(&raw).ok()?;
+    (!selection.model.trim().is_empty()).then_some(selection.model)
+}
+
+pub fn save_model_selection(path: &Path, model: &str) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let temporary = path.with_extension("json.tmp");
+    let contents = serde_json::to_vec_pretty(&ModelSelection {
+        model: model.to_string(),
+    })
+    .expect("model selection must serialize");
+    std::fs::write(&temporary, contents)?;
+    std::fs::rename(temporary, path)
+}
+
+pub fn clear_model_selection(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -993,5 +1037,21 @@ auth = "host-chatgpt-login"
             ConversationBackend::Runtime("codex_app_server".to_string())
         );
         assert_eq!(profile.task_runtime.as_deref(), Some("acpx_claude"));
+    }
+
+    #[test]
+    fn model_selection_is_atomic_and_clearable() {
+        let directory = tempfile::tempdir().expect("temporary model state directory");
+        let path = directory.path().join("model-selection.json");
+
+        save_model_selection(&path, "gemini-2.5-pro").expect("save selection");
+        let selection: ModelSelection =
+            serde_json::from_slice(&std::fs::read(&path).expect("read selection"))
+                .expect("parse selection");
+        assert_eq!(selection.model, "gemini-2.5-pro");
+
+        clear_model_selection(&path).expect("clear selection");
+        assert!(!path.exists());
+        clear_model_selection(&path).expect("clearing a missing selection is safe");
     }
 }

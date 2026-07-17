@@ -22,6 +22,9 @@ for how that differs from the library crates it depends on).
 - Pixel-art Keeper and Patchwork mascot rendering through supported terminal
   graphics protocols, with state-specific faces and seals, automatic text-mode
   fallback, and a `BASTION_TUI_GRAPHICS=off` override.
+- Persistent daemon-wide provider/model selection with `/models`, a local
+  recommended-model picker, secure `/connect` setup guidance, and `/model reset`
+  to restore the configured default.
 
 ## [0.1.2] — 2026-07-16
 

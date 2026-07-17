@@ -240,8 +240,11 @@ async fn main() -> anyhow::Result<()> {
     let mcp_client = Arc::new(mcp_client);
     let mcp_for_product = mcp_client.clone();
 
-    // Init provider from config (default_model from bastion.toml, overridable via env BASTION__AGENT__DEFAULT_MODEL)
-    let default_model = cfg.agent.default_model.clone();
+    // The reviewable TOML default can be overridden by a local `/model` choice
+    // saved beside the persistent session database. This makes an interactive
+    // provider switch survive a daemon restart without rewriting bastion.toml.
+    let default_model = bastion::config::load_model_selection(&cfg)
+        .unwrap_or_else(|| cfg.agent.default_model.clone());
     let provider: bastion_providers::SharedProvider =
         Arc::new(RwLock::new(resolve_provider(&default_model)?));
 
@@ -647,6 +650,10 @@ async fn daemon_loop(
     // original `self.registry` field's always-present behavior.
     let mut command_resources = CommandResources {
         registry: registry_for_product.clone(),
+        model_selection: Some(bastion::agent::command::ModelSelection {
+            path: bastion::config::model_selection_path(cfg),
+            default_model: cfg.agent.default_model.clone(),
+        }),
         ..Default::default()
     };
 

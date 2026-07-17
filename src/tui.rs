@@ -369,8 +369,20 @@ const COMMANDS: &[CommandInfo] = &[
     },
     CommandInfo {
         name: "/model",
-        usage: "/model <nome>",
-        desc: "switch the model — console-only, affects the whole daemon",
+        usage: "/model",
+        desc: "show the active provider and model",
+        remote: false,
+    },
+    CommandInfo {
+        name: "/models",
+        usage: "/models",
+        desc: "browse recommended models and save your choice",
+        remote: false,
+    },
+    CommandInfo {
+        name: "/connect",
+        usage: "/connect <provider>",
+        desc: "set up a provider without putting credentials in chat",
         remote: false,
     },
     CommandInfo {
@@ -488,6 +500,29 @@ const SLEEP_COMMANDS: &[CommandInfo] = &[
     pet_option("/pet sleep night", "🛏 restore every care need"),
 ];
 
+/// The local model picker starts with a small, useful set. The daemon still
+/// accepts any resolver-supported model ID when the user types it manually;
+/// this list prevents the common case from becoming an exercise in memorizing
+/// provider slugs.
+const MODEL_COMMANDS: &[CommandInfo] = &[
+    pet_option("/models gemini-2.5-flash", "Google Gemini · fast, low-cost"),
+    pet_option("/models gemini-2.5-pro", "Google Gemini · deeper reasoning"),
+    pet_option("/models claude-sonnet-4-5", "Anthropic · balanced coding"),
+    pet_option("/models claude-opus-4-5", "Anthropic · hardest tasks"),
+    pet_option("/models claude-haiku-4-5", "Anthropic · fast, lightweight"),
+    pet_option("/models gpt-4.1", "OpenAI · general-purpose"),
+    pet_option("/models gpt-4.1-mini", "OpenAI · fast, lower-cost"),
+    pet_option("/models o3", "OpenAI · reasoning"),
+];
+
+const CONNECT_COMMANDS: &[CommandInfo] = &[
+    pet_option("/connect gemini", "set up Gemini"),
+    pet_option("/connect anthropic", "set up Anthropic"),
+    pet_option("/connect openai", "set up OpenAI"),
+    pet_option("/connect openrouter", "set up OpenRouter"),
+    pet_option("/connect ollama", "set up local Ollama"),
+];
+
 const fn pet_option(command: &'static str, desc: &'static str) -> CommandInfo {
     CommandInfo {
         name: command,
@@ -557,6 +592,10 @@ fn command_matches(input: &str) -> Vec<&'static CommandInfo> {
         Some(PLAY_COMMANDS)
     } else if input.starts_with("/pet sleep ") {
         Some(SLEEP_COMMANDS)
+    } else if input.starts_with("/models ") || input == "/models" {
+        Some(MODEL_COMMANDS)
+    } else if input.starts_with("/connect ") {
+        Some(CONNECT_COMMANDS)
     } else {
         None
     };
@@ -631,10 +670,7 @@ fn companion_command(app: &mut App, input: &str) -> Option<(String, VisualMode)>
             }
             Some("off") => {
                 app.companion.game_enabled = false;
-                save_companion(
-                    app,
-                    "Game mode off. The visual companion stays active.",
-                )
+                save_companion(app, "Game mode off. The visual companion stays active.")
             }
             _ => "Usage: /pet game <on|off>".into(),
         },
@@ -737,7 +773,9 @@ fn care_cue(cue: CareCue) -> &'static str {
         CareCue::Water => "Keeper is thirsty — /pet water (grab some water for yourself too).",
         CareCue::Feed => "Keeper is hungry — /pet feed to feed it.",
         CareCue::Play => "Keeper wants a short reset — /pet play whenever you choose to pause.",
-        CareCue::Sleep => "This active session is getting long — /pet sleep when it's time to stop.",
+        CareCue::Sleep => {
+            "This active session is getting long — /pet sleep when it's time to stop."
+        }
     }
 }
 
@@ -1240,15 +1278,14 @@ async fn run_app(
                             }
                             if let Some(unknown) = unknown_command(&text) {
                                 app.visual_mode = VisualMode::Unknown;
-                                app.settle_at = Some(Instant::now() + settle_after(VisualMode::Unknown));
+                                app.settle_at =
+                                    Some(Instant::now() + settle_after(VisualMode::Unknown));
                                 app.lines.push(Line::Bastion(unknown));
                                 continue;
                             }
                             let input_chars = text.chars().count();
                             let input_xp = CompanionState::input_xp(input_chars);
-                            if app.companion.game_enabled
-                                && !text.starts_with('/')
-                                && input_xp > 0
+                            if app.companion.game_enabled && !text.starts_with('/') && input_xp > 0
                             {
                                 if let Some(level) = app.companion.award_input(input_chars) {
                                     app.lines.push(Line::Event(format!(
@@ -1386,10 +1423,7 @@ pub async fn run(url: &str, token: Option<&str>, owner: &str, auto_start: bool) 
         (None, None, None) => pair(&client, url).await?,
     };
 
-    println!(
-        "◈ Bastion connected as '{}' at {}.",
-        session.owner_id, url
-    );
+    println!("◈ Bastion connected as '{}' at {}.", session.owner_id, url);
 
     // Ask the terminal for a graphics protocol (sixel/kitty/iTerm2) before
     // entering the alternate screen; the query talks over stdio. When only
@@ -1400,9 +1434,7 @@ pub async fn run(url: &str, token: Option<&str>, owner: &str, auto_start: bool) 
     let picker = (!graphics_off)
         .then(|| ratatui_image::picker::Picker::from_query_stdio().ok())
         .flatten()
-        .filter(|picker| {
-            picker.protocol_type() != ratatui_image::picker::ProtocolType::Halfblocks
-        });
+        .filter(|picker| picker.protocol_type() != ratatui_image::picker::ProtocolType::Halfblocks);
 
     install_panic_hook();
     enable_raw_mode()?;
@@ -1464,12 +1496,21 @@ mod tests {
         assert_eq!(command_matches("/pet feed ").len(), FOOD_COMMANDS.len());
         assert_eq!(command_matches("/pet play ").len(), PLAY_COMMANDS.len());
         assert_eq!(command_matches("/pet sleep ").len(), SLEEP_COMMANDS.len());
+        assert_eq!(command_matches("/models ").len(), MODEL_COMMANDS.len());
+        assert_eq!(command_matches("/connect ").len(), CONNECT_COMMANDS.len());
         assert_eq!(
             command_matches("/pet feed ch")
                 .iter()
                 .map(|c| c.name)
                 .collect::<Vec<_>>(),
             vec!["/pet feed chocolate"]
+        );
+        assert_eq!(
+            command_matches("/models claude-op")
+                .iter()
+                .map(|c| c.name)
+                .collect::<Vec<_>>(),
+            vec!["/models claude-opus-4-5"]
         );
 
         // Comando completado (com espaço final) fecha o menu para o Enter enviar.
@@ -1485,7 +1526,10 @@ mod tests {
         assert_eq!(themes.len(), THEME_COMMANDS.len());
         assert!(themes.contains(&"/theme rgb"));
         assert_eq!(
-            command_matches("/theme m").iter().map(|c| c.name).collect::<Vec<_>>(),
+            command_matches("/theme m")
+                .iter()
+                .map(|c| c.name)
+                .collect::<Vec<_>>(),
             vec!["/theme magenta", "/theme mono"]
         );
 
