@@ -505,6 +505,7 @@ const SLEEP_COMMANDS: &[CommandInfo] = &[
 /// this list prevents the common case from becoming an exercise in memorizing
 /// provider slugs.
 const MODEL_COMMANDS: &[CommandInfo] = &[
+    pet_option("/models", "show current model · type space to browse"),
     pet_option("/models gemini-2.5-flash", "Google Gemini · fast, low-cost"),
     pet_option("/models gemini-2.5-pro", "Google Gemini · deeper reasoning"),
     pet_option("/models claude-sonnet-4-5", "Anthropic · balanced coding"),
@@ -1496,7 +1497,8 @@ mod tests {
         assert_eq!(command_matches("/pet feed ").len(), FOOD_COMMANDS.len());
         assert_eq!(command_matches("/pet play ").len(), PLAY_COMMANDS.len());
         assert_eq!(command_matches("/pet sleep ").len(), SLEEP_COMMANDS.len());
-        assert_eq!(command_matches("/models ").len(), MODEL_COMMANDS.len());
+        assert_eq!(command_matches("/models ").len(), MODEL_COMMANDS.len() - 1);
+        assert_eq!(command_matches("/models")[0].name, "/models");
         assert_eq!(command_matches("/connect ").len(), CONNECT_COMMANDS.len());
         assert_eq!(
             command_matches("/pet feed ch")
