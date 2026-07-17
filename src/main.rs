@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use std::collections::HashMap;
 use std::process::Command as ProcessCommand;
 use std::process::Stdio;
@@ -92,7 +92,7 @@ enum Command {
     /// Sign in to a subscription runtime inside Bastion's Docker container
     Connect {
         /// claude | codex | opencode
-        provider: String,
+        provider: SubscriptionProvider,
         /// claude only: run `claude setup-token` instead of `claude auth login`
         /// (headless-friendly — prints a token to paste rather than a browser flow).
         #[arg(long)]
@@ -111,6 +111,11 @@ enum Command {
     Companion {
         #[command(subcommand)]
         action: CompanionAction,
+    },
+    /// Generate a shell completion script (Fase 3.6)
+    Completions {
+        /// bash | zsh | fish | powershell | elvish
+        shell: clap_complete::Shell,
     },
     /// Start MCP server over stdio (local subprocess transport).
     /// Used by local agents that control lifecycle (Claude Code, opencode, etc.).
@@ -145,13 +150,85 @@ enum CompanionAction {
     /// Record an external coding-agent lifecycle event
     Event {
         /// session-start | activity | session-stop
-        kind: String,
+        kind: EventKind,
         /// Event source, for example claude, codex, or opencode
         #[arg(long, default_value = "external")]
         source: String,
     },
     /// Care for the companion: feed | water | play | sleep
-    Care { action: String },
+    Care { action: CareAction },
+}
+
+/// Fase 3.6: typed in place of a stringly-typed `provider: String` — clap
+/// validates the value itself (rejecting bad input with a proper "possible
+/// values" error) instead of `connect_subscription`'s own runtime `ensure!`.
+/// Kebab-case (clap's `ValueEnum` default) for these single-word variants is
+/// already exactly the lowercase form `connect_subscription`/`connect_login_args`
+/// match on — `as_str()` below is the single point mapping the enum back to
+/// that existing `&str` contract, so neither function's signature changes.
+#[derive(ValueEnum, Clone, Copy, Debug)]
+enum SubscriptionProvider {
+    Claude,
+    Codex,
+    Opencode,
+}
+
+impl SubscriptionProvider {
+    fn as_str(self) -> &'static str {
+        match self {
+            SubscriptionProvider::Claude => "claude",
+            SubscriptionProvider::Codex => "codex",
+            SubscriptionProvider::Opencode => "opencode",
+        }
+    }
+}
+
+/// Fase 3.6: kebab-case (clap's `ValueEnum` default for multi-word variants)
+/// already matches `tui.rs::companion_event`'s existing string contract
+/// (`"session-start"`/`"activity"`/`"session-stop"`) — `as_str()` is the one
+/// place that mapping is spelled out, so `companion_event`'s signature
+/// (`kind: &str`) stays unchanged.
+#[derive(ValueEnum, Clone, Copy, Debug)]
+enum EventKind {
+    SessionStart,
+    Activity,
+    SessionStop,
+}
+
+impl EventKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            EventKind::SessionStart => "session-start",
+            EventKind::Activity => "activity",
+            EventKind::SessionStop => "session-stop",
+        }
+    }
+}
+
+/// Fase 3.6: `#[value(alias = "rest")]` preserves the old free-typed `"rest"`
+/// spelling as a synonym for `Sleep` at the clap parsing layer, so
+/// `bastion companion care rest` keeps working verbatim even though the
+/// canonical value is now `sleep`. `as_str()` always returns the canonical
+/// form — `tui.rs::companion_care`'s own `"sleep" | "rest"` match arm still
+/// accepts both directly, for any other caller that passes a raw string.
+#[derive(ValueEnum, Clone, Copy, Debug)]
+enum CareAction {
+    Feed,
+    Water,
+    Play,
+    #[value(alias = "rest")]
+    Sleep,
+}
+
+impl CareAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            CareAction::Feed => "feed",
+            CareAction::Water => "water",
+            CareAction::Play => "play",
+            CareAction::Sleep => "sleep",
+        }
+    }
 }
 
 fn default_chat_command() -> Command {
@@ -353,11 +430,17 @@ async fn main() -> anyhow::Result<()> {
     {
         return bastion::tui::run(url, token.as_deref(), owner, !no_auto_start).await;
     }
+    if let Command::Completions { shell } = &command {
+        clap_complete::generate(*shell, &mut Cli::command(), "bastion", &mut std::io::stdout());
+        return Ok(());
+    }
     if let Command::Companion { action } = &command {
         let output = match action {
             CompanionAction::Status => bastion::tui::companion_status(),
-            CompanionAction::Event { kind, source } => bastion::tui::companion_event(kind, source)?,
-            CompanionAction::Care { action } => bastion::tui::companion_care(action)?,
+            CompanionAction::Event { kind, source } => {
+                bastion::tui::companion_event(kind.as_str(), source)?
+            }
+            CompanionAction::Care { action } => bastion::tui::companion_care(action.as_str())?,
         };
         println!("{output}");
         return Ok(());
@@ -369,7 +452,7 @@ async fn main() -> anyhow::Result<()> {
         yes,
     } = &command
     {
-        return connect_subscription(provider, *setup_token, *import_host, *yes);
+        return connect_subscription(provider.as_str(), *setup_token, *import_host, *yes);
     }
 
     // Load bastion.toml config (non-secret config only; secrets stay in .env)
@@ -689,6 +772,9 @@ async fn main() -> anyhow::Result<()> {
             unreachable!("companion is handled before daemon initialization")
         }
         Command::Connect { .. } => unreachable!("connect is handled before daemon initialization"),
+        Command::Completions { .. } => {
+            unreachable!("completions is handled before daemon initialization")
+        }
         Command::Agent { message } => {
             let response = agent.run_turn(&message).await?;
             println!("{}", response);
@@ -1599,7 +1685,11 @@ async fn daemon_loop(
                                 println!("{msg}")
                             }
                             CommandResult::Unknown(cmd) => {
-                                println!("Unknown command: {}. Type /help.", cmd);
+                                // Fase 3.3: "did you mean" hint — same helper the TUI and the
+                                // webhook inbound arm below use, so a typo gets the same
+                                // suggestion no matter which surface it was typed from.
+                                let hint = bastion::command_catalog::did_you_mean_suffix(&cmd);
+                                println!("Unknown command: {cmd}.{hint} Type /help.");
                             }
                         }
                     }
@@ -1653,8 +1743,6 @@ async fn daemon_loop(
             // database. Keep every other stateful command console-only unless its authority
             // and scope are reviewed explicitly.
             Some(req) = inbound_rx.recv() => {
-                const REMOTE_ALLOWED_COMMANDS: &[&str] =
-                    &["/help", "/contest", "/connect", "/models", "/model", "/backend", "/backends"];
                 // CONC-1: acquire per-owner lock before processing turn.
                 // Two turns from the same owner cannot run concurrently (double-tap protection).
                 // Different owners are independent — their locks do not contend.
@@ -1666,14 +1754,15 @@ async fn daemon_loop(
                 let trimmed = req.text.trim();
                 let command_token = trimmed.split_whitespace().next().filter(|s| s.starts_with('/'));
                 // A token can look like a command but not be one (e.g. a Claude-Code-style
-                // `/usage` typed out of habit, or a plain typo) — only KNOWN_COMMANDS get the
-                // "console-only" verdict; anything else falls through to handle_command's own
-                // Unknown-command message, exactly matching what the console would say.
+                // `/usage` typed out of habit, or a plain typo) — only known daemon commands
+                // (Fase 3.1: `command_catalog::is_known`) get the "console-only" verdict;
+                // anything else falls through to handle_command's own Unknown-command
+                // message, exactly matching what the console would say.
                 let is_known_command = command_token
-                    .is_some_and(|c| bastion::agent::command::KNOWN_COMMANDS.contains(&c));
-                let res = if let Some(cmd) =
-                    command_token.filter(|c| is_known_command && !REMOTE_ALLOWED_COMMANDS.contains(c))
-                {
+                    .is_some_and(bastion::command_catalog::is_known);
+                let res = if let Some(cmd) = command_token.filter(|c| {
+                    is_known_command && !bastion::command_catalog::is_remote_allowed(c)
+                }) {
                     Ok(format!("{cmd} is console-only — not allowed remotely."))
                 } else if matches!(command_token, Some("/backend") | Some("/backends")) {
                     // Fase 2.4: needs `&mut agent` — see the stdin arm's identical
@@ -1716,7 +1805,8 @@ async fn daemon_loop(
                             })
                         }
                         Ok(CommandResult::Unknown(cmd)) => {
-                            Ok(format!("Unknown command: {cmd}. Type /help."))
+                            let hint = bastion::command_catalog::did_you_mean_suffix(&cmd);
+                            Ok(format!("Unknown command: {cmd}.{hint} Type /help."))
                         }
                         Ok(CommandResult::Stop) => {
                             Ok("/stop is console-only — not allowed remotely.".to_string())
@@ -1866,8 +1956,42 @@ mod cli_tests {
         assert!(matches!(
             cli.command,
             Some(Command::Companion {
-                action: CompanionAction::Event { ref kind, ref source }
-            }) if kind == "activity" && source == "codex"
+                action: CompanionAction::Event { kind: EventKind::Activity, ref source }
+            }) if source == "codex"
         ));
+    }
+
+    #[test]
+    fn connect_provider_is_validated_by_clap() {
+        let cli = Cli::try_parse_from(["bastion", "connect", "claude"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Connect {
+                provider: SubscriptionProvider::Claude,
+                ..
+            })
+        ));
+        // clap rejects an unknown provider outright — no more hand-rolled
+        // `ensure!` needed in `connect_subscription` for this case.
+        assert!(Cli::try_parse_from(["bastion", "connect", "bogus"]).is_err());
+    }
+
+    #[test]
+    fn care_action_accepts_rest_as_a_sleep_alias() {
+        let cli = Cli::try_parse_from(["bastion", "companion", "care", "rest"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Companion {
+                action: CompanionAction::Care {
+                    action: CareAction::Sleep
+                }
+            })
+        ));
+    }
+
+    #[test]
+    fn completions_subcommand_parses() {
+        let cli = Cli::try_parse_from(["bastion", "completions", "zsh"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Completions { .. })));
     }
 }
