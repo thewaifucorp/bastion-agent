@@ -1733,10 +1733,15 @@ async fn daemon_loop(
             // (agent.handle_command), but ALLOWLISTED, not blocklisted — commands are
             // console-only by default. `provider` and `forced_persona` are single fields
             // shared by the whole daemon (not per-owner), so /as lets one remote
-            // owner affect every other owner's turns; /logs exposes daemon-wide (not
-            // owner-scoped) WARN/ERROR entries; /connect-app mints a JWT whose `sub` is the
-            // caller-chosen device name verbatim — remotely reachable, that's an
+            // owner affect every other owner's turns; /connect-app mints a JWT whose `sub`
+            // is the caller-chosen device name verbatim — remotely reachable, that's an
             // authentication bypass (mint a code naming ANY owner, then impersonate them).
+            // Fase 3.1: `/logs` IS now remote-allowed (command_catalog::Scope::Remote) —
+            // deliberately, not an oversight: `read_recent_log_errors`'s extraction
+            // contract (see its rustdoc in agent/command.rs) is timestamp/level/message
+            // ONLY, never conversation content, so exposing daemon-wide (not owner-scoped)
+            // WARN/ERROR entries over a channel is an accepted, reviewed trade-off, not the
+            // same class of risk as the identity/impersonation issues above.
             // `/connect` is instructional only. `/models` and `/model` deliberately let an
             // authenticated cockpit choose the daemon-wide provider: that is the purpose of
             // the local TUI's picker, and the selection is persisted beside its local session
