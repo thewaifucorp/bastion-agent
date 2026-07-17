@@ -39,6 +39,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use url::{Host, Url};
 use visual::{Appearance, Identity, VisualMode};
 
+use crate::command_catalog;
 use crate::compose::find_compose_dir;
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
@@ -185,21 +186,50 @@ fn ensure_compose_port(compose_dir: &Path) -> Result<()> {
     )
 }
 
-fn start_native_daemon() -> Result<()> {
+/// Fase 3.5: returns the spawned `Child` instead of detaching its own reaper
+/// thread — `ensure_runtime`'s poll loop now needs `try_wait()` on this exact
+/// process to detect an early exit instead of always burning the full
+/// `STARTUP_TIMEOUT`. The caller is responsible for eventually reaping it
+/// (see the two `native_child` handling points in `ensure_runtime` below).
+fn start_native_daemon() -> Result<std::process::Child> {
     println!("◈ Starting the local Bastion daemon in the background…");
     let executable = std::env::current_exe().context("locating the Bastion executable")?;
-    let mut child = Command::new(executable)
+    Command::new(executable)
         .arg("daemon")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()
-        .context("starting the local Bastion daemon")?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
+        .context("starting the local Bastion daemon")
 }
+
+/// Fase 3.5: tails the single most recent ERROR/WARN log line (reusing
+/// `agent::command::read_recent_log_errors`'s exact safe extraction —
+/// timestamp/level/message only, never conversation content) for a startup
+/// failure message that actually points at what went wrong, instead of just
+/// "wasn't ready in time".
+fn startup_failure_message() -> String {
+    let log_path = std::env::var("RUST_LOG_PATH")
+        .or_else(|_| std::env::var("BASTION__LOGGING__LOG_PATH"))
+        .unwrap_or_else(|_| "bastion.log".to_string());
+    let last_error = crate::agent::command::read_recent_log_errors(&log_path, 1)
+        .into_iter()
+        .next();
+    match last_error {
+        Some(line) => format!(
+            "daemon exited during startup — last error: {line} \
+             (check `docker compose logs core` or `.bastion/bastion.log` for more)"
+        ),
+        None => format!(
+            "the runtime started but was not ready within {}s; check `docker compose logs core` or `.bastion/bastion.log`",
+            STARTUP_TIMEOUT.as_secs()
+        ),
+    }
+}
+
+/// Fase 3.5: how often the poll loop checks for an early exit (container or
+/// native process) instead of waiting out the full `STARTUP_TIMEOUT` blind.
+const EARLY_EXIT_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 async fn ensure_runtime(client: &Client, base_url: &str, auto_start: bool) -> Result<()> {
     if runtime_ready(client, base_url).await {
@@ -218,33 +248,71 @@ async fn ensure_runtime(client: &Client, base_url: &str, auto_start: bool) -> Re
     let compose_dir = std::env::current_dir()
         .ok()
         .and_then(|cwd| find_compose_dir(&cwd));
-    let compose_started = match compose_dir {
+    let mut native_child: Option<std::process::Child> = None;
+    let compose_started = match &compose_dir {
         Some(dir) => {
-            let started = start_compose(&dir)?;
+            let started = start_compose(dir)?;
             if started {
-                ensure_compose_port(&dir)?;
+                ensure_compose_port(dir)?;
             }
             started
         }
         None => false,
     };
     if !compose_started {
-        start_native_daemon()?;
+        native_child = Some(start_native_daemon()?);
     }
 
     let started_at = Instant::now();
-    while started_at.elapsed() < STARTUP_TIMEOUT {
+    let mut last_early_exit_check = Instant::now();
+    loop {
         if runtime_ready(client, base_url).await {
             println!("◈ Bastion runtime ready.");
+            // Reap the native child in the background for the rest of its
+            // (long) life — same net effect as the reaper thread this used
+            // to spawn unconditionally, just deferred until we're done
+            // actively polling it ourselves.
+            if let Some(mut child) = native_child {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
             return Ok(());
+        }
+
+        // Fase 3.5: detect the daemon/container exiting early instead of
+        // burning the full STARTUP_TIMEOUT (120s) waiting on a process that
+        // already died — checked at most once per EARLY_EXIT_CHECK_INTERVAL,
+        // not every poll tick, to keep this a cheap subprocess call.
+        if last_early_exit_check.elapsed() >= EARLY_EXIT_CHECK_INTERVAL {
+            last_early_exit_check = Instant::now();
+            if compose_started {
+                if let Some(dir) = compose_dir.as_deref() {
+                    let still_running = Command::new("docker")
+                        .args(["compose", "ps", "--status", "running", "-q", "core"])
+                        .current_dir(dir)
+                        .output()
+                        .is_ok_and(|out| {
+                            out.status.success()
+                                && !String::from_utf8_lossy(&out.stdout).trim().is_empty()
+                        });
+                    if !still_running {
+                        bail!(startup_failure_message());
+                    }
+                }
+            }
+        }
+        if let Some(child) = native_child.as_mut() {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                bail!(startup_failure_message());
+            }
+        }
+
+        if started_at.elapsed() >= STARTUP_TIMEOUT {
+            bail!(startup_failure_message());
         }
         tokio::time::sleep(STARTUP_POLL_INTERVAL).await;
     }
-
-    bail!(
-        "the runtime started but was not ready within {}s; check `docker compose logs core` or `.bastion/bastion.log`",
-        STARTUP_TIMEOUT.as_secs()
-    )
 }
 
 /// Plain-terminal pairing prompt — runs BEFORE raw mode / the alternate screen
@@ -318,96 +386,88 @@ enum AppMsg {
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// Known Bastion slash commands, mirrored from `src/agent/command.rs` for
-/// autocomplete. `remote` matches the allowlist in `main.rs`'s inbound_rx arm
-/// (WEB-CMD-01) — keep both lists in sync if a command's exposure changes.
+/// A renderable command-menu entry — used for the nested picker lists below
+/// (`/pet`, `/theme`, `/models`, `/connect`, `/backend` sub-options). These
+/// aren't themselves top-level Bastion commands (e.g. `/pet feed apple` is an
+/// argument value, not a command `command_catalog::CATALOG` tracks), so they
+/// stay local to `tui.rs` — only the TOP-LEVEL command list (Fase 3.1)
+/// now comes from `command_catalog::CATALOG`, the single source of truth
+/// also used by the daemon's dispatch/allowlist/help-text.
 struct CommandInfo {
     name: &'static str,
     usage: &'static str,
     desc: &'static str,
-    remote: bool,
 }
 
-const COMMANDS: &[CommandInfo] = &[
-    CommandInfo {
-        name: "/pet",
-        usage: "/pet <action>",
-        desc: "care for and configure the companion — type space to see actions",
-        remote: false,
-    },
-    CommandInfo {
-        name: "/theme",
-        usage: "/theme <nome|#RRGGBB>",
-        desc: "switch the TUI colors instantly — type space to see themes",
-        remote: false,
-    },
-    CommandInfo {
-        name: "/help",
-        usage: "/help",
-        desc: "list the commands",
-        remote: true,
-    },
-    CommandInfo {
-        name: "/contest",
-        usage: "/contest <id>",
-        desc: "revoke a belief by ID",
-        remote: true,
-    },
-    CommandInfo {
-        name: "/model",
-        usage: "/model",
-        desc: "show the active provider and model",
-        remote: false,
-    },
-    CommandInfo {
-        name: "/models",
-        usage: "/models",
-        desc: "browse recommended models and save your choice",
-        remote: false,
-    },
-    CommandInfo {
-        name: "/connect",
-        usage: "/connect <provider>",
-        desc: "set up a provider without putting credentials in chat",
-        remote: false,
-    },
-    CommandInfo {
-        name: "/backend",
-        usage: "/backend",
-        desc: "list/switch the conversation backend — model or a subscription runtime",
-        remote: true,
-    },
-    CommandInfo {
-        name: "/as",
-        usage: "/as <persona>",
-        desc: "force a persona for the next turn — console-only",
-        remote: false,
-    },
-    CommandInfo {
-        name: "/cabinet",
-        usage: "/cabinet [personas..]",
-        desc: "convene the Cabinet — console-only",
-        remote: false,
-    },
-    CommandInfo {
-        name: "/logs",
-        usage: "/logs",
-        desc: "recent daemon errors — console-only",
-        remote: false,
-    },
-    CommandInfo {
-        name: "/stop",
-        usage: "/stop",
-        desc: "shut down the daemon — console-only",
-        remote: false,
-    },
-    CommandInfo {
-        name: "/connect-app",
-        usage: "/connect-app <device>",
-        desc: "pair a new device — console-only",
-        remote: false,
-    },
-];
+/// Fase 3.1: a uniform view over both kinds of suggestion-panel entries —
+/// `command_catalog::CommandSpec` (top-level commands, scope-aware) and the
+/// local `CommandInfo` (nested picker sub-options, no scope of their own).
+/// `tag()` is what replaces the old hardcoded-per-entry `remote: bool`,
+/// which had gone stale for the nested pickers (every `MODEL_COMMANDS`/
+/// `CONNECT_COMMANDS`/`BACKEND_COMMANDS` row hardcoded `remote: false` via
+/// `pet_option`, so they always rendered a false " [console]" tag even
+/// though `/model`, `/connect`, and `/backend` are all Remote-scoped) — it
+/// derives the tag from the scope of the entry's OWN top-level command word
+/// instead of a per-row bool that could disagree with the catalog.
+trait Suggestion {
+    fn name(&self) -> &'static str;
+    fn usage(&self) -> &'static str;
+    fn desc(&self) -> &'static str;
+    fn tag(&self) -> &'static str;
+}
+
+/// The top-level command word of a (possibly nested) suggestion name, e.g.
+/// `"/backend use acpx_claude"` -> `"/backend"`. Nested picker entries are
+/// always `"/<command> <rest>"`, so the first token is always the real
+/// command this row belongs to.
+fn leading_command(name: &str) -> &str {
+    name.split_whitespace().next().unwrap_or(name)
+}
+
+fn scope_tag(scope: command_catalog::Scope) -> &'static str {
+    match scope {
+        command_catalog::Scope::Remote => "",
+        command_catalog::Scope::ConsoleOnly => " [console]",
+        command_catalog::Scope::TuiLocal => " [TUI]",
+    }
+}
+
+impl Suggestion for CommandInfo {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn usage(&self) -> &'static str {
+        self.usage
+    }
+    fn desc(&self) -> &'static str {
+        self.desc
+    }
+    fn tag(&self) -> &'static str {
+        match command_catalog::scope_of(leading_command(self.name)) {
+            Some(scope) => scope_tag(scope),
+            // Every nested picker's parent command is in CATALOG — this arm
+            // is unreachable in practice, but a blank tag is the safe
+            // default if a future nested list's name doesn't parse back to
+            // one, rather than panicking the whole render loop.
+            None => "",
+        }
+    }
+}
+
+impl Suggestion for command_catalog::CommandSpec {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn usage(&self) -> &'static str {
+        self.usage
+    }
+    fn desc(&self) -> &'static str {
+        self.desc
+    }
+    fn tag(&self) -> &'static str {
+        scope_tag(self.scope)
+    }
+}
 
 /// Local `/pet` actions, expanded in the menu as soon as the user types the
 /// space — each entry is the full command so Tab/Enter complete it directly,
@@ -417,49 +477,41 @@ const PET_COMMANDS: &[CommandInfo] = &[
         name: "/pet stats",
         usage: "/pet stats",
         desc: "companion level, XP, and needs",
-        remote: false,
     },
     CommandInfo {
         name: "/pet game on",
         usage: "/pet game on",
         desc: "turn game mode on — XP per completed turn",
-        remote: false,
     },
     CommandInfo {
         name: "/pet game off",
         usage: "/pet game off",
         desc: "turn game mode off",
-        remote: false,
     },
     CommandInfo {
         name: "/pet water",
         usage: "/pet water",
         desc: "hydrate the companion (drink some water yourself too)",
-        remote: false,
     },
     CommandInfo {
         name: "/pet feed",
         usage: "/pet feed",
         desc: "choose food — type space to see the pantry",
-        remote: false,
     },
     CommandInfo {
         name: "/pet play",
         usage: "/pet play",
         desc: "choose an activity — type space to see games",
-        remote: false,
     },
     CommandInfo {
         name: "/pet sleep",
         usage: "/pet sleep",
         desc: "choose a rest duration — type space to see options",
-        remote: false,
     },
     CommandInfo {
         name: "/pet use",
         usage: "/pet use <pet.toml|builtin>",
         desc: "switch the active pet pack",
-        remote: false,
     },
 ];
 
@@ -496,16 +548,22 @@ const SLEEP_COMMANDS: &[CommandInfo] = &[
 /// accepts any resolver-supported model ID when the user types it manually;
 /// this list prevents the common case from becoming an exercise in memorizing
 /// provider slugs.
+///
+/// Fase 3.2: entries are `/model <id>` (canonical), not `/models <id>` — the
+/// picker itself now expands on EITHER `/model ` or `/models ` (see
+/// `command_matches` below), so completing to the canonical spelling keeps
+/// the on-disk persisted selection and any transcript text consistent
+/// regardless of which alias opened the menu.
 const MODEL_COMMANDS: &[CommandInfo] = &[
-    pet_option("/models", "show current model · type space to browse"),
-    pet_option("/models gemini-2.5-flash", "Google Gemini · fast, low-cost"),
-    pet_option("/models gemini-2.5-pro", "Google Gemini · deeper reasoning"),
-    pet_option("/models claude-sonnet-4-5", "Anthropic · balanced coding"),
-    pet_option("/models claude-opus-4-5", "Anthropic · hardest tasks"),
-    pet_option("/models claude-haiku-4-5", "Anthropic · fast, lightweight"),
-    pet_option("/models gpt-4.1", "OpenAI · general-purpose"),
-    pet_option("/models gpt-4.1-mini", "OpenAI · fast, lower-cost"),
-    pet_option("/models o3", "OpenAI · reasoning"),
+    pet_option("/model", "show current model · type space to browse"),
+    pet_option("/model gemini-2.5-flash", "Google Gemini · fast, low-cost"),
+    pet_option("/model gemini-2.5-pro", "Google Gemini · deeper reasoning"),
+    pet_option("/model claude-sonnet-4-5", "Anthropic · balanced coding"),
+    pet_option("/model claude-opus-4-5", "Anthropic · hardest tasks"),
+    pet_option("/model claude-haiku-4-5", "Anthropic · fast, lightweight"),
+    pet_option("/model gpt-4.1", "OpenAI · general-purpose"),
+    pet_option("/model gpt-4.1-mini", "OpenAI · fast, lower-cost"),
+    pet_option("/model o3", "OpenAI · reasoning"),
 ];
 
 const CONNECT_COMMANDS: &[CommandInfo] = &[
@@ -533,10 +591,11 @@ const BACKEND_COMMANDS: &[CommandInfo] = &[
     pet_option("/backend use acpx_opencode", "OpenCode subscription runtime"),
 ];
 
-/// Fase 2.10 cross-link: shown at the top of the `/models ` picker only (not
-/// part of `MODEL_COMMANDS` itself — that list must never gain `runtime:`
-/// entries, which would route through `resolve_provider` and fail) so an
-/// owner browsing models notices there's a whole other kind of backend one
+/// Fase 2.10 cross-link (Fase 3.2: shown for either `/model `/`/models `
+/// spelling now): shown at the top of the model picker only (not part of
+/// `MODEL_COMMANDS` itself — that list must never gain `runtime:` entries,
+/// which would route through `resolve_provider` and fail) so an owner
+/// browsing models notices there's a whole other kind of backend one
 /// space-key press away.
 const MODEL_BACKEND_CROSSLINK: CommandInfo =
     pet_option("/backend", "switch to a subscription backend instead — see /backend");
@@ -546,7 +605,6 @@ const fn pet_option(command: &'static str, desc: &'static str) -> CommandInfo {
         name: command,
         usage: command,
         desc,
-        remote: false,
     }
 }
 
@@ -557,70 +615,112 @@ const THEME_COMMANDS: &[CommandInfo] = &[
         name: "/theme rgb",
         usage: "/theme rgb",
         desc: "state-driven color cycle — the lively default",
-        remote: false,
     },
     CommandInfo {
         name: "/theme cyan",
         usage: "/theme cyan",
         desc: "monochrome cyan",
-        remote: false,
     },
     CommandInfo {
         name: "/theme blue",
         usage: "/theme blue",
         desc: "monochrome blue",
-        remote: false,
     },
     CommandInfo {
         name: "/theme magenta",
         usage: "/theme magenta",
         desc: "monochrome magenta",
-        remote: false,
     },
     CommandInfo {
         name: "/theme amber",
         usage: "/theme amber",
         desc: "monochrome amber",
-        remote: false,
     },
     CommandInfo {
         name: "/theme green",
         usage: "/theme green",
         desc: "monochrome green — matrix mode",
-        remote: false,
     },
     CommandInfo {
         name: "/theme mono",
         usage: "/theme mono",
         desc: "no accent color",
-        remote: false,
     },
 ];
+
+/// Fase 3.3: two-tier match over a nested `CommandInfo` picker list — prefix
+/// match first (`/mo` -> everything starting with `/mo`); if that comes back
+/// empty, fall back to `command_catalog::subsequence_match` (`/mdl` still
+/// finds `/model ...` entries even though it isn't a prefix).
+fn filter_info(input: &str, items: &'static [CommandInfo]) -> Vec<&'static dyn Suggestion> {
+    let prefix: Vec<&'static dyn Suggestion> = items
+        .iter()
+        .filter(|c| c.name.starts_with(input))
+        .map(|c| c as &dyn Suggestion)
+        .collect();
+    if !prefix.is_empty() {
+        return prefix;
+    }
+    items
+        .iter()
+        .filter(|c| command_catalog::subsequence_match(input, c.name))
+        .map(|c| c as &dyn Suggestion)
+        .collect()
+}
+
+/// Same two-tier match, over the top-level `command_catalog::CATALOG`
+/// (Fase 3.1), excluding `ConsoleOnly` entries — those never belong in the
+/// TUI's own autocomplete (they'd only ever bounce back "console-only — not
+/// allowed remotely" over the webhook round trip this menu exists to avoid).
+fn filter_catalog(input: &str) -> Vec<&'static dyn Suggestion> {
+    let visible = || {
+        command_catalog::CATALOG
+            .iter()
+            .filter(|c| c.scope != command_catalog::Scope::ConsoleOnly)
+    };
+    let prefix: Vec<&'static dyn Suggestion> = visible()
+        .filter(|c| c.name.starts_with(input))
+        .map(|c| c as &dyn Suggestion)
+        .collect();
+    if !prefix.is_empty() {
+        return prefix;
+    }
+    visible()
+        .filter(|c| command_catalog::subsequence_match(input, c.name))
+        .map(|c| c as &dyn Suggestion)
+        .collect()
+}
 
 /// Matches while typing the command token; a space normally closes the menu
 /// (the user is typing arguments), except after `/pet ` and `/theme `, where
 /// the menu switches to the subcommand list so the options stay visible.
-fn command_matches(input: &str) -> Vec<&'static CommandInfo> {
+fn command_matches(input: &str) -> Vec<&'static dyn Suggestion> {
     if input.is_empty() || !input.starts_with('/') {
         return vec![];
     }
-    // Fase 2.10: the freshly-opened `/models ` picker (trailing space, no
-    // filter text typed yet) gets the `/backend` cross-link prepended, right
-    // at the top. Once the user starts typing a model name after the space
-    // (`/models claude-op`), the crosslink drops out like any other
-    // non-matching entry would — it's a picker-opening hint, not a search
-    // result. The bare `/models` shorthand (no trailing space) is unaffected,
-    // keeping its pre-existing first-match-is-itself contract.
-    if input == "/models " {
-        let mut list: Vec<&'static CommandInfo> = vec![&MODEL_BACKEND_CROSSLINK];
-        list.extend(MODEL_COMMANDS.iter().filter(|c| c.name.starts_with(input)));
-        return list;
+    // Fase 3.2: `/model` is canonical, `/models` a full alias — the bare form
+    // of EITHER opens the same picker (full list, no cross-link: matches the
+    // pre-3.2 "bare shorthand is a plain full-list open" contract).
+    if input == "/model" || input == "/models" {
+        return filter_info("/model", MODEL_COMMANDS);
     }
-    if input.starts_with("/models ") {
-        return MODEL_COMMANDS
-            .iter()
-            .filter(|c| c.name.starts_with(input))
-            .collect();
+    // The trailing-space form of EITHER alias also opens the picker — with
+    // the `/backend` cross-link prepended only when nothing has been typed
+    // after the space yet (a picker-opening hint, not a search result).
+    // Whatever alias the user typed, filtering always happens against the
+    // canonical `/model ...` prefix `MODEL_COMMANDS` entries actually use —
+    // otherwise `/models claude-op` would never match a `/model claude-...`
+    // entry.
+    if let Some(fragment) = input
+        .strip_prefix("/model ")
+        .or_else(|| input.strip_prefix("/models "))
+    {
+        if fragment.is_empty() {
+            let mut list: Vec<&'static dyn Suggestion> = vec![&MODEL_BACKEND_CROSSLINK];
+            list.extend(filter_info("/model ", MODEL_COMMANDS));
+            return list;
+        }
+        return filter_info(&format!("/model {fragment}"), MODEL_COMMANDS);
     }
     let nested = if input.starts_with("/pet feed ") {
         Some(FOOD_COMMANDS)
@@ -628,8 +728,6 @@ fn command_matches(input: &str) -> Vec<&'static CommandInfo> {
         Some(PLAY_COMMANDS)
     } else if input.starts_with("/pet sleep ") {
         Some(SLEEP_COMMANDS)
-    } else if input == "/models" {
-        Some(MODEL_COMMANDS)
     } else if input.starts_with("/connect ") {
         Some(CONNECT_COMMANDS)
     } else if input.starts_with("/backend ") || input == "/backend" {
@@ -638,30 +736,18 @@ fn command_matches(input: &str) -> Vec<&'static CommandInfo> {
         None
     };
     if let Some(commands) = nested {
-        return commands
-            .iter()
-            .filter(|command| command.name.starts_with(input))
-            .collect();
+        return filter_info(input, commands);
     }
     if input.starts_with("/pet ") {
-        return PET_COMMANDS
-            .iter()
-            .filter(|c| c.name.starts_with(input))
-            .collect();
+        return filter_info(input, PET_COMMANDS);
     }
     if input.starts_with("/theme ") {
-        return THEME_COMMANDS
-            .iter()
-            .filter(|c| c.name.starts_with(input))
-            .collect();
+        return filter_info(input, THEME_COMMANDS);
     }
     if input.contains(' ') {
         return vec![];
     }
-    COMMANDS
-        .iter()
-        .filter(|c| c.name.starts_with(input))
-        .collect()
+    filter_catalog(input)
 }
 
 /// `/theme` is fully resolved in the TUI: applies instantly and persists in
@@ -783,20 +869,33 @@ fn settle_after(mode: VisualMode) -> Duration {
     }
 }
 
-/// Slash command that exists neither locally nor in the daemon (COMMANDS
-/// mirrors `src/agent/command.rs`): answers instantly with the Keeper in
-/// doubt, without spending a runtime turn.
+/// Answers a slash command instantly, without spending a network turn, in
+/// two cases (Fase 3.1): the command doesn't exist at all (typo — includes a
+/// Fase 3.3 "did you mean" hint when one scores close enough), or it's a real
+/// daemon command that is `ConsoleOnly` (this would otherwise round-trip to
+/// the daemon just to be bounced back "console-only — not allowed remotely"
+/// — answering locally is strictly faster and exactly as honest). `Remote`
+/// and `TuiLocal` commands return `None` — the former is forwarded to the
+/// daemon as a normal turn (it can actually handle it), the latter is
+/// intercepted earlier by `companion_command`/`theme_command` and never
+/// reaches this function in practice.
 fn unknown_command(text: &str) -> Option<String> {
     if !text.starts_with('/') {
         return None;
     }
     let first = text.split_whitespace().next()?;
-    if COMMANDS.iter().any(|c| c.name == first) {
-        return None;
+    match command_catalog::scope_of(first) {
+        Some(command_catalog::Scope::ConsoleOnly) => Some(format!(
+            "{first} roda só no console do daemon — não disponível aqui."
+        )),
+        Some(_) => None,
+        None => {
+            let hint = command_catalog::did_you_mean_suffix(first);
+            Some(format!(
+                "Unknown command: {first}.{hint} Type / to open the menu or /help for the full list."
+            ))
+        }
     }
-    Some(format!(
-        "Unknown command: {first}. Type / to open the menu or /help for the full list."
-    ))
 }
 
 fn save_companion(app: &App, success: &str) -> String {
@@ -875,6 +974,24 @@ struct App {
     base_url: String,
     lines: Vec<Line>,
     input: String,
+    /// Fase 3.4: byte offset into `input` (always on a char boundary) — the
+    /// insertion/deletion point for Left/Right/Home/End/Ctrl+A/Ctrl+E, and
+    /// what the render loop positions the terminal's own cursor from
+    /// (instead of always assuming end-of-string).
+    cursor: usize,
+    /// Fase 3.4: submitted messages/commands, oldest first — Up/Down walk
+    /// through this when the suggestion menu is closed (when it's open,
+    /// Up/Down navigate the menu instead, unchanged from before).
+    history: Vec<String>,
+    /// Position within `history` while navigating it; `None` means "not
+    /// currently navigating" (the live, not-yet-submitted `input` is what's
+    /// shown). Reset to `None` on every submit.
+    history_idx: Option<usize>,
+    /// The in-progress `input` at the moment Up first started history
+    /// navigation — restored when Down walks back past the newest entry, so
+    /// browsing history never loses unsent text (same contract a shell's
+    /// history navigation gives you).
+    history_stash: String,
     thinking: bool,
     spinner_idx: usize,
     animation_tick: usize,
@@ -1083,6 +1200,26 @@ fn spawn_turn(
     });
 }
 
+/// Fase 3.4: the byte offset of the char boundary immediately before `idx`
+/// (which must itself already be a char boundary) — used for Left/Backspace
+/// so a multibyte character (e.g. an emoji or accented letter) moves/deletes
+/// as one unit instead of splitting its bytes.
+fn prev_char_boundary(s: &str, idx: usize) -> usize {
+    if idx == 0 {
+        return 0;
+    }
+    s[..idx].char_indices().last().map_or(0, |(i, _)| i)
+}
+
+/// The byte offset of the char boundary immediately after `idx` (Right/Delete's
+/// counterpart to `prev_char_boundary`).
+fn next_char_boundary(s: &str, idx: usize) -> usize {
+    match s[idx..].chars().next() {
+        Some(c) => idx + c.len_utf8(),
+        None => idx,
+    }
+}
+
 fn wrapped_line_count(lines: &[RLine], width: u16) -> usize {
     let width = (width as usize).max(1);
     lines
@@ -1244,20 +1381,13 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
                     Style::default().fg(app.appearance.text())
                 };
                 let marker = if i == selected { "▸ " } else { "  " };
-                let tag = if c.name.starts_with("/pet") {
-                    " [TUI]"
-                } else if c.remote {
-                    ""
-                } else {
-                    " [console]"
-                };
                 RLine::from(vec![
-                    Span::styled(format!("{marker}{:<22}", c.usage), style),
+                    Span::styled(format!("{marker}{:<22}", c.usage()), style),
                     Span::styled(
-                        format!(" {}", c.desc),
+                        format!(" {}", c.desc()),
                         Style::default().fg(app.appearance.muted()),
                     ),
-                    Span::styled(tag, Style::default().fg(app.appearance.warning())),
+                    Span::styled(c.tag(), Style::default().fg(app.appearance.warning())),
                 ])
             })
             .collect();
@@ -1286,7 +1416,12 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         .block(input_block);
     f.render_widget(input, chunks[3]);
 
-    let cursor_x = (chunks[3].x + 1 + app.input.chars().count() as u16)
+    // Fase 3.4: position from `app.cursor` (a byte offset), not always
+    // end-of-string — char count of the slice UP TO the cursor is the
+    // on-screen column (multibyte-safe: `cursor` is only ever set to a char
+    // boundary, so this slice never panics).
+    let cursor_chars = app.input[..app.cursor.min(app.input.len())].chars().count() as u16;
+    let cursor_x = (chunks[3].x + 1 + cursor_chars)
         .min(chunks[3].x + chunks[3].width.saturating_sub(2));
     f.set_cursor_position((cursor_x, chunks[3].y + 1));
 }
@@ -1320,9 +1455,14 @@ async fn run_app(
         device_name: session.device_name.clone(),
         base_url: base_url.to_string(),
         lines: vec![Line::Event(
-            "Bastion ready. Tell me what needs attention.".to_string(),
+            "Bastion ready. Tell me what needs attention. — digite / para o menu, /help para lista completa."
+                .to_string(),
         )],
         input: String::new(),
+        cursor: 0,
+        history: Vec::new(),
+        history_idx: None,
+        history_stash: String::new(),
         thinking: false,
         spinner_idx: 0,
         animation_tick: 0,
@@ -1387,19 +1527,21 @@ async fn run_app(
                     // Tab always completes to the highlighted suggestion if the menu is open.
                     KeyCode::Tab if !suggestions.is_empty() => {
                         if let Some(cmd) = picked {
-                            app.input = format!("{} ", cmd.name);
+                            app.input = format!("{} ", cmd.name());
                             app.suggestion_idx = 0;
+                            app.cursor = app.input.len();
                         }
                     }
                     // Enter completes the suggestion UNLESS the input already exactly
                     // matches it (then the user finished typing args — send it).
                     KeyCode::Enter
                         if !suggestions.is_empty()
-                            && picked.is_some_and(|c| c.name != app.input) =>
+                            && picked.is_some_and(|c| c.name() != app.input) =>
                     {
                         if let Some(cmd) = picked {
-                            app.input = format!("{} ", cmd.name);
+                            app.input = format!("{} ", cmd.name());
                             app.suggestion_idx = 0;
+                            app.cursor = app.input.len();
                         }
                     }
                     KeyCode::Enter => {
@@ -1407,6 +1549,12 @@ async fn run_app(
                         if !text.is_empty() {
                             app.input.clear();
                             app.suggestion_idx = 0;
+                            app.cursor = 0;
+                            // Fase 3.4: every submission joins history (commands
+                            // included, mirroring a shell) — Up/Down walk it once
+                            // the menu is closed.
+                            app.history.push(text.clone());
+                            app.history_idx = None;
                             app.lines.push(Line::You(text.clone()));
                             // Fase 2.5: `/connect claude|codex|opencode` needs a real
                             // interactive login, not a turn the daemon can answer with
@@ -1523,18 +1671,78 @@ async fn run_app(
                             );
                         }
                     }
+                    // Fase 3.4: Up/Down navigate submission history, but ONLY when
+                    // the suggestion menu is closed (the guarded arms above already
+                    // claim Up/Down while it's open, so these two only ever fire
+                    // when `suggestions.is_empty()`).
+                    KeyCode::Up if !app.history.is_empty() => {
+                        let next_idx = match app.history_idx {
+                            None => {
+                                app.history_stash = app.input.clone();
+                                app.history.len() - 1
+                            }
+                            Some(0) => 0,
+                            Some(i) => i - 1,
+                        };
+                        app.history_idx = Some(next_idx);
+                        app.input = app.history[next_idx].clone();
+                        app.cursor = app.input.len();
+                    }
+                    KeyCode::Down => {
+                        if let Some(i) = app.history_idx {
+                            if i + 1 < app.history.len() {
+                                app.history_idx = Some(i + 1);
+                                app.input = app.history[i + 1].clone();
+                            } else {
+                                app.history_idx = None;
+                                app.input = app.history_stash.clone();
+                            }
+                            app.cursor = app.input.len();
+                        }
+                    }
+                    KeyCode::Left => {
+                        app.cursor = prev_char_boundary(&app.input, app.cursor);
+                    }
+                    KeyCode::Right => {
+                        app.cursor = next_char_boundary(&app.input, app.cursor);
+                    }
+                    KeyCode::Home => {
+                        app.cursor = 0;
+                    }
+                    KeyCode::End => {
+                        app.cursor = app.input.len();
+                    }
+                    KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.cursor = 0;
+                    }
+                    KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.cursor = app.input.len();
+                    }
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
                     KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         app.input.clear();
                         app.suggestion_idx = 0;
+                        app.cursor = 0;
                     }
                     KeyCode::Esc => break,
                     KeyCode::Backspace => {
-                        app.input.pop();
+                        if app.cursor > 0 {
+                            let start = prev_char_boundary(&app.input, app.cursor);
+                            app.input.replace_range(start..app.cursor, "");
+                            app.cursor = start;
+                        }
+                        app.suggestion_idx = 0;
+                    }
+                    KeyCode::Delete => {
+                        if app.cursor < app.input.len() {
+                            let end = next_char_boundary(&app.input, app.cursor);
+                            app.input.replace_range(app.cursor..end, "");
+                        }
                         app.suggestion_idx = 0;
                     }
                     KeyCode::Char(c) => {
-                        app.input.push(c);
+                        app.input.insert(app.cursor, c);
+                        app.cursor += c.len_utf8();
                         app.suggestion_idx = 0;
                     }
                     _ => {}
@@ -1694,55 +1902,70 @@ mod tests {
 
     #[test]
     fn pet_subcommands_stay_visible_after_the_space() {
-        let names: Vec<&str> = command_matches("/pet ").iter().map(|c| c.name).collect();
+        let names: Vec<&str> = command_matches("/pet ").iter().map(|c| c.name()).collect();
         assert_eq!(names.len(), PET_COMMANDS.len());
         assert!(names.contains(&"/pet stats"));
 
         let game: Vec<&str> = command_matches("/pet game")
             .iter()
-            .map(|c| c.name)
+            .map(|c| c.name())
             .collect();
         assert_eq!(game, vec!["/pet game on", "/pet game off"]);
         assert_eq!(command_matches("/pet feed ").len(), FOOD_COMMANDS.len());
         assert_eq!(command_matches("/pet play ").len(), PLAY_COMMANDS.len());
         assert_eq!(command_matches("/pet sleep ").len(), SLEEP_COMMANDS.len());
-        // Fase 2.10: the freshly-opened `/models ` picker gets the `/backend`
-        // cross-link prepended (`+1` over the plain model-id filter count).
+        // Fase 3.2: `/model ` AND `/models ` both open the picker (widened
+        // from `/models ` only); the cross-link is prepended either way
+        // (`+1` over the plain model-id filter count).
         assert_eq!(command_matches("/models ").len(), MODEL_COMMANDS.len());
-        assert_eq!(command_matches("/models ")[0].name, "/backend");
-        assert_eq!(command_matches("/models")[0].name, "/models");
+        assert_eq!(command_matches("/models ")[0].name(), "/backend");
+        assert_eq!(command_matches("/model ").len(), MODEL_COMMANDS.len());
+        assert_eq!(command_matches("/model ")[0].name(), "/backend");
+        // Bare `/model`/`/models` (no trailing space) both open the full
+        // browse list directly — entries are always the canonical `/model
+        // ...` spelling regardless of which alias opened the picker.
+        assert_eq!(command_matches("/models")[0].name(), "/model");
+        assert_eq!(command_matches("/model")[0].name(), "/model");
         assert_eq!(command_matches("/connect ").len(), CONNECT_COMMANDS.len());
         assert_eq!(
             command_matches("/pet feed ch")
                 .iter()
-                .map(|c| c.name)
+                .map(|c| c.name())
                 .collect::<Vec<_>>(),
             vec!["/pet feed chocolate"]
         );
+        // Fase 3.2: filtering by a partial model id works through EITHER
+        // alias — `/models claude-op` still finds the canonically-spelled
+        // `/model claude-opus-4-5` entry.
         assert_eq!(
             command_matches("/models claude-op")
                 .iter()
-                .map(|c| c.name)
+                .map(|c| c.name())
                 .collect::<Vec<_>>(),
-            vec!["/models claude-opus-4-5"]
+            vec!["/model claude-opus-4-5"]
+        );
+        assert_eq!(
+            command_matches("/model claude-op")
+                .iter()
+                .map(|c| c.name())
+                .collect::<Vec<_>>(),
+            vec!["/model claude-opus-4-5"]
         );
 
         // Comando completado (com espaço final) fecha o menu para o Enter enviar.
         assert!(command_matches("/pet stats ").is_empty());
-        // Outros comandos mantêm o comportamento antigo: espaço fecha o menu.
-        assert!(command_matches("/model ").is_empty());
         assert!(!command_matches("/pe").is_empty());
     }
 
     #[test]
     fn theme_menu_expands_and_unknown_commands_answer_locally() {
-        let themes: Vec<&str> = command_matches("/theme ").iter().map(|c| c.name).collect();
+        let themes: Vec<&str> = command_matches("/theme ").iter().map(|c| c.name()).collect();
         assert_eq!(themes.len(), THEME_COMMANDS.len());
         assert!(themes.contains(&"/theme rgb"));
         assert_eq!(
             command_matches("/theme m")
                 .iter()
-                .map(|c| c.name)
+                .map(|c| c.name())
                 .collect::<Vec<_>>(),
             vec!["/theme magenta", "/theme mono"]
         );
@@ -1754,17 +1977,34 @@ mod tests {
     }
 
     #[test]
+    fn unknown_command_answers_console_only_honestly_without_a_turn() {
+        let msg = unknown_command("/stop").expect("must answer locally");
+        assert!(msg.contains("console"), "must say console-only: {msg}");
+        let msg = unknown_command("/as Aria").expect("must answer locally");
+        assert!(msg.contains("console"), "must say console-only: {msg}");
+        // Remote commands are forwarded (None) — the daemon actually handles them.
+        assert!(unknown_command("/backend").is_none());
+        assert!(unknown_command("/model").is_none());
+    }
+
+    #[test]
+    fn unknown_command_suggests_a_close_match() {
+        let msg = unknown_command("/modle").expect("typo must get a message");
+        assert!(msg.contains("/model"), "must suggest /model: {msg}");
+    }
+
+    #[test]
     fn backend_picker_expands_bare_and_with_trailing_space() {
-        // Fase 2.10: same mechanic as `/models` — both the bare command and
+        // Fase 2.10: same mechanic as `/model` — both the bare command and
         // the trailing-space form open the picker (unlike `/pet`/`/theme`,
         // which only expand after the space).
-        let bare: Vec<&str> = command_matches("/backend").iter().map(|c| c.name).collect();
+        let bare: Vec<&str> = command_matches("/backend").iter().map(|c| c.name()).collect();
         assert_eq!(bare.len(), BACKEND_COMMANDS.len());
         assert_eq!(bare[0], "/backend");
 
         let spaced: Vec<&str> = command_matches("/backend ")
             .iter()
-            .map(|c| c.name)
+            .map(|c| c.name())
             .collect();
         assert_eq!(spaced.len(), BACKEND_COMMANDS.len() - 1);
         assert!(spaced.contains(&"/backend use acpx_claude"));
@@ -1775,7 +2015,7 @@ mod tests {
         assert_eq!(
             command_matches("/backend use acpx_c")
                 .iter()
-                .map(|c| c.name)
+                .map(|c| c.name())
                 .collect::<Vec<_>>(),
             vec!["/backend use acpx_claude"]
         );
@@ -1783,10 +2023,23 @@ mod tests {
 
     #[test]
     fn connect_picker_includes_opencode() {
-        let names: Vec<&str> = command_matches("/connect ").iter().map(|c| c.name).collect();
+        let names: Vec<&str> = command_matches("/connect ").iter().map(|c| c.name()).collect();
         assert!(names.contains(&"/connect opencode"));
         assert!(names.contains(&"/connect claude"));
         assert!(names.contains(&"/connect codex"));
+    }
+
+    #[test]
+    fn top_level_catalog_excludes_console_only_and_supports_fuzzy_fallback() {
+        let names: Vec<&str> = command_matches("/back").iter().map(|c| c.name()).collect();
+        assert!(names.contains(&"/backend"));
+        // `/as` and `/stop` (ConsoleOnly) must never appear in the TUI's own
+        // autocomplete — Fase 3.1's "dead commands disappear" guarantee.
+        assert!(command_matches("/a").iter().all(|c| c.name() != "/as"));
+        assert!(command_matches("/s").iter().all(|c| c.name() != "/stop"));
+        // Fase 3.3: subsequence fallback when no prefix matches.
+        let fuzzy: Vec<&str> = command_matches("/bkd").iter().map(|c| c.name()).collect();
+        assert!(fuzzy.contains(&"/backend"), "subsequence fallback must find /backend: {fuzzy:?}");
     }
 
     #[test]
