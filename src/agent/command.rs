@@ -4,17 +4,29 @@ use bastion_providers::registry::resolve_provider;
 use bastion_providers::SharedProvider;
 use std::path::PathBuf;
 
+use crate::config::{AuthConfig, AuthProfileEntry};
+
 /// Every real Bastion slash command — single source of truth so callers (e.g.
 /// main.rs's inbound_rx arm, WEB-CMD-01) can tell "known command that's
 /// console-only" apart from "not a Bastion command at all" (a Claude-Code-style
 /// `/usage` typed out of habit should fall through to the normal Unknown-command
 /// message, not be mislabeled "console-only" as if it would work at the console).
+///
+/// Fase 2.4: `/backend`/`/backends` are listed here too, but they are NEVER
+/// routed through this module's `handle_command` — `main.rs`'s dispatch arms
+/// special-case them into `agent::backend_command::handle` (which needs
+/// `&mut AgentLoop`, unavailable to this module) BEFORE falling through to
+/// the generic router. They're still in `KNOWN_COMMANDS` so the
+/// known-vs-unknown classification (and REMOTE_ALLOWED_COMMANDS in main.rs)
+/// works correctly for them.
 pub const KNOWN_COMMANDS: &[&str] = &[
     "/connect-app",
     "/connect-app-composio",
     "/connect",
     "/model",
     "/models",
+    "/backend",
+    "/backends",
     "/stop",
     "/as",
     "/cabinet",
@@ -42,6 +54,15 @@ pub struct CommandResources {
     pub composio_oauth: Option<std::sync::Arc<bastion_mcp::oauth::ComposioOAuth>>,
     pub registry: PersonaRegistry,
     pub model_selection: Option<ModelSelection>,
+    /// Fase 2.7: the loaded `[auth.*]` table, threaded through so `/connect`
+    /// (no-arg) can report live subscription login status via
+    /// `auth_profile_registry::probe_host_cli` — never the credential
+    /// itself, only whether the CLI's own status probe succeeds. Empty
+    /// (`AuthConfig::default()`) on any caller that hasn't wired it up
+    /// (e.g. existing unit tests) — `/connect` then reports every
+    /// subscription profile as "not configured", same as before this field
+    /// existed.
+    pub auth: AuthConfig,
 }
 
 /// Persistent, daemon-owned selection used by `/model`. The configured default
@@ -98,6 +119,7 @@ impl bastion_runtime::agent::ports::CommandHandler for CockpitCommandHandler {
             self.resources.composio_oauth.as_deref(),
             owner,
             self.resources.model_selection.as_ref(),
+            &self.resources.auth,
         )
         .await
     }
@@ -139,16 +161,59 @@ async fn switch_model(
 
 fn connect_instructions(provider: Option<&str>) -> String {
     match provider {
-        None => "Choose a provider: /connect gemini, /connect anthropic, /connect openai, /connect openrouter, /connect ollama, /connect claude, or /connect codex. Subscription logins stay in Docker volumes and are never stored in chat.".to_string(),
-        Some("claude") => "Claude Code subscription: run `docker compose exec -it core claude`, complete the browser login, then restart core. Select Claude Code as the conversation backend in installer.sh on the next install/update.".to_string(),
-        Some("codex") => "Codex subscription: run `docker compose exec -it core codex login`, complete the ChatGPT browser login, then restart core. Select Codex as the conversation backend in installer.sh on the next install/update.".to_string(),
+        None => "Choose a provider: /connect gemini, /connect anthropic, /connect openai, /connect openrouter, /connect ollama, /connect claude, /connect codex, or /connect opencode. Subscription logins stay in Docker volumes and are never stored in chat.".to_string(),
+        Some("claude") => "Claude Code subscription: run `bastion connect claude` (or `docker compose exec -it core claude auth login`), complete the browser login, then select /backend use runtime:acpx_claude (or the Claude Code option in installer.sh on the next install/update).".to_string(),
+        Some("codex") => "Codex subscription: run `bastion connect codex` (or `docker compose exec -it core codex login`), complete the ChatGPT browser login, then select /backend use runtime:codex_app_server (or the Codex option in installer.sh on the next install/update).".to_string(),
+        Some("opencode") => "OpenCode subscription: run `bastion connect opencode` (or `docker compose exec -it core opencode auth login`), complete the login, then select /backend use runtime:acpx_opencode (or the OpenCode option in installer.sh on the next install/update).".to_string(),
         Some("gemini") => "Gemini: add GEMINI_API_KEY to .env or your secret manager, restart the daemon, then open /models.".to_string(),
         Some("anthropic") => "Anthropic: add ANTHROPIC_API_KEY to .env or your secret manager, restart the daemon, then open /models.".to_string(),
         Some("openai") => "OpenAI: add OPENAI_API_KEY to .env or your secret manager, restart the daemon, then open /models.".to_string(),
         Some("openrouter") => "OpenRouter: add OPENROUTER_API_KEY to .env or your secret manager, restart the daemon, then open /models.".to_string(),
         Some("ollama") => "Ollama: start the local Ollama service, then choose one of its installed models from /models. No API key is needed.".to_string(),
-        Some(_) => "Unknown provider. Choose gemini, anthropic, openai, openrouter, ollama, claude, or codex.".to_string(),
+        Some(_) => "Unknown provider. Choose gemini, anthropic, openai, openrouter, ollama, claude, codex, or opencode.".to_string(),
     }
+}
+
+/// Fase 2.7: `/connect` (no-arg) status overview — subscription runtimes via
+/// a live, exit-code-only `probe_host_cli` (never the account/stdout
+/// detail); API providers via env-var PRESENCE only, never the value. Ends
+/// with the same generic instructions `connect_instructions(None)` prints,
+/// so this is a strict superset of the prior no-arg behavior.
+async fn connect_status_overview(auth_cfg: &AuthConfig) -> String {
+    let mut lines = vec!["Subscription status:".to_string()];
+    for (label, profile_id) in [
+        ("Claude Code", "claude-subscription"),
+        ("Codex", "codex-subscription"),
+        ("OpenCode", "opencode-subscription"),
+    ] {
+        let line = match auth_cfg.profiles.get(profile_id) {
+            Some(AuthProfileEntry::HostCli { cli }) => {
+                match crate::auth_profile_registry::probe_host_cli(cli).await {
+                    Ok(()) => format!("  {label}: logged in"),
+                    Err(_) => format!("  {label}: logged out — bastion connect {cli}"),
+                }
+            }
+            _ => format!("  {label}: not configured (add [auth.{profile_id}] to bastion.toml)"),
+        };
+        lines.push(line);
+    }
+    lines.push(String::new());
+    lines.push("API providers (presence only — never the key value):".to_string());
+    for (label, env_var) in [
+        ("Anthropic", "ANTHROPIC_API_KEY"),
+        ("OpenAI", "OPENAI_API_KEY"),
+        ("Gemini", "GEMINI_API_KEY"),
+        ("OpenRouter", "OPENROUTER_API_KEY"),
+    ] {
+        let set = std::env::var(env_var).is_ok_and(|v| !v.trim().is_empty());
+        lines.push(format!(
+            "  {label}: {}",
+            if set { "configured" } else { "not set" }
+        ));
+    }
+    lines.push(String::new());
+    lines.push(connect_instructions(None));
+    lines.join("\n")
 }
 
 /// Route slash commands from stdin OR a channel (WEB-CMD-01 — webhook/Telegram
@@ -176,6 +241,7 @@ pub async fn handle_command(
     composio_oauth: Option<&bastion_mcp::oauth::ComposioOAuth>,
     owner: &str,
     model_selection: Option<&ModelSelection>,
+    auth_cfg: &AuthConfig,
 ) -> anyhow::Result<CommandResult> {
     let trimmed = input.trim();
     let parts: Vec<&str> = trimmed.splitn(2, ' ').collect();
@@ -245,9 +311,13 @@ pub async fn handle_command(
             }
         }
 
-        "/connect" => Ok(CommandResult::Handled(connect_instructions(
-            parts.get(1).map(|value| value.trim()).filter(|value| !value.is_empty()),
-        ))),
+        "/connect" => {
+            let requested = parts.get(1).map(|value| value.trim()).filter(|value| !value.is_empty());
+            match requested {
+                None => Ok(CommandResult::Handled(connect_status_overview(auth_cfg).await)),
+                Some(provider) => Ok(CommandResult::Handled(connect_instructions(Some(provider)))),
+            }
+        }
 
         "/models" => {
             let requested = parts.get(1).map(|value| value.trim()).filter(|value| !value.is_empty());
@@ -412,7 +482,8 @@ pub async fn handle_command(
             "Available commands:\n\
              \x20 /model <name>         Switch LLM provider+model (console only — daemon-wide state)\n\
              \x20 /models [name]        Browse or select a saved model (console only)\n\
-             \x20 /connect [provider]   Show secure provider setup steps (console only)\n\
+             \x20 /backend [use <id>]   Show or switch the conversation backend (also over webhook/Telegram)\n\
+             \x20 /connect [provider]   Show secure provider setup steps / live subscription status (also over webhook/Telegram)\n\
              \x20 /stop                 Shut down daemon (console only)\n\
              \x20 /as <persona>         Force persona for next turn (console only — daemon-wide state)\n\
              \x20 /cabinet [personas..] Convene Cabinet with named personas (console only)\n\
@@ -585,6 +656,7 @@ mod tests {
             None,
             "_local",
             None,
+            &AuthConfig::default(),
         )
         .await
         .expect("handle_command");
@@ -620,6 +692,7 @@ mod tests {
             None,
             "_local",
             None,
+            &AuthConfig::default(),
         )
         .await
         .expect("cmd");
@@ -651,6 +724,7 @@ mod tests {
             None,
             "_local",
             None,
+            &AuthConfig::default(),
         )
         .await
         .expect("cmd");
@@ -756,6 +830,7 @@ mod tests {
             None,
             "_local",
             None,
+            &AuthConfig::default(),
         )
         .await
         .expect("cmd");
@@ -798,6 +873,7 @@ mod tests {
             None,
             "_local",
             None,
+            &AuthConfig::default(),
         )
         .await
         .expect("cmd");
@@ -844,6 +920,7 @@ mod tests {
             None,
             "_local",
             None,
+            &AuthConfig::default(),
         )
         .await
         .expect("cmd");
@@ -898,6 +975,7 @@ mod tests {
             None,
             "_local",
             None,
+            &AuthConfig::default(),
         )
         .await
         .expect("cmd");
@@ -938,6 +1016,7 @@ mod tests {
             None,
             "_local",
             None,
+            &AuthConfig::default(),
         )
         .await
         .expect("cmd");
@@ -969,6 +1048,7 @@ mod tests {
             Some(&oauth),
             "_local",
             None,
+            &AuthConfig::default(),
         )
         .await
         .expect("cmd");
