@@ -18,7 +18,7 @@ services:
       - sh
       - -c
       - |
-        chown -R ${BASTION_UID:-1000}:${BASTION_GID:-1000} /bastion-data /claude-home /codex-home /acpx-home &&
+        chown -R ${BASTION_UID:-1000}:${BASTION_GID:-1000} /bastion-data /claude-home /codex-home /acpx-home /opencode-home &&
         chown -R 1001:1001 /memupalace-data /skill-writer-data /self-improving-data &&
         echo "volume ownership initialized (core=${BASTION_UID:-1000}:${BASTION_GID:-1000}, python=1001:1001)"
     volumes:
@@ -26,6 +26,7 @@ services:
       - claude-home:/claude-home
       - codex-home:/codex-home
       - acpx-home:/acpx-home
+      - opencode-home:/opencode-home
       - memupalace-data:/memupalace-data
       - skill-writer-data:/skill-writer-data
       - self-improving-data:/self-improving-data
@@ -56,6 +57,7 @@ services:
       - claude-home:/home/bastion/.claude          # Claude Code subscription login
       - codex-home:/home/bastion/.codex            # Codex subscription login
       - acpx-home:/home/bastion/.acpx              # ACP runtime sessions
+      - opencode-home:/home/bastion/.local/share/opencode # OpenCode login
       - ./personas:/personas:ro                   # SOUL.md files (D-02: bind-mount, no copy)
       - ./skills:/skills:ro                       # SKILL.md files (read-only)
       - ./bastion.toml:/bastion.toml:ro           # non-secret config (D-09)
@@ -248,6 +250,7 @@ volumes:
   claude-home:           # Claude Code login and settings
   codex-home:            # Codex login and settings
   acpx-home:             # ACP runtime sessions
+  opencode-home:         # OpenCode login
   memupalace-data:       # memupalace: KG + embeddings
   skill-writer-data:     # skill-writer: internal state
   self-improving-data:   # self-improving: analysis data

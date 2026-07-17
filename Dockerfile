@@ -25,7 +25,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 bastion \
     && useradd --uid 1000 --gid bastion --create-home --shell /bin/bash bastion \
-    && npm install --global acpx @anthropic-ai/claude-code @openai/codex
+    && npm install --global acpx @anthropic-ai/claude-code @openai/codex opencode-ai
 
 COPY --from=builder /build/target/release/bastion /usr/local/bin/bastion
 

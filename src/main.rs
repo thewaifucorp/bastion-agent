@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::collections::HashMap;
+use std::process::Command as ProcessCommand;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tracing_subscriber::fmt;
@@ -87,6 +88,11 @@ enum Command {
     },
     /// Start long-running REPL daemon (reads stdin, responds, loops)
     Daemon,
+    /// Sign in to a subscription runtime inside Bastion's Docker container
+    Connect {
+        /// claude | codex | opencode
+        provider: String,
+    },
     /// Companion state and agent-session event bridge
     Companion {
         #[command(subcommand)]
@@ -147,6 +153,27 @@ fn default_chat_command() -> Command {
     }
 }
 
+fn connect_subscription(provider: &str) -> anyhow::Result<()> {
+    let program = match provider {
+        "claude" => "claude",
+        "codex" => "codex",
+        "opencode" => "opencode",
+        _ => anyhow::bail!(
+            "unknown subscription '{provider}'; use: bastion connect claude|codex|opencode"
+        ),
+    };
+    let mut command = ProcessCommand::new("docker");
+    command.args(["compose", "exec", "-it", "core", program]);
+    if provider == "codex" {
+        command.arg("login");
+    } else if provider == "opencode" {
+        command.args(["auth", "login"]);
+    }
+    let status = command.status()?;
+    anyhow::ensure!(status.success(), "{program} login exited with {status}");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load .env (if present) before any std::env::var read. Real shell env wins.
@@ -171,6 +198,9 @@ async fn main() -> anyhow::Result<()> {
         };
         println!("{output}");
         return Ok(());
+    }
+    if let Command::Connect { provider } = &command {
+        return connect_subscription(provider);
     }
 
     // Load bastion.toml config (non-secret config only; secrets stay in .env)
@@ -410,6 +440,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Companion { .. } => {
             unreachable!("companion is handled before daemon initialization")
         }
+        Command::Connect { .. } => unreachable!("connect is handled before daemon initialization"),
         Command::Agent { message } => {
             let response = agent.run_turn(&message).await?;
             println!("{}", response);

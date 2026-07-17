@@ -22,6 +22,10 @@ cli = "claude"
 kind = "host-cli"
 cli = "codex"
 
+[auth.opencode-subscription]
+kind = "host-cli"
+cli = "opencode"
+
 [session]
 db_path               = ".bastion/sessions.db"
 autocompact_threshold = 0.80
