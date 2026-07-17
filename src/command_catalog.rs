@@ -90,7 +90,11 @@ pub const CATALOG: &[CommandSpec] = &[
         usage: "/models <name>",
         desc: "alias de /model",
         scope: Scope::Remote,
-        aliases: &["/model"],
+        // Empty on the alias entry so `is_pure_alias` flags THIS as the synonym
+        // (the canonical `/model` above carries `aliases: ["/models"]`). A
+        // mutual reference would make both look like pure aliases and drop both
+        // from `help_text`.
+        aliases: &[],
     },
     CommandSpec {
         name: "/connect",
@@ -111,7 +115,8 @@ pub const CATALOG: &[CommandSpec] = &[
         usage: "/backends [use <id>]",
         desc: "alias de /backend",
         scope: Scope::Remote,
-        aliases: &["/backend"],
+        // Empty on the alias entry — see the `/models` note above.
+        aliases: &[],
     },
     CommandSpec {
         name: "/logs",
