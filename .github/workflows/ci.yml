@@ -14,6 +14,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      # The `voice` feature (default, and pulled by --all-features below) builds
+      # cpal -> alsa-sys, which needs ALSA headers; native-tls needs OpenSSL.
+      # The Docker image sidesteps this by building --no-default-features, but
+      # `cargo clippy --all-features` / `cargo test` here do not.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libssl-dev pkg-config
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test
