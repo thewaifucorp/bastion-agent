@@ -1292,16 +1292,19 @@ async fn daemon_loop(
             // WEB-CMD-01: slash commands reuse the same router the stdin console uses
             // (agent.handle_command), but ALLOWLISTED, not blocklisted — commands are
             // console-only by default. `provider` and `forced_persona` are single fields
-            // shared by the whole daemon (not per-owner), so /model and /as let one remote
+            // shared by the whole daemon (not per-owner), so /as lets one remote
             // owner affect every other owner's turns; /logs exposes daemon-wide (not
             // owner-scoped) WARN/ERROR entries; /connect-app mints a JWT whose `sub` is the
             // caller-chosen device name verbatim — remotely reachable, that's an
             // authentication bypass (mint a code naming ANY owner, then impersonate them).
-            // Only /help (stateless) and /contest (owner-scoped, see command.rs) are safe
-            // for a remote channel caller today. Extend this list only after confirming a
-            // new command is properly owner-scoped — do not default new commands to open.
+            // `/connect` is instructional only. `/models` and `/model` deliberately let an
+            // authenticated cockpit choose the daemon-wide provider: that is the purpose of
+            // the local TUI's picker, and the selection is persisted beside its local session
+            // database. Keep every other stateful command console-only unless its authority
+            // and scope are reviewed explicitly.
             Some(req) = inbound_rx.recv() => {
-                const REMOTE_ALLOWED_COMMANDS: &[&str] = &["/help", "/contest"];
+                const REMOTE_ALLOWED_COMMANDS: &[&str] =
+                    &["/help", "/contest", "/connect", "/models", "/model"];
                 // CONC-1: acquire per-owner lock before processing turn.
                 // Two turns from the same owner cannot run concurrently (double-tap protection).
                 // Different owners are independent — their locks do not contend.
