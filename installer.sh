@@ -285,6 +285,29 @@ install_cli() {
     *":$DEFAULT_BIN_DIR:"*) ;;
     *) warn "Add $DEFAULT_BIN_DIR to PATH to run: bastion" ;;
   esac
+  install_completions "$launcher" || warn "shell completion setup skipped"
+}
+
+# Fase 3.6: best-effort shell completions — bash gets installed automatically
+# (a missing/unwritable completions dir is a warning, never a hard failure:
+# the CLI itself is already fully installed by this point). zsh/fish are
+# printed as one-line instructions instead of guessing the user's fpath/
+# fish config layout, which varies too much to install into safely.
+install_completions() {
+  local launcher="$1"
+  local bash_comp_dir="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions"
+
+  if mkdir -p "$bash_comp_dir" 2>/dev/null \
+      && "$launcher" completions bash > "$bash_comp_dir/bastion.tmp" 2>/dev/null; then
+    mv "$bash_comp_dir/bastion.tmp" "$bash_comp_dir/bastion"
+    info "Installed bash completions: $bash_comp_dir/bastion"
+  else
+    rm -f "$bash_comp_dir/bastion.tmp" 2>/dev/null || true
+    warn "could not install bash completions in $bash_comp_dir"
+  fi
+
+  info "For zsh: $launcher completions zsh > \"\${fpath[1]}/_bastion\""
+  info "For fish: $launcher completions fish > ~/.config/fish/completions/bastion.fish"
 }
 
 main() {
