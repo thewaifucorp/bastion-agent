@@ -103,6 +103,12 @@ chrono             = { version = "0.4", default-features = false, features = ["c
 serde              = { version = "1",    features = ["derive"] }
 serde_json         = "1"
 clap               = { version = "4",    features = ["derive", "env"] }
+# Fase 3.6: `bastion completions <shell>` — generates shell completion scripts.
+clap_complete      = "4"
+# Fase 3.3: fuzzy "did you mean" matching for slash commands (jaro_winkler).
+# Already resolved to 0.11.1 in Cargo.lock via clap's own dependency tree —
+# no new supply-chain surface, just promoting it to a direct dependency.
+strsim             = "0.11"
 thiserror          = "2"
 anyhow             = "1"
 tracing            = "0.1"
