@@ -715,23 +715,15 @@ fn command_matches(input: &str) -> Vec<&'static dyn Suggestion> {
     if input.is_empty() || !input.starts_with('/') {
         return vec![];
     }
-    // Fase 3.2: `/model` is canonical, `/models` a full alias — the bare form
-    // of EITHER opens the same picker (full list, no cross-link: matches the
-    // pre-3.2 "bare shorthand is a plain full-list open" contract).
-    if input == "/model" || input == "/models" {
+    // Bare `/model` opens the full picker (no cross-link: matches the
+    // "bare shorthand is a plain full-list open" contract).
+    if input == "/model" {
         return filter_info("/model", MODEL_COMMANDS);
     }
-    // The trailing-space form of EITHER alias also opens the picker — with
-    // the `/backend` cross-link prepended only when nothing has been typed
-    // after the space yet (a picker-opening hint, not a search result).
-    // Whatever alias the user typed, filtering always happens against the
-    // canonical `/model ...` prefix `MODEL_COMMANDS` entries actually use —
-    // otherwise `/models claude-op` would never match a `/model claude-...`
-    // entry.
-    if let Some(fragment) = input
-        .strip_prefix("/model ")
-        .or_else(|| input.strip_prefix("/models "))
-    {
+    // The trailing-space form opens the picker — with the `/backend`
+    // cross-link prepended only when nothing has been typed after the space
+    // yet (a picker-opening hint, not a search result).
+    if let Some(fragment) = input.strip_prefix("/model ") {
         if fragment.is_empty() {
             let mut list: Vec<&'static dyn Suggestion> = vec![&MODEL_BACKEND_CROSSLINK];
             list.extend(filter_info("/model ", MODEL_COMMANDS));
@@ -1938,17 +1930,11 @@ mod tests {
         assert_eq!(command_matches("/pet feed ").len(), FOOD_COMMANDS.len());
         assert_eq!(command_matches("/pet play ").len(), PLAY_COMMANDS.len());
         assert_eq!(command_matches("/pet sleep ").len(), SLEEP_COMMANDS.len());
-        // Fase 3.2: `/model ` AND `/models ` both open the picker (widened
-        // from `/models ` only); the cross-link is prepended either way
+        // `/model ` opens the picker; the cross-link is prepended
         // (`+1` over the plain model-id filter count).
-        assert_eq!(command_matches("/models ").len(), MODEL_COMMANDS.len());
-        assert_eq!(command_matches("/models ")[0].name(), "/backend");
         assert_eq!(command_matches("/model ").len(), MODEL_COMMANDS.len());
         assert_eq!(command_matches("/model ")[0].name(), "/backend");
-        // Bare `/model`/`/models` (no trailing space) both open the full
-        // browse list directly — entries are always the canonical `/model
-        // ...` spelling regardless of which alias opened the picker.
-        assert_eq!(command_matches("/models")[0].name(), "/model");
+        // Bare `/model` (no trailing space) opens the full browse list directly.
         assert_eq!(command_matches("/model")[0].name(), "/model");
         assert_eq!(command_matches("/connect ").len(), CONNECT_COMMANDS.len());
         assert_eq!(
@@ -1958,16 +1944,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["/pet feed chocolate"]
         );
-        // Fase 3.2: filtering by a partial model id works through EITHER
-        // alias — `/models claude-op` still finds the canonically-spelled
-        // `/model claude-opus-4-5` entry.
-        assert_eq!(
-            command_matches("/models claude-op")
-                .iter()
-                .map(|c| c.name())
-                .collect::<Vec<_>>(),
-            vec!["/model claude-opus-4-5"]
-        );
+        // Filtering by a partial model id finds the canonical entry.
         assert_eq!(
             command_matches("/model claude-op")
                 .iter()

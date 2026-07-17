@@ -83,17 +83,6 @@ pub const CATALOG: &[CommandSpec] = &[
         usage: "/model <name>",
         desc: "show/switch/reset the LLM provider+model — type space to browse",
         scope: Scope::Remote,
-        aliases: &["/models"],
-    },
-    CommandSpec {
-        name: "/models",
-        usage: "/models <name>",
-        desc: "alias de /model",
-        scope: Scope::Remote,
-        // Empty on the alias entry so `is_pure_alias` flags THIS as the synonym
-        // (the canonical `/model` above carries `aliases: ["/models"]`). A
-        // mutual reference would make both look like pure aliases and drop both
-        // from `help_text`.
         aliases: &[],
     },
     CommandSpec {
@@ -108,14 +97,6 @@ pub const CATALOG: &[CommandSpec] = &[
         usage: "/backend [use <id>]",
         desc: "list/switch the conversation backend — model or a subscription runtime",
         scope: Scope::Remote,
-        aliases: &["/backends"],
-    },
-    CommandSpec {
-        name: "/backends",
-        usage: "/backends [use <id>]",
-        desc: "alias de /backend",
-        scope: Scope::Remote,
-        // Empty on the alias entry — see the `/models` note above.
         aliases: &[],
     },
     CommandSpec {
@@ -294,9 +275,7 @@ mod tests {
         "/connect-app-composio",
         "/connect",
         "/model",
-        "/models",
         "/backend",
-        "/backends",
         "/stop",
         "/as",
         "/cabinet",
@@ -305,15 +284,7 @@ mod tests {
         "/help",
     ];
 
-    const OLD_REMOTE_ALLOWED: &[&str] = &[
-        "/help",
-        "/contest",
-        "/connect",
-        "/models",
-        "/model",
-        "/backend",
-        "/backends",
-    ];
+    const OLD_REMOTE_ALLOWED: &[&str] = &["/help", "/contest", "/connect", "/model", "/backend"];
 
     #[test]
     fn known_daemon_commands_matches_old_known_commands_exactly() {
@@ -413,8 +384,10 @@ mod tests {
         assert!(text.contains("/pet"));
         assert!(text.contains("/theme"));
         assert!(text.contains("(local TUI)"));
-        // /model's line mentions the /models alias instead of a second line.
-        assert!(text.contains("(alias: /models)"));
-        assert!(!text.contains("alias de /model"));
+        assert!(text.contains("/model"));
+        assert!(text.contains("/backend"));
+        // The plural aliases were dropped entirely — only /model and /backend.
+        assert!(!text.contains("/models"));
+        assert!(!text.contains("/backends"));
     }
 }

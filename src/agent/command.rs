@@ -136,11 +136,11 @@ fn connect_instructions(provider: Option<&str>) -> String {
         Some("claude") => "Claude Code subscription: run `bastion connect claude` (or `docker compose exec -it core claude auth login`), complete the browser login, then select /backend use runtime:acpx_claude (or the Claude Code option in installer.sh on the next install/update).".to_string(),
         Some("codex") => "Codex subscription: run `bastion connect codex` (or `docker compose exec -it core codex login`), complete the ChatGPT browser login, then select /backend use runtime:codex_app_server (or the Codex option in installer.sh on the next install/update).".to_string(),
         Some("opencode") => "OpenCode subscription: run `bastion connect opencode` (or `docker compose exec -it core opencode auth login`), complete the login, then select /backend use runtime:acpx_opencode (or the OpenCode option in installer.sh on the next install/update).".to_string(),
-        Some("gemini") => "Gemini: add GEMINI_API_KEY to .env or your secret manager, restart the daemon, then open /models.".to_string(),
-        Some("anthropic") => "Anthropic: add ANTHROPIC_API_KEY to .env or your secret manager, restart the daemon, then open /models.".to_string(),
-        Some("openai") => "OpenAI: add OPENAI_API_KEY to .env or your secret manager, restart the daemon, then open /models.".to_string(),
-        Some("openrouter") => "OpenRouter: add OPENROUTER_API_KEY to .env or your secret manager, restart the daemon, then open /models.".to_string(),
-        Some("ollama") => "Ollama: start the local Ollama service, then choose one of its installed models from /models. No API key is needed.".to_string(),
+        Some("gemini") => "Gemini: add GEMINI_API_KEY to .env or your secret manager, restart the daemon, then open /model.".to_string(),
+        Some("anthropic") => "Anthropic: add ANTHROPIC_API_KEY to .env or your secret manager, restart the daemon, then open /model.".to_string(),
+        Some("openai") => "OpenAI: add OPENAI_API_KEY to .env or your secret manager, restart the daemon, then open /model.".to_string(),
+        Some("openrouter") => "OpenRouter: add OPENROUTER_API_KEY to .env or your secret manager, restart the daemon, then open /model.".to_string(),
+        Some("ollama") => "Ollama: start the local Ollama service, then choose one of its installed models from /model. No API key is needed.".to_string(),
         Some(_) => "Unknown provider. Choose gemini, anthropic, openai, openrouter, ollama, claude, codex, or opencode.".to_string(),
     }
 }
@@ -295,13 +295,10 @@ pub async fn handle_command(
             }
         }
 
-        // Fase 3.2: `/model` is canonical, `/models` a full alias — merged into
-        // one arm (both used to carry near-identical show/switch bodies that
-        // had already drifted: only the `/model` arm supported `reset`, and
-        // the two no-arg hints disagreed on wording). One body now, so they
-        // can never diverge again; `command_catalog::CATALOG` documents
-        // `/models` as an alias of `/model` for `/help`/autocomplete.
-        "/model" | "/models" => {
+        // `/model` shows, switches, resets, and (in the TUI) browses the LLM
+        // provider+model. Single command — the old `/models` plural alias was
+        // dropped so there is exactly one spelling to keep in sync.
+        "/model" => {
             let requested = parts
                 .get(1)
                 .map(|value| value.trim())

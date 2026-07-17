@@ -1651,13 +1651,13 @@ async fn daemon_loop(
                     Some(s) if s.trim().starts_with('/') => {
                         let trimmed = s.trim();
                         let first_token = trimmed.split_whitespace().next().unwrap_or("");
-                        // Fase 2.4: `/backend`/`/backends` need `&mut agent`
+                        // Fase 2.4: `/backend` needs `&mut agent`
                         // (registry.resolve, backend_profile mutation) —
                         // AgentLoop::handle_command's CommandHandler port
                         // doesn't get that, so it's special-cased here,
                         // before the generic router, exactly like the
                         // inbound_rx arm below.
-                        if first_token == "/backend" || first_token == "/backends" {
+                        if first_token == "/backend" {
                             let backend_arg = trimmed.split_once(' ').map(|x| x.1);
                             match bastion::agent::backend_command::handle(
                                 agent,
@@ -1682,11 +1682,11 @@ async fn daemon_loop(
                         {
                             CommandResult::Stop => break,
                             CommandResult::Handled(msg) => {
-                                // Fase 2.10: /model and /models don't see `agent.backend_profile`
+                                // Fase 2.10: /model doesn't see `agent.backend_profile`
                                 // (handle_command's CommandHandler port doesn't get `&mut
                                 // AgentLoop`) — prepend the truthful backend label/warning here,
                                 // where `agent` is actually in scope.
-                                let msg = if first_token == "/model" || first_token == "/models" {
+                                let msg = if first_token == "/model" {
                                     let bare = trimmed == first_token;
                                     format!(
                                         "{}{msg}",
@@ -1785,7 +1785,7 @@ async fn daemon_loop(
                     is_known_command && !bastion::command_catalog::is_remote_allowed(c)
                 }) {
                     Ok(format!("{cmd} is console-only — not allowed remotely."))
-                } else if matches!(command_token, Some("/backend") | Some("/backends")) {
+                } else if matches!(command_token, Some("/backend")) {
                     // Fase 2.4: needs `&mut agent` — see the stdin arm's identical
                     // special-case above for why this can't go through `handle_command`.
                     let backend_arg = trimmed.split_once(' ').map(|x| x.1);
@@ -1812,7 +1812,7 @@ async fn daemon_loop(
                     {
                         Ok(CommandResult::Handled(msg)) => {
                             // Fase 2.10: same truthful-backend prepend as the stdin arm above.
-                            Ok(if matches!(command_token, Some("/model") | Some("/models")) {
+                            Ok(if matches!(command_token, Some("/model")) {
                                 let bare = command_token == Some(trimmed);
                                 format!(
                                     "{}{msg}",
