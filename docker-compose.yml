@@ -18,11 +18,13 @@ services:
       - sh
       - -c
       - |
-        chown -R ${BASTION_UID:-1000}:${BASTION_GID:-1000} /bastion-data /claude-home /codex-home /acpx-home /opencode-home &&
+        mkdir -p /bastion-home/.config /bastion-home/.local/share/opencode /bastion-home/.claude /bastion-home/.codex /bastion-home/.acpx &&
+        chown -R ${BASTION_UID:-1000}:${BASTION_GID:-1000} /bastion-data /bastion-home /claude-home /codex-home /acpx-home /opencode-home &&
         chown -R 1001:1001 /memupalace-data /skill-writer-data /self-improving-data &&
         echo "volume ownership initialized (core=${BASTION_UID:-1000}:${BASTION_GID:-1000}, python=1001:1001)"
     volumes:
       - bastion-data:/bastion-data
+      - bastion-home:/bastion-home
       - claude-home:/claude-home
       - codex-home:/codex-home
       - acpx-home:/acpx-home
@@ -54,6 +56,8 @@ services:
       - "${BASTION_PUBLISH_HOST:-127.0.0.1}:${BASTION_HTTP_PORT:-8080}:8080"
     volumes:
       - bastion-data:/bastion-data                # sessions.db + bastion.log
+      - bastion-home:/home/bastion                 # whole HOME (UID match, ~/.claude.json persistence);
+                                                    # the 4 credential sub-volumes below mount on top
       - claude-home:/home/bastion/.claude          # Claude Code subscription login
       - codex-home:/home/bastion/.codex            # Codex subscription login
       - acpx-home:/home/bastion/.acpx              # ACP runtime sessions
@@ -247,6 +251,7 @@ networks:
 # ── Volumes ─────────────────────────────────────────────────────────────────
 volumes:
   bastion-data:          # core: sessions.db + bastion.log
+  bastion-home:          # core: whole /home/bastion (UID match, ~/.claude.json persistence)
   claude-home:           # Claude Code login and settings
   codex-home:            # Codex login and settings
   acpx-home:             # ACP runtime sessions
