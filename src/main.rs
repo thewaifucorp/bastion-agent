@@ -162,8 +162,36 @@ fn connect_subscription(provider: &str) -> anyhow::Result<()> {
             "unknown subscription '{provider}'; use: bastion connect claude|codex|opencode"
         ),
     };
+
+    let project_dir = bastion::compose::locate_project_dir().ok_or_else(|| {
+        anyhow::anyhow!(
+            "could not locate the Bastion docker-compose project; run from the install dir or set BASTION_COMPOSE_DIR"
+        )
+    })?;
+
+    // Pre-check: `docker compose exec` on a stopped/missing `core` fails with a
+    // generic Docker error that doesn't point at the fix. `-q` prints the
+    // container ID only (empty output when nothing matches), so this is a
+    // reliable running/not-running signal, unlike the table `docker compose ps`
+    // prints by default.
+    let running = ProcessCommand::new("docker")
+        .args(["compose", "ps", "--status", "running", "-q", "core"])
+        .current_dir(&project_dir)
+        .output();
+    let core_running = matches!(&running,
+        Ok(output) if output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+    );
+    if !core_running {
+        eprintln!(
+            "◈ hint: the `core` container doesn't look like it's running — try `docker compose up -d` in {}",
+            project_dir.display()
+        );
+    }
+
     let mut command = ProcessCommand::new("docker");
-    command.args(["compose", "exec", "-it", "core", program]);
+    command
+        .args(["compose", "exec", "-it", "core", program])
+        .current_dir(&project_dir);
     if provider == "codex" {
         command.arg("login");
     } else if provider == "opencode" {
