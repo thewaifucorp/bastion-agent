@@ -720,6 +720,19 @@ async fn daemon_loop(
     // secret/address is present in the environment.
     if cfg.channels.webhook.enabled {
         if let Ok(addr) = std::env::var("BASTION_WEBHOOK_ADDR") {
+            // Kill port footgun: docker-compose.yml publishes host:BASTION_HTTP_PORT to
+            // container:8080 unconditionally (the `ports:` mapping there is hardcoded).
+            // A BASTION_WEBHOOK_ADDR that doesn't bind :8080 inside the container would
+            // silently make the daemon unreachable through the published port.
+            if std::path::Path::new("/.dockerenv").exists() && !addr.ends_with(":8080") {
+                tracing::warn!(
+                    event = "webhook_addr_port_mismatch",
+                    addr = %addr,
+                    "running inside Docker but BASTION_WEBHOOK_ADDR does not end in :8080 — \
+                     the published port mapping in docker-compose.yml hardcodes the \
+                     container-side port to 8080; the daemon will bind a port nothing forwards to"
+                );
+            }
             let h = agent_handle.clone();
             let owner_map = webhook_owner_map;
             // Phase 6: mesh connectivity — load peers from config, create broadcast channel for SSE.

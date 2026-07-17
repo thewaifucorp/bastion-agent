@@ -193,6 +193,16 @@ prepare_environment() {
   [[ -n "$(env_get BASTION_BOOTSTRAP_TOKEN)" ]] || env_set BASTION_BOOTSTRAP_TOKEN "$(random_secret)"
   env_set BASTION_UID "$(id -u)"
   env_set BASTION_GID "$(id -g)"
+
+  # Kill port footgun: docker-compose.yml now hardcodes BASTION_WEBHOOK_ADDR to
+  # 0.0.0.0:8080 in its `environment:` block, which overrides env_file — but a
+  # stale entry left in .env from an older install is confusing to read next
+  # to BASTION_HTTP_PORT (the only port that's actually configurable). Strip it.
+  if grep -q '^BASTION_WEBHOOK_ADDR=' "$INSTALL_DIR/.env" 2>/dev/null; then
+    sed -i '/^BASTION_WEBHOOK_ADDR=/d' "$INSTALL_DIR/.env"
+    info "Removed stale BASTION_WEBHOOK_ADDR from .env (docker-compose.yml now hardcodes it)"
+  fi
+
   configure_backend
   info "Configuration prepared (internal secrets were not printed)."
 }
