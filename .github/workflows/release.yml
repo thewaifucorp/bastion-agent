@@ -1,0 +1,95 @@
+name: release
+
+# Tag-triggered releases. Cut one by bumping the version + CHANGELOG.md,
+# committing, then pushing an annotated tag:
+#   git tag -a vX.Y.Z -m "bastion-agent X.Y.Z" && git push --tags
+# This workflow then publishes the GitHub Release (body = the matching
+# CHANGELOG.md section), attaches a prebuilt Linux binary, and pushes the
+# Docker image to GHCR as :X.Y.Z and :latest.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the GitHub Release
+  packages: write # push the image to ghcr.io
+
+jobs:
+  github-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Derive version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # Fail early if CHANGELOG.md has no section for this tag — a release
+      # without notes is almost always a mistaken/mistyped tag.
+      # VERSION comes via env (never inlined into the script) so a crafted tag
+      # name cannot inject shell — see the workflow-injection guidance.
+      - name: Extract this version's changelog section
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { grab = 1; next }
+            grab && /^## \[/ { exit }
+            grab { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "::error::no CHANGELOG.md section found for $VERSION"
+            exit 1
+          fi
+
+      # channels-extra pulls native-tls -> openssl-sys; match the Dockerfile.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
+
+      # Host binary matches the Dockerfile feature set (no voice: that runs in
+      # the container, not on the host that runs the TUI).
+      - name: Build release binary
+        run: cargo build --locked --release --no-default-features --features channels-extra,mcp-server --bin bastion
+
+      - name: Stage artifact
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          install -Dm755 target/release/bastion \
+            "bastion-${VERSION}-x86_64-unknown-linux-gnu"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: RELEASE_NOTES.md
+          files: bastion-*-x86_64-unknown-linux-gnu
+          fail_on_unmatched_files: true
+
+  docker-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: CARGO_BUILD_JOBS=4
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository }}:latest
