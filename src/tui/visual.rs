@@ -6,6 +6,8 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use serde::{Deserialize, Serialize};
 
+use super::companion::PetPack;
+
 const RGB: [Color; 6] = [
     Color::Rgb(0, 229, 255),
     Color::Rgb(88, 157, 246),
@@ -1144,4 +1146,3 @@ mod tests {
             .join("\n")
     }
 }
-use super::companion::PetPack;

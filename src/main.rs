@@ -1658,7 +1658,7 @@ async fn daemon_loop(
                         // before the generic router, exactly like the
                         // inbound_rx arm below.
                         if first_token == "/backend" || first_token == "/backends" {
-                            let backend_arg = trimmed.splitn(2, ' ').nth(1);
+                            let backend_arg = trimmed.split_once(' ').map(|x| x.1);
                             match bastion::agent::backend_command::handle(
                                 agent,
                                 backend_arg,
@@ -1788,7 +1788,7 @@ async fn daemon_loop(
                 } else if matches!(command_token, Some("/backend") | Some("/backends")) {
                     // Fase 2.4: needs `&mut agent` — see the stdin arm's identical
                     // special-case above for why this can't go through `handle_command`.
-                    let backend_arg = trimmed.splitn(2, ' ').nth(1);
+                    let backend_arg = trimmed.split_once(' ').map(|x| x.1);
                     match bastion::agent::backend_command::handle(
                         agent,
                         backend_arg,
