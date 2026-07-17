@@ -8,8 +8,34 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-07-17
+
 ### Added
 
+- In-TUI subscription backends: `/backend` command and picker to switch the
+  conversation runtime between Claude Code, Codex, and opencode subscriptions
+  (and back to API-key models) live, without restarting the daemon. The
+  selection is persisted and the picker shows each runtime's health and login
+  status.
+- In-TUI subscription login: `/connect claude|codex|opencode` suspends the TUI
+  and runs the provider's login flow inside the core container, then reports the
+  refreshed status — no manual `docker compose exec` required.
+- `bastion connect` now runs real, provider-correct login verbs
+  (`claude auth login`, `--setup-token` for a long-lived token), verifies the
+  result, and offers `--import-host` to copy existing host credentials into the
+  container so you don't have to log in again.
+- `GET /status` endpoint reporting per-runtime CLI presence and login state
+  (booleans only), plus startup logs that warn when a selected runtime is not
+  logged in.
+- Unified command catalog as the single source of truth for command scope,
+  TUI autocomplete, the remote allow-list, and `/help`.
+- Fuzzy command matching with "did you mean …?" suggestions across the TUI,
+  webhook, and console.
+- TUI input editing: cursor movement (Left/Right/Home/End/Ctrl+A/Ctrl+E) and
+  command history (Up/Down), multibyte-safe.
+- Shell completion generation via `bastion completions <shell>`, installed for
+  bash by the installer with printed zsh/fish instructions.
+- opencode subscription as a selectable backend in the installer.
 - Interactive `/pet` subcommands for viewing stats, toggling game mode, caring
   for the companion, putting it to sleep, and selecting a pet pack; completion
   options remain visible after typing `/pet `. Nested menus offer eight foods,
@@ -22,9 +48,35 @@ for how that differs from the library crates it depends on).
 - Pixel-art Keeper and Patchwork mascot rendering through supported terminal
   graphics protocols, with state-specific faces and seals, automatic text-mode
   fallback, and a `BASTION_TUI_GRAPHICS=off` override.
-- Persistent daemon-wide provider/model selection with `/models`, a local
+- Persistent daemon-wide provider/model selection with a local
   recommended-model picker, secure `/connect` setup guidance, and `/model reset`
   to restore the configured default.
+
+### Changed
+
+- `/model` is now the canonical command; `/models` is an alias, and the
+  model-browse picker opens for either form.
+- Typed CLI arguments (`ValueEnum`) for the `connect` provider and the
+  `companion` event/care actions, so invalid values are rejected with the valid
+  options instead of failing at runtime.
+- The container now persists the whole `/home/bastion` as a Docker volume so all
+  CLI auth state (including `~/.claude.json`) survives `--force-recreate`;
+  `volume-init` pre-creates and chowns the credential directories, fixing broken
+  ownership when the host user id is not 1000.
+- The webhook's container-side port is fixed at 8080; only the host-published
+  port (`BASTION_HTTP_PORT`) is configurable, removing a silent connectivity
+  footgun.
+
+### Fixed
+
+- Command errors (unknown model, missing API key) now surface an actionable
+  message instead of a bare `HTTP 500`.
+- `bastion connect` resolves the Compose project directory from any working
+  directory (`BASTION_COMPOSE_DIR`, ancestor walk, or the install dir).
+- First-run startup fails fast with the real error from the daemon log instead
+  of polling an unreachable runtime for two minutes.
+- Subscription auth is re-verified lazily, so logging in mid-session works
+  without restarting the daemon.
 
 ## [0.1.2] — 2026-07-16
 
@@ -121,6 +173,8 @@ Depends on [bastion-core](https://github.com/thewaifucorp/bastion-core) for
 the runtime substrate (agent loop, capabilities, memory, cognition,
 personas, mesh, providers, extension protocol).
 
-[Unreleased]: https://github.com/thewaifucorp/bastion-agent/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/thewaifucorp/bastion-agent/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/thewaifucorp/bastion-agent/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/thewaifucorp/bastion-agent/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/thewaifucorp/bastion-agent/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/thewaifucorp/bastion-agent/releases/tag/v0.1.0
