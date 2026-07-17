@@ -154,7 +154,7 @@ configure_backend() {
     return 0
   fi
 
-  printf '\nConversation backend: 1) API provider  2) Claude Code subscription  3) Codex subscription\nchoice [1]: '
+  printf '\nConversation backend: 1) API provider  2) Claude Code subscription  3) Codex subscription  4) OpenCode subscription\nchoice [1]: '
   local choice
   read -r choice
   case "${choice:-1}" in
@@ -166,12 +166,17 @@ configure_backend() {
     2)
       env_set BASTION_BACKEND_CONVERSATION runtime:acpx_claude
       env_set BASTION_BACKEND_AUTH claude-subscription
-      info "Claude Code will ask you to complete its browser login after startup."
+      info "Run 'bastion connect claude' after startup to complete its browser login."
       ;;
     3)
       env_set BASTION_BACKEND_CONVERSATION runtime:codex_app_server
       env_set BASTION_BACKEND_AUTH codex-subscription
-      info "Codex will ask you to complete its ChatGPT login after startup."
+      info "Run 'bastion connect codex' after startup to complete its ChatGPT login."
+      ;;
+    4)
+      env_set BASTION_BACKEND_CONVERSATION runtime:acpx_opencode
+      env_set BASTION_BACKEND_AUTH opencode-subscription
+      info "Run 'bastion connect opencode' after startup to complete its login."
       ;;
     *) die "invalid backend choice" ;;
   esac
