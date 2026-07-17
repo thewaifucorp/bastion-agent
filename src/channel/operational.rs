@@ -96,6 +96,13 @@ impl ReadinessState {
         self.channels.store(true, Ordering::SeqCst);
     }
 
+    /// Fase 2.9: `/status`'s `ready` field reuses this exact boolean (not a
+    /// second gate) — just the AND of the four components `/readyz` already
+    /// reports, without exposing the per-component breakdown a second time.
+    pub fn is_ready(&self) -> bool {
+        self.snapshot().ready
+    }
+
     fn snapshot(&self) -> ReadinessSnapshot {
         let session = self.session.load(Ordering::SeqCst);
         let memory = self.memory.load(Ordering::SeqCst);
@@ -211,6 +218,65 @@ pub async fn lifecycle_stop_handler(
         Json(serde_json::json!({"status": "stopping"})),
     )
         .into_response()
+}
+
+/// Fase 2.9: one row of `/status`'s `runtimes` array — booleans only, never
+/// an account name/email/label (that's the whole point of this route: a
+/// remote caller — mobile companion, monitoring — can tell "is subscription
+/// X usable right now" without ever seeing WHO is logged in).
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct RuntimeStatusRow {
+    pub id: String,
+    pub cli_present: bool,
+    pub logged_in: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StatusSnapshot {
+    pub runtimes: Vec<RuntimeStatusRow>,
+    pub ready: bool,
+}
+
+/// `GET /status` — booleans-only summary of every runtime Bastion knows how
+/// to wrap (Fase 2.9). `cli_present` mirrors `agent_runtime_registry`'s own
+/// `health()` probe (a `--version` spawn — installed/working, NOT
+/// "logged in", see that module's doc); `logged_in` is a live
+/// `auth_profile_registry::probe_host_cli` against the mapped
+/// `[auth.<profile>]` entry. `ready` is `session && memory && provider &&
+/// channels` from the SAME `ReadinessState` `/readyz` already reports (not a
+/// new gate) — this route just adds runtime/login detail alongside it.
+pub async fn status_handler(
+    State(state): State<StatusState>,
+) -> impl IntoResponse {
+    let mut runtimes = Vec::new();
+    for descriptor in state.runtime_registry.descriptors() {
+        let cli_present = state.runtime_registry.resolve(descriptor.id).await.is_ok();
+        let logged_in = match crate::agent::backend_command::RUNTIME_AUTH_PROFILES
+            .iter()
+            .find(|(id, _)| *id == descriptor.id)
+            .and_then(|(_, profile)| state.auth.profiles.get(*profile))
+        {
+            Some(crate::config::AuthProfileEntry::HostCli { cli }) => {
+                crate::auth_profile_registry::probe_host_cli(cli).await.is_ok()
+            }
+            _ => false,
+        };
+        runtimes.push(RuntimeStatusRow {
+            id: descriptor.id.to_string(),
+            cli_present,
+            logged_in,
+        });
+    }
+    let ready = state.readiness.is_ready();
+    (StatusCode::OK, Json(StatusSnapshot { runtimes, ready })).into_response()
+}
+
+/// State `/status` needs, mounted alongside `AppState` in `webhook.rs`.
+#[derive(Clone)]
+pub struct StatusState {
+    pub runtime_registry: bastion_runtime::agent::backend::RuntimeRegistry,
+    pub auth: crate::config::AuthConfig,
+    pub readiness: Arc<ReadinessState>,
 }
 
 pub async fn lifecycle_reload_handler(

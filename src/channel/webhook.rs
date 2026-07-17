@@ -176,6 +176,22 @@ struct AppState {
     /// Loop 3-D: daemon-access-gated stop/reload control, extracted via
     /// `FromRef` for `operational::lifecycle_*_handler`.
     lifecycle: crate::channel::operational::LifecycleControl,
+    /// Fase 2.9: backs `GET /status` (`operational::status_handler`) via the
+    /// `FromRef<AppState> for operational::StatusState` impl below.
+    runtime_registry: bastion_runtime::agent::backend::RuntimeRegistry,
+    /// Fase 2.9: same `[auth.*]` table `AuthProfileRegistry`/`backend_command`
+    /// use — `/status` probes it live (booleans only, never account detail).
+    auth: crate::config::AuthConfig,
+}
+
+impl axum::extract::FromRef<AppState> for crate::channel::operational::StatusState {
+    fn from_ref(state: &AppState) -> Self {
+        crate::channel::operational::StatusState {
+            runtime_registry: state.runtime_registry.clone(),
+            auth: state.auth.clone(),
+            readiness: state.readiness.clone(),
+        }
+    }
 }
 
 impl axum::extract::FromRef<AppState>
@@ -203,10 +219,34 @@ pub fn error_status(e: &anyhow::Error) -> StatusCode {
             BastionError::PrivacyEgressBlocked => StatusCode::FORBIDDEN,
             BastionError::BudgetExceeded => StatusCode::TOO_MANY_REQUESTS,
             BastionError::InputGuardrailRejected(_) => StatusCode::BAD_REQUEST,
+            BastionError::ApprovalDenied { .. } => StatusCode::FORBIDDEN,
+            BastionError::BackendUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
     }
     StatusCode::INTERNAL_SERVER_ERROR
+}
+
+/// Fase 2.8: the response BODY companion to `error_status` — a hand-picked
+/// whitelist by TYPED variant (never a string-prefix check, same discipline
+/// as `error_status`/WR-09) of which errors are safe to echo verbatim to the
+/// client. `BackendUnavailable`/`BudgetExceeded`/`PrivacyEgressBlocked`/
+/// `ApprovalDenied` carry no secret material and are actionable ("switch
+/// backend", "wait for budget reset", ...) — everything else, INCLUDING
+/// `InputGuardrailRejected` (whose detail string is explicitly documented as
+/// "MUST NOT be echoed to the client" in `bastion-types`), collapses to a
+/// generic "internal error" so a future variant can never leak by omission.
+pub fn error_body(e: &anyhow::Error) -> String {
+    if let Some(be) = e.downcast_ref::<BastionError>() {
+        match be {
+            BastionError::BackendUnavailable(_)
+            | BastionError::BudgetExceeded
+            | BastionError::PrivacyEgressBlocked
+            | BastionError::ApprovalDenied { .. } => return be.to_string(),
+            _ => {}
+        }
+    }
+    "internal error".to_string()
 }
 
 /// Resolve owner from x-bastion-token header. Returns None + 401 response on miss.
@@ -308,9 +348,14 @@ async fn handle(
         Ok(reply) => Json(Out { reply }).into_response(),
         Err(e) => {
             let status = error_status(&e);
-            tracing::warn!(event = "webhook_turn_error", status = %status, "turn failed");
-            // Do not echo internal error detail to the client.
-            (status, Json(serde_json::json!({}))).into_response()
+            // Fase 2.8: `error_body` is a hand-picked, typed-variant
+            // whitelist (WR-09 discipline) — safe to include in the
+            // response now, unlike the previous always-empty `{}` (problem
+            // #12, "erro 500 vazio"). Full detail still only ever goes to
+            // the log, never the client.
+            let body = error_body(&e);
+            tracing::warn!(event = "webhook_turn_error", status = %status, error = %e, "turn failed");
+            (status, Json(serde_json::json!({ "error": body }))).into_response()
         }
     }
 }
@@ -1111,6 +1156,11 @@ pub async fn serve(
     let lifecycle = crate::channel::operational::LifecycleControl::new(
         crate::channel::operational::DaemonAccessAuth::new(None),
     );
+    // Self-contained entry point has no daemon_loop composition root to build
+    // these from — an empty registry + default (no `[auth.*]`) config mean
+    // `/status` reports zero runtimes rather than lying about what's wired.
+    let runtime_registry = bastion_runtime::agent::backend::RuntimeRegistry::new();
+    let auth = crate::config::AuthConfig::default();
     serve_with_mesh(
         agent,
         addr,
@@ -1128,6 +1178,8 @@ pub async fn serve(
         None,
         readiness,
         lifecycle,
+        runtime_registry,
+        auth,
     )
     .await
 }
@@ -1170,6 +1222,9 @@ pub async fn serve_with_mesh(
     readiness: std::sync::Arc<crate::channel::operational::ReadinessState>,
     // Daemon-access-gated stop/reload control backing `/lifecycle/*`.
     lifecycle: crate::channel::operational::LifecycleControl,
+    // Fase 2.9: backs `GET /status` — see `AppState.runtime_registry` doc.
+    runtime_registry: bastion_runtime::agent::backend::RuntimeRegistry,
+    auth: crate::config::AuthConfig,
 ) -> anyhow::Result<()> {
     let state = AppState {
         agent,
@@ -1186,6 +1241,8 @@ pub async fn serve_with_mesh(
         composio_oauth,
         readiness,
         lifecycle,
+        runtime_registry,
+        auth,
     };
     let mut app = Router::new()
         .route("/webhook", post(handle))
@@ -1210,6 +1267,11 @@ pub async fn serve_with_mesh(
         .route(
             "/readyz",
             axum::routing::get(crate::channel::operational::readiness_handler),
+        )
+        // Fase 2.9: booleans-only runtime/login status — see module doc.
+        .route(
+            "/status",
+            axum::routing::get(crate::channel::operational::status_handler),
         )
         .route(
             "/lifecycle/stop",
@@ -1301,6 +1363,8 @@ mod tests {
             composio_oauth: None,
             readiness,
             lifecycle,
+            runtime_registry: bastion_runtime::agent::backend::RuntimeRegistry::new(),
+            auth: crate::config::AuthConfig::default(),
         };
         let router = Router::new()
             .route("/webhook", post(handle))
@@ -1355,6 +1419,8 @@ mod tests {
             composio_oauth: None,
             readiness,
             lifecycle,
+            runtime_registry: bastion_runtime::agent::backend::RuntimeRegistry::new(),
+            auth: crate::config::AuthConfig::default(),
         };
         Router::new()
             .route(
@@ -1583,6 +1649,49 @@ mod tests {
         // Unknown errors → 500
         let other = anyhow::anyhow!("something exploded");
         assert_eq!(error_status(&other), StatusCode::INTERNAL_SERVER_ERROR);
+
+        // Fase 2.8: BackendUnavailable/ApprovalDenied also get specific statuses now.
+        let backend_err = anyhow::anyhow!(BastionError::BackendUnavailable("codex_app_server: not logged in".to_string()));
+        assert_eq!(error_status(&backend_err), StatusCode::SERVICE_UNAVAILABLE);
+
+        let denied_err = anyhow::anyhow!(BastionError::ApprovalDenied {
+            capability: "shell_exec".to_string(),
+            scope: bastion_types::DenyScope::Turn,
+        });
+        assert_eq!(error_status(&denied_err), StatusCode::FORBIDDEN);
+    }
+
+    /// Fase 2.8: `error_body` whitelist — the four safe-to-echo variants
+    /// return their own `Display`, everything else (INCLUDING
+    /// `InputGuardrailRejected`, whose detail is explicitly documented as
+    /// never-echo) collapses to a generic "internal error".
+    #[test]
+    fn error_body_whitelists_typed_variants_only() {
+        let backend_err = anyhow::anyhow!(BastionError::BackendUnavailable(
+            "codex_app_server: not logged in".to_string()
+        ));
+        assert!(error_body(&backend_err).contains("codex_app_server"));
+
+        let budget_err = anyhow::anyhow!(BastionError::BudgetExceeded);
+        assert_eq!(error_body(&budget_err), BastionError::BudgetExceeded.to_string());
+
+        let egress_err = anyhow::anyhow!(BastionError::PrivacyEgressBlocked);
+        assert_eq!(error_body(&egress_err), BastionError::PrivacyEgressBlocked.to_string());
+
+        let denied_err = anyhow::anyhow!(BastionError::ApprovalDenied {
+            capability: "shell_exec".to_string(),
+            scope: bastion_types::DenyScope::Turn,
+        });
+        assert!(error_body(&denied_err).contains("shell_exec"));
+
+        // MUST NOT echo the guardrail detail, even though it's a typed variant.
+        let guard_err = anyhow::anyhow!(BastionError::InputGuardrailRejected(
+            "sensitive detail that must never reach the client".to_string()
+        ));
+        assert_eq!(error_body(&guard_err), "internal error");
+
+        let other = anyhow::anyhow!("something exploded with a stack trace maybe");
+        assert_eq!(error_body(&other), "internal error");
     }
 
     /// GET /events without token returns 401.
@@ -1716,6 +1825,8 @@ mod tests {
             composio_oauth: None,
             readiness,
             lifecycle,
+            runtime_registry: bastion_runtime::agent::backend::RuntimeRegistry::new(),
+            auth: crate::config::AuthConfig::default(),
         };
         Router::new()
             .route("/webhook", post(handle))
@@ -1758,6 +1869,8 @@ mod tests {
             composio_oauth,
             readiness,
             lifecycle,
+            runtime_registry: bastion_runtime::agent::backend::RuntimeRegistry::new(),
+            auth: crate::config::AuthConfig::default(),
         };
         Router::new()
             .route("/auth/composio/callback", post(composio_callback_handler))
