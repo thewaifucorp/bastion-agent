@@ -89,7 +89,10 @@ print("check-scope-and-scrub: guard 2 — corporate-name scrub")
 # Deliberately short and specific — see header. Extend only with an actual
 # leaked proprietary name, never a generic English word (false positives on
 # common words would make this check impossible to keep green).
-BLOCKED_NAMES = ["katsui", "thewaifucorp", "waifucorp"]
+# `waifucorp`/`thewaifucorp` are the project's PUBLIC identity — the GitHub org
+# that hosts this repo, the README attribution, and waifucorp.org — not leaked
+# closed-source names, so they stay (same rationale as `Bastion Cloud`, header).
+BLOCKED_NAMES = ["katsui"]
 # This script itself must name the blocked strings to check for them — the
 # ONE deliberate, self-referential exception, not a leak.
 EXEMPT_FILES = {"scripts/check-scope-and-scrub.sh"}
