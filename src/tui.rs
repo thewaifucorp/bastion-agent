@@ -372,6 +372,12 @@ const COMMANDS: &[CommandInfo] = &[
         remote: false,
     },
     CommandInfo {
+        name: "/backend",
+        usage: "/backend",
+        desc: "list/switch the conversation backend — model or a subscription runtime",
+        remote: true,
+    },
+    CommandInfo {
         name: "/as",
         usage: "/as <persona>",
         desc: "force a persona for the next turn — console-only",
@@ -510,7 +516,30 @@ const CONNECT_COMMANDS: &[CommandInfo] = &[
     pet_option("/connect ollama", "set up local Ollama"),
     pet_option("/connect claude", "log in to Claude Code subscription"),
     pet_option("/connect codex", "log in to Codex subscription"),
+    pet_option("/connect opencode", "log in to OpenCode subscription"),
 ];
+
+/// Fase 2.10: `/backend` picker — mirrors `MODEL_COMMANDS`'s mechanic
+/// (expands after the bare command or the trailing space). Deliberately
+/// lists the runtime ids with their `runtime:` prefix stripped (matches
+/// `backend_command::use_backend`, which accepts a bare id) — typing the
+/// prefix would work too, but the short form is what `/backend`'s own
+/// listing echoes back.
+const BACKEND_COMMANDS: &[CommandInfo] = &[
+    pet_option("/backend", "list backends + login status · type space to browse"),
+    pet_option("/backend use model", "Bastion tool loop (provider/model via /model)"),
+    pet_option("/backend use acpx_claude", "Claude Code subscription runtime"),
+    pet_option("/backend use codex_app_server", "Codex subscription runtime"),
+    pet_option("/backend use acpx_opencode", "OpenCode subscription runtime"),
+];
+
+/// Fase 2.10 cross-link: shown at the top of the `/models ` picker only (not
+/// part of `MODEL_COMMANDS` itself — that list must never gain `runtime:`
+/// entries, which would route through `resolve_provider` and fail) so an
+/// owner browsing models notices there's a whole other kind of backend one
+/// space-key press away.
+const MODEL_BACKEND_CROSSLINK: CommandInfo =
+    pet_option("/backend", "switch to a subscription backend instead — see /backend");
 
 const fn pet_option(command: &'static str, desc: &'static str) -> CommandInfo {
     CommandInfo {
@@ -575,16 +604,36 @@ fn command_matches(input: &str) -> Vec<&'static CommandInfo> {
     if input.is_empty() || !input.starts_with('/') {
         return vec![];
     }
+    // Fase 2.10: the freshly-opened `/models ` picker (trailing space, no
+    // filter text typed yet) gets the `/backend` cross-link prepended, right
+    // at the top. Once the user starts typing a model name after the space
+    // (`/models claude-op`), the crosslink drops out like any other
+    // non-matching entry would — it's a picker-opening hint, not a search
+    // result. The bare `/models` shorthand (no trailing space) is unaffected,
+    // keeping its pre-existing first-match-is-itself contract.
+    if input == "/models " {
+        let mut list: Vec<&'static CommandInfo> = vec![&MODEL_BACKEND_CROSSLINK];
+        list.extend(MODEL_COMMANDS.iter().filter(|c| c.name.starts_with(input)));
+        return list;
+    }
+    if input.starts_with("/models ") {
+        return MODEL_COMMANDS
+            .iter()
+            .filter(|c| c.name.starts_with(input))
+            .collect();
+    }
     let nested = if input.starts_with("/pet feed ") {
         Some(FOOD_COMMANDS)
     } else if input.starts_with("/pet play ") {
         Some(PLAY_COMMANDS)
     } else if input.starts_with("/pet sleep ") {
         Some(SLEEP_COMMANDS)
-    } else if input.starts_with("/models ") || input == "/models" {
+    } else if input == "/models" {
         Some(MODEL_COMMANDS)
     } else if input.starts_with("/connect ") {
         Some(CONNECT_COMMANDS)
+    } else if input.starts_with("/backend ") || input == "/backend" {
+        Some(BACKEND_COMMANDS)
     } else {
         None
     };
@@ -901,6 +950,97 @@ fn spawn_sse_listener(tx: UnboundedSender<AppMsg>, client: Client, base_url: Str
     });
 }
 
+/// Fase 2.5: `/connect claude|codex|opencode` (exact match, no extra args —
+/// anything else falls through to the normal turn/command path) maps to the
+/// CLI binary, its login verb-args, and the runtime id the follow-up
+/// `/backend use <id>` hint should name. Kept local to `tui.rs` (not shared
+/// with `main.rs`'s `connect_login_args`) because the two live in different
+/// crate targets (binary vs. lib) with no shared module for this, and the
+/// TUI's flow has no `--setup-token` equivalent (that's a headless-CLI-only
+/// escape hatch per the plan).
+fn connect_subscription_target(text: &str) -> Option<(&'static str, &'static [&'static str], &'static str)> {
+    match text {
+        "/connect claude" => Some(("claude", &["auth", "login"], "acpx_claude")),
+        "/connect codex" => Some(("codex", &["login"], "codex_app_server")),
+        "/connect opencode" => Some(("opencode", &["auth", "login"], "acpx_opencode")),
+        _ => None,
+    }
+}
+
+/// Fase 2.5 remote fallback: this TUI has no way to attach an interactive
+/// login prompt to a base_url that isn't loopback (there's no tty to forward
+/// it to) — print the exact instructions instead of silently failing.
+fn connect_login_fallback_message(cli: &str, args: &[&str]) -> String {
+    format!(
+        "This session is remote — an interactive `{cli}` login can't run from here. \
+         On the machine running the Bastion daemon/container, run `bastion connect {cli}` \
+         (or `docker compose exec -it core {cli} {}`), complete the login, then come back \
+         here and run /backend to confirm.",
+        args.join(" ")
+    )
+}
+
+/// Fase 2.5: runs the subscription CLI's own login flow with stdio
+/// inherited (needs a real tty — the caller suspends the alternate screen
+/// first). Prefers `docker compose exec -it core <cli> <args>` when a
+/// Compose project is found AND its `core` service is actually running
+/// (matches `connect_subscription` in main.rs); falls back to running the
+/// CLI directly on the host otherwise (e.g. a native, non-Docker install).
+fn run_subscription_login(cli: &str, args: &[&str]) -> Result<std::process::ExitStatus> {
+    let compose_dir = crate::compose::locate_project_dir();
+    let core_running = compose_dir.as_deref().is_some_and(|dir| {
+        Command::new("docker")
+            .args(["compose", "ps", "--status", "running", "-q", "core"])
+            .current_dir(dir)
+            .output()
+            .is_ok_and(|out| {
+                out.status.success() && !String::from_utf8_lossy(&out.stdout).trim().is_empty()
+            })
+    });
+
+    if let Some(dir) = compose_dir.filter(|_| core_running) {
+        Command::new("docker")
+            .args(["compose", "exec", "-it", "core", cli])
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .context("running docker compose exec for the subscription login")
+    } else {
+        Command::new(cli)
+            .args(args)
+            .status()
+            .with_context(|| format!("running `{cli}` directly on the host"))
+    }
+}
+
+/// Fase 2.5: after a successful login, refresh `/backend`'s status inline —
+/// same webhook a turn uses, but awaited directly (not via `spawn_turn`)
+/// since the caller already has a synchronous "login just finished" moment
+/// to attach the result to.
+async fn send_command_over_webhook(
+    client: &Client,
+    base_url: &str,
+    jwt: &str,
+    text: &str,
+) -> Result<String> {
+    let resp = client
+        .post(format!("{base_url}/webhook"))
+        .header("x-bastion-token", jwt)
+        .json(&json!({ "text": text }))
+        .send()
+        .await
+        .context("refreshing /backend status")?;
+    if resp.status().is_success() {
+        let out: WebhookOut = resp
+            .json()
+            .await
+            .context("parsing /backend refresh response")?;
+        Ok(out.reply)
+    } else {
+        anyhow::bail!("HTTP {}", resp.status())
+    }
+}
+
 fn spawn_turn(
     tx: UnboundedSender<AppMsg>,
     client: Client,
@@ -921,7 +1061,22 @@ fn spawn_turn(
                 Ok(out) => TurnOutcome::Reply(out.reply),
                 Err(e) => TurnOutcome::Error(format!("invalid response: {e}")),
             },
-            Ok(resp) => TurnOutcome::Error(format!("HTTP {}", resp.status())),
+            // Fase 2.8: `error_body` (channel/webhook.rs) shapes non-success bodies as
+            // `{"error": "<message>"}` — parse it for a readable reason instead of the
+            // bare status code, falling back to the old bare-status text for any
+            // non-conforming/empty body (e.g. a proxy-injected error page).
+            Ok(resp) => {
+                let status = resp.status();
+                let detail = resp
+                    .json::<serde_json::Value>()
+                    .await
+                    .ok()
+                    .and_then(|body| body.get("error").and_then(|e| e.as_str()).map(str::to_string));
+                match detail {
+                    Some(msg) => TurnOutcome::Error(format!("HTTP {status}: {msg}")),
+                    None => TurnOutcome::Error(format!("HTTP {status}")),
+                }
+            }
             Err(e) => TurnOutcome::Error(format!("request failed: {e}")),
         };
         let _ = tx.send(AppMsg::Turn(outcome));
@@ -1253,6 +1408,72 @@ async fn run_app(
                             app.input.clear();
                             app.suggestion_idx = 0;
                             app.lines.push(Line::You(text.clone()));
+                            // Fase 2.5: `/connect claude|codex|opencode` needs a real
+                            // interactive login, not a turn the daemon can answer with
+                            // text — intercepted here, BEFORE spawn_turn, same as the
+                            // companion/theme/unknown special-cases below.
+                            if let Some((cli, args, runtime_id)) =
+                                connect_subscription_target(&text)
+                            {
+                                if !is_local_url(base_url) {
+                                    app.visual_mode = VisualMode::Alert;
+                                    app.settle_at = None;
+                                    app.lines.push(Line::System(connect_login_fallback_message(
+                                        cli, args,
+                                    )));
+                                    continue;
+                                }
+                                app.lines.push(Line::System(format!(
+                                    "suspending the screen to run `{cli} {}`…",
+                                    args.join(" ")
+                                )));
+                                terminal.draw(|f| draw(f, &mut app))?;
+                                disable_raw_mode()?;
+                                execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                                let login_result = run_subscription_login(cli, args);
+                                enable_raw_mode()?;
+                                execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                                match login_result {
+                                    Ok(status) if status.success() => {
+                                        app.visual_mode = VisualMode::Success;
+                                        app.settle_at =
+                                            Some(Instant::now() + settle_after(VisualMode::Success));
+                                        app.lines.push(Line::System(format!(
+                                            "✔ {cli} login exited with {status}. Run \
+                                             /backend use {runtime_id} to switch (or /backend \
+                                             to check status)."
+                                        )));
+                                        match send_command_over_webhook(
+                                            client,
+                                            base_url,
+                                            &session.jwt,
+                                            "/backend",
+                                        )
+                                        .await
+                                        {
+                                            Ok(reply) => app.lines.push(Line::Bastion(reply)),
+                                            Err(e) => app.lines.push(Line::System(format!(
+                                                "could not refresh /backend status: {e}"
+                                            ))),
+                                        }
+                                    }
+                                    Ok(status) => {
+                                        app.visual_mode = VisualMode::Alert;
+                                        app.settle_at = None;
+                                        app.lines.push(Line::System(format!(
+                                            "✘ {cli} login exited with {status}."
+                                        )));
+                                    }
+                                    Err(e) => {
+                                        app.visual_mode = VisualMode::Alert;
+                                        app.settle_at = None;
+                                        app.lines.push(Line::System(format!(
+                                            "✘ could not run {cli} login: {e}"
+                                        )));
+                                    }
+                                }
+                                continue;
+                            }
                             if let Some((response, mode)) = companion_command(&mut app, &text) {
                                 app.visual_mode = mode;
                                 app.settle_at = Some(Instant::now() + settle_after(mode));
@@ -1485,7 +1706,10 @@ mod tests {
         assert_eq!(command_matches("/pet feed ").len(), FOOD_COMMANDS.len());
         assert_eq!(command_matches("/pet play ").len(), PLAY_COMMANDS.len());
         assert_eq!(command_matches("/pet sleep ").len(), SLEEP_COMMANDS.len());
-        assert_eq!(command_matches("/models ").len(), MODEL_COMMANDS.len() - 1);
+        // Fase 2.10: the freshly-opened `/models ` picker gets the `/backend`
+        // cross-link prepended (`+1` over the plain model-id filter count).
+        assert_eq!(command_matches("/models ").len(), MODEL_COMMANDS.len());
+        assert_eq!(command_matches("/models ")[0].name, "/backend");
         assert_eq!(command_matches("/models")[0].name, "/models");
         assert_eq!(command_matches("/connect ").len(), CONNECT_COMMANDS.len());
         assert_eq!(
@@ -1527,5 +1751,62 @@ mod tests {
         assert!(unknown_command("/pet feed").is_none());
         assert!(unknown_command("/theme rgb").is_none());
         assert!(unknown_command("oi bastion").is_none());
+    }
+
+    #[test]
+    fn backend_picker_expands_bare_and_with_trailing_space() {
+        // Fase 2.10: same mechanic as `/models` — both the bare command and
+        // the trailing-space form open the picker (unlike `/pet`/`/theme`,
+        // which only expand after the space).
+        let bare: Vec<&str> = command_matches("/backend").iter().map(|c| c.name).collect();
+        assert_eq!(bare.len(), BACKEND_COMMANDS.len());
+        assert_eq!(bare[0], "/backend");
+
+        let spaced: Vec<&str> = command_matches("/backend ")
+            .iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(spaced.len(), BACKEND_COMMANDS.len() - 1);
+        assert!(spaced.contains(&"/backend use acpx_claude"));
+        assert!(spaced.contains(&"/backend use codex_app_server"));
+        assert!(spaced.contains(&"/backend use acpx_opencode"));
+        assert!(spaced.contains(&"/backend use model"));
+
+        assert_eq!(
+            command_matches("/backend use acpx_c")
+                .iter()
+                .map(|c| c.name)
+                .collect::<Vec<_>>(),
+            vec!["/backend use acpx_claude"]
+        );
+    }
+
+    #[test]
+    fn connect_picker_includes_opencode() {
+        let names: Vec<&str> = command_matches("/connect ").iter().map(|c| c.name).collect();
+        assert!(names.contains(&"/connect opencode"));
+        assert!(names.contains(&"/connect claude"));
+        assert!(names.contains(&"/connect codex"));
+    }
+
+    #[test]
+    fn connect_subscription_target_matches_exact_form_only() {
+        assert_eq!(
+            connect_subscription_target("/connect claude"),
+            Some(("claude", ["auth", "login"].as_slice(), "acpx_claude"))
+        );
+        assert_eq!(
+            connect_subscription_target("/connect codex"),
+            Some(("codex", ["login"].as_slice(), "codex_app_server"))
+        );
+        assert_eq!(
+            connect_subscription_target("/connect opencode"),
+            Some(("opencode", ["auth", "login"].as_slice(), "acpx_opencode"))
+        );
+        // Anything else (API providers, extra args, typos) falls through to
+        // the normal command/turn path instead — this is not a catch-all.
+        assert_eq!(connect_subscription_target("/connect gemini"), None);
+        assert_eq!(connect_subscription_target("/connect claude foo"), None);
+        assert_eq!(connect_subscription_target("/connect"), None);
     }
 }
