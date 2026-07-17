@@ -14,6 +14,23 @@
 //! `AcpxAgentRuntime` concretely is exactly what the kernel
 //! (`bastion_runtime::agent::backend`) must never do — it only ever sees
 //! `Arc<dyn AgentRuntime>`.
+//!
+//! # Health is deliberately `--version`, not "am I logged in" (Fase 2.7/2.9)
+//!
+//! `register_if_healthy` below only calls each adapter's own `health()`,
+//! which today is a handful of `--version` subprocess spawns (see e.g.
+//! `bastion_agent_runtime::codex::CodexAppServerRuntime::health`) — it does
+//! NOT check whether the wrapped CLI is actually logged into a subscription.
+//! This is intentional, not a gap this module should close: a runtime that
+//! isn't logged in yet should still be listable (`/backend`, `RuntimeRegistry
+//! ::descriptors()`) and selectable — the user needs to be ABLE to select
+//! `runtime:acpx_claude` before running `/connect claude` so the login flow
+//! has somewhere to attach. Login state is a property of the AUTH profile
+//! (`auth_profile_registry.rs`), surfaced separately by `/backend`'s listing
+//! and startup's `runtime_not_logged_in` warning (`main.rs`) — conflating the
+//! two here would make an unauthenticated-but-installed runtime vanish from
+//! the picker entirely, which is worse UX, not better safety (the fail-closed
+//! guarantee already lives in `AuthResolver::resolve` at turn start).
 
 use bastion_agent_runtime::acpx::AcpxAgentRuntime;
 use bastion_agent_runtime::codex::CodexAppServerRuntime;
