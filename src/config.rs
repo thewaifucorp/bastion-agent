@@ -145,6 +145,12 @@ pub struct BackendConfig {
 /// here — the composition root fills it in from the resolved runtime's own
 /// `RuntimeDescriptor::policy_coverage` once it looks the id up in the
 /// `RuntimeRegistry` (main.rs), never invented here from the config string.
+///
+/// Fase 2.1 fix: `auth = Some("")` (an empty string — e.g. a `/backend use
+/// model` round trip through `BackendSelection` that left the field blank)
+/// is normalized to `None` here rather than threading an empty
+/// `AuthProfileRef("")` down into the kernel, which would resolve against a
+/// profile id nobody could ever configure.
 pub fn backend_profile_from_config(
     cfg: &BackendConfig,
 ) -> bastion_runtime::agent::backend::BackendProfile {
@@ -158,11 +164,66 @@ pub fn backend_profile_from_config(
         }
     };
 
+    let auth = cfg
+        .auth
+        .clone()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(bastion_agent_runtime::AuthProfileRef);
+
     BackendProfile {
         conversation,
         task_runtime: cfg.task_runtime.clone(),
-        auth: cfg.auth.clone().map(bastion_agent_runtime::AuthProfileRef),
+        auth,
         coverage_note: None,
+    }
+}
+
+/// Runtime-owned backend selection written by the local `/backend` command
+/// (Fase 2.1 — mirrors `ModelSelection` above byte-for-byte in shape and
+/// persistence pattern). Lives beside the session database, same as
+/// `model-selection.json`, so an interactive `/backend use <id>` survives a
+/// daemon restart without rewriting `bastion.toml` or the installer's env
+/// overrides (`main.rs` overlays this on top of `backend_profile_from_config`
+/// at startup — user choice wins).
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct BackendSelection {
+    /// `"model"` or `"runtime:<id>"` — same grammar `BackendConfig.conversation` accepts.
+    pub conversation: String,
+    #[serde(default)]
+    pub auth: Option<String>,
+    #[serde(default)]
+    pub task_runtime: Option<String>,
+}
+
+pub fn backend_selection_path(cfg: &BastionConfig) -> PathBuf {
+    Path::new(&cfg.session.db_path)
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .join("backend-selection.json")
+}
+
+pub fn load_backend_selection(cfg: &BastionConfig) -> Option<BackendSelection> {
+    let raw = std::fs::read_to_string(backend_selection_path(cfg)).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+pub fn save_backend_selection(path: &Path, selection: &BackendSelection) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let temporary = path.with_extension("json.tmp");
+    let contents =
+        serde_json::to_vec_pretty(selection).expect("backend selection must serialize");
+    std::fs::write(&temporary, contents)?;
+    std::fs::rename(temporary, path)
+}
+
+pub fn clear_backend_selection(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -1037,6 +1098,53 @@ auth = "host-chatgpt-login"
             ConversationBackend::Runtime("codex_app_server".to_string())
         );
         assert_eq!(profile.task_runtime.as_deref(), Some("acpx_claude"));
+    }
+
+    /// Fase 2.1: an empty-string `auth` (e.g. round-tripped through a
+    /// `BackendSelection` that never set one) must normalize to `None`,
+    /// never an empty `AuthProfileRef("")`.
+    #[test]
+    fn backend_config_empty_auth_string_maps_to_none() {
+        let cfg = BackendConfig {
+            conversation: Some("runtime:acpx_claude".to_string()),
+            task_runtime: None,
+            auth: Some("".to_string()),
+        };
+        let profile = backend_profile_from_config(&cfg);
+        assert!(profile.auth.is_none(), "empty auth string must become None");
+    }
+
+    #[test]
+    fn backend_config_whitespace_only_auth_maps_to_none() {
+        let cfg = BackendConfig {
+            conversation: None,
+            task_runtime: None,
+            auth: Some("   ".to_string()),
+        };
+        let profile = backend_profile_from_config(&cfg);
+        assert!(profile.auth.is_none(), "whitespace-only auth must become None");
+    }
+
+    #[test]
+    fn backend_selection_round_trip_is_atomic_and_clearable() {
+        let directory = tempfile::tempdir().expect("temporary backend state directory");
+        let path = directory.path().join("backend-selection.json");
+
+        let selection = BackendSelection {
+            conversation: "runtime:acpx_claude".to_string(),
+            auth: Some("claude-subscription".to_string()),
+            task_runtime: None,
+        };
+        save_backend_selection(&path, &selection).expect("save selection");
+        let loaded: BackendSelection =
+            serde_json::from_slice(&std::fs::read(&path).expect("read selection"))
+                .expect("parse selection");
+        assert_eq!(loaded.conversation, "runtime:acpx_claude");
+        assert_eq!(loaded.auth.as_deref(), Some("claude-subscription"));
+
+        clear_backend_selection(&path).expect("clear selection");
+        assert!(!path.exists());
+        clear_backend_selection(&path).expect("clearing a missing selection is safe");
     }
 
     #[test]
