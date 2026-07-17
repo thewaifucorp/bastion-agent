@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::collections::HashMap;
 use std::process::Command as ProcessCommand;
+use std::process::Stdio;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tracing_subscriber::fmt;
@@ -92,6 +93,19 @@ enum Command {
     Connect {
         /// claude | codex | opencode
         provider: String,
+        /// claude only: run `claude setup-token` instead of `claude auth login`
+        /// (headless-friendly — prints a token to paste rather than a browser flow).
+        #[arg(long)]
+        setup_token: bool,
+        /// One-shot copy of the host's existing CLI credentials into the
+        /// running `core` container (requires the `bastion-home` volume —
+        /// Fase 1.1). NOT a live share: rotating a refresh token on either
+        /// side afterward can desync the two copies.
+        #[arg(long)]
+        import_host: bool,
+        /// Skip the --import-host confirmation prompt (for scripts/CI).
+        #[arg(long)]
+        yes: bool,
     },
     /// Companion state and agent-session event bridge
     Companion {
@@ -153,15 +167,36 @@ fn default_chat_command() -> Command {
     }
 }
 
-fn connect_subscription(provider: &str) -> anyhow::Result<()> {
-    let program = match provider {
-        "claude" => "claude",
-        "codex" => "codex",
-        "opencode" => "opencode",
+/// Fase 2.6: `program` and its login-verb-args for `bastion connect
+/// <provider>` — kept local to main.rs (the CLI side) since the shared
+/// STATUS-verb table lives in `auth_profile_registry::host_cli_status_args`
+/// and is a different verb set (login vs. status).
+fn connect_login_args(provider: &str, setup_token: bool) -> anyhow::Result<&'static [&'static str]> {
+    match provider {
+        "claude" if setup_token => Ok(&["setup-token"]),
+        "claude" => Ok(&["auth", "login"]),
+        "codex" => Ok(&["login"]),
+        "opencode" => Ok(&["auth", "login"]),
         _ => anyhow::bail!(
             "unknown subscription '{provider}'; use: bastion connect claude|codex|opencode"
         ),
-    };
+    }
+}
+
+fn connect_subscription(
+    provider: &str,
+    setup_token: bool,
+    import_host: bool,
+    yes: bool,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        matches!(provider, "claude" | "codex" | "opencode"),
+        "unknown subscription '{provider}'; use: bastion connect claude|codex|opencode"
+    );
+    anyhow::ensure!(
+        !setup_token || provider == "claude",
+        "--setup-token only applies to `bastion connect claude`"
+    );
 
     let project_dir = bastion::compose::locate_project_dir().ok_or_else(|| {
         anyhow::anyhow!(
@@ -188,17 +223,117 @@ fn connect_subscription(provider: &str) -> anyhow::Result<()> {
         );
     }
 
-    let mut command = ProcessCommand::new("docker");
-    command
-        .args(["compose", "exec", "-it", "core", program])
-        .current_dir(&project_dir);
-    if provider == "codex" {
-        command.arg("login");
-    } else if provider == "opencode" {
-        command.args(["auth", "login"]);
+    if import_host {
+        return import_host_credentials(&project_dir, yes);
     }
-    let status = command.status()?;
-    anyhow::ensure!(status.success(), "{program} login exited with {status}");
+
+    let login_args = connect_login_args(provider, setup_token)?;
+    let status = ProcessCommand::new("docker")
+        .args(["compose", "exec", "-it", "core", provider])
+        .args(login_args)
+        .current_dir(&project_dir)
+        .status()?;
+    anyhow::ensure!(status.success(), "{provider} login exited with {status}");
+
+    // Post-login verification — same verb table `auth_profile_registry`'s
+    // `AuthResolver` probes against, so `bastion connect` and the daemon can
+    // never disagree on what "logged in" means. Runs INSIDE the container
+    // (`exec -T`, no tty) since that's where the login just happened.
+    let (verify_program, verify_args) = bastion::auth_profile_registry::host_cli_status_args(provider)
+        .expect("provider already validated as claude|codex|opencode above");
+    let verify_status = ProcessCommand::new("docker")
+        .args(["compose", "exec", "-T", "core", verify_program])
+        .args(verify_args)
+        .current_dir(&project_dir)
+        .status();
+    match verify_status {
+        Ok(status) if status.success() => {
+            println!("✔ {provider} autenticado.");
+            Ok(())
+        }
+        Ok(status) => {
+            println!("✘ {provider} login não confirmado (verificação saiu com {status}).");
+            anyhow::bail!("post-login verification failed for {provider}");
+        }
+        Err(e) => {
+            println!("✘ não foi possível verificar o login: {e}");
+            Err(e.into())
+        }
+    }
+}
+
+/// Fase 2.6 `--import-host`: one-shot copy of the host's existing CLI
+/// credential files into the running `core` container. Deliberately NOT a
+/// live/bind mount — docker-compose.yml never bind-mounts `~/.claude` etc.
+/// live because concurrent refresh-token rotation between the host CLI and
+/// the containerized CLI corrupts the credential file for whichever side
+/// writes second. This copies once; each side owns its own copy afterward.
+fn import_host_credentials(project_dir: &std::path::Path, yes: bool) -> anyhow::Result<()> {
+    let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME is not set"))?;
+    let home = std::path::PathBuf::from(home);
+    let candidates = [".claude", ".claude.json"];
+    let existing: Vec<&str> = candidates
+        .iter()
+        .filter(|name| home.join(name).exists())
+        .copied()
+        .collect();
+    anyhow::ensure!(
+        !existing.is_empty(),
+        "no host credentials found at ~/.claude or ~/.claude.json — nothing to import"
+    );
+
+    if !yes {
+        eprintln!(
+            "◈ security: this copies your host CLI credentials ({}) into the running \
+             container ONE TIME. The container will then be able to act as you on that \
+             subscription. This is a one-shot copy, not a live share — re-run after the \
+             host credentials change (e.g. a fresh login). Re-run with --yes to proceed.",
+            existing.join(", ")
+        );
+        anyhow::bail!("aborted — pass --yes to confirm the import");
+    }
+
+    let mut tar_args: Vec<String> = vec![
+        "-cf".to_string(),
+        "-".to_string(),
+        "-C".to_string(),
+        home.display().to_string(),
+    ];
+    tar_args.extend(existing.iter().map(|s| s.to_string()));
+
+    let mut tar_child = ProcessCommand::new("tar")
+        .args(&tar_args)
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("could not spawn tar: {e}"))?;
+    let tar_stdout = tar_child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to open tar stdout"))?;
+
+    let status = ProcessCommand::new("docker")
+        .args([
+            "compose",
+            "exec",
+            "-T",
+            "core",
+            "tar",
+            "-xf",
+            "-",
+            "-C",
+            "/home/bastion",
+        ])
+        .current_dir(project_dir)
+        .stdin(Stdio::from(tar_stdout))
+        .status()
+        .map_err(|e| anyhow::anyhow!("could not run docker compose exec for import: {e}"))?;
+
+    let tar_status = tar_child
+        .wait()
+        .map_err(|e| anyhow::anyhow!("tar (producer) failed: {e}"))?;
+    anyhow::ensure!(tar_status.success(), "tar (producer) failed with {tar_status}");
+    anyhow::ensure!(status.success(), "import into container failed (exit {status})");
+    println!("✔ host credentials imported into the container (one-shot copy).");
     Ok(())
 }
 
@@ -227,8 +362,14 @@ async fn main() -> anyhow::Result<()> {
         println!("{output}");
         return Ok(());
     }
-    if let Command::Connect { provider } = &command {
-        return connect_subscription(provider);
+    if let Command::Connect {
+        provider,
+        setup_token,
+        import_host,
+        yes,
+    } = &command
+    {
+        return connect_subscription(provider, *setup_token, *import_host, *yes);
     }
 
     // Load bastion.toml config (non-secret config only; secrets stay in .env)
@@ -423,6 +564,26 @@ async fn main() -> anyhow::Result<()> {
     let runtime_registry = bastion::agent_runtime_registry::build_runtime_registry().await;
 
     let mut backend_profile = bastion::config::backend_profile_from_config(&cfg.backend);
+    // Fase 2.2: an interactive `/backend use <id>` choice persisted by a
+    // PRIOR run (`.bastion/backend-selection.json`, beside the session DB)
+    // overlays bastion.toml/env at every subsequent startup — user choice
+    // wins over the installer's env-var default, exactly like
+    // `load_model_selection` already does for `/model`. Reuses
+    // `backend_profile_from_config` (not a bespoke mapping here) so the
+    // "model"/"runtime:<id>" grammar and the empty-auth-string-to-None fix
+    // stay single-sourced.
+    if let Some(selection) = bastion::config::load_backend_selection(&cfg) {
+        backend_profile = bastion::config::backend_profile_from_config(&bastion::config::BackendConfig {
+            conversation: Some(selection.conversation.clone()),
+            task_runtime: selection.task_runtime.clone(),
+            auth: selection.auth.clone(),
+        });
+        tracing::info!(
+            event = "backend_selection_loaded",
+            conversation = %selection.conversation,
+            "overlaying persisted /backend selection on top of bastion.toml/env",
+        );
+    }
     if let bastion_runtime::agent::backend::ConversationBackend::Runtime(id) =
         &backend_profile.conversation
     {
@@ -439,6 +600,58 @@ async fn main() -> anyhow::Result<()> {
             ),
         }
     }
+    // Fase 2.9: diagnostic-only pass over every REGISTERED runtime's mapped
+    // subscription login state. `agent_runtime_registry`'s own doc explains
+    // why `health()` is deliberately NOT "am I logged in" — a
+    // registered-but-logged-out runtime stays listed/selectable on purpose,
+    // so this never gates registration, only surfaces the gap at startup
+    // (`runtime_not_logged_in` warn) instead of only at first-turn failure,
+    // and escalates to an error when it's the ACTIVE selection (that turn
+    // will fail closed the moment it's tried).
+    for descriptor in runtime_registry.descriptors() {
+        let Some((_, profile)) = bastion::agent::backend_command::RUNTIME_AUTH_PROFILES
+            .iter()
+            .find(|(runtime_id, _)| *runtime_id == descriptor.id)
+        else {
+            continue;
+        };
+        let logged_in = match cfg.auth.profiles.get(*profile) {
+            Some(bastion::config::AuthProfileEntry::HostCli { cli }) => {
+                bastion::auth_profile_registry::probe_host_cli(cli)
+                    .await
+                    .is_ok()
+            }
+            _ => false,
+        };
+        if logged_in {
+            continue;
+        }
+        let is_selected = matches!(
+            &backend_profile.conversation,
+            bastion_runtime::agent::backend::ConversationBackend::Runtime(active_id)
+                if active_id.as_str() == descriptor.id
+        );
+        if is_selected {
+            tracing::error!(
+                event = "runtime_not_logged_in",
+                runtime_id = %descriptor.id,
+                auth_profile = %profile,
+                selected = true,
+                "the SELECTED conversation backend's subscription is not logged in — turns \
+                 will fail closed until you run `bastion connect <provider>` or `/connect \
+                 <provider>`",
+            );
+        } else {
+            tracing::warn!(
+                event = "runtime_not_logged_in",
+                runtime_id = %descriptor.id,
+                auth_profile = %profile,
+                selected = false,
+                "registered runtime's subscription is not logged in — still listed/selectable \
+                 via /backend, just not usable yet",
+            );
+        }
+    }
     // M4-07 (docs/revamp/BACKLOG.md): verify every configured `[auth.<profile>]`
     // entry against the live host (by reference only — no token ever read/
     // logged, see auth_profile_registry.rs) and wire the result as the
@@ -447,6 +660,13 @@ async fn main() -> anyhow::Result<()> {
     // nothing, and AgentLoop's own NullAuthResolver default (unchanged if
     // this call is ever removed) already preserves pre-M4-07 behavior.
     let auth_resolver = bastion::auth_profile_registry::AuthProfileRegistry::build(&cfg.auth).await;
+
+    // Fase 2.9: `/status` (webhook.rs) needs its own handle to the registry
+    // to report per-runtime `cli_present`/`logged_in` — cloned BEFORE the
+    // move into `with_runtime_registry` below, same pattern as
+    // `goals_for_product`/`mcp_for_product` above. `RuntimeRegistry` is
+    // `Clone` (cheap — an `Arc<dyn AgentRuntime>` map).
+    let runtime_registry_for_product = runtime_registry.clone();
 
     agent = agent
         .with_backend_profile(backend_profile)
@@ -485,6 +705,7 @@ async fn main() -> anyhow::Result<()> {
                 mcp_for_product,
                 registry_for_product,
                 secret_resolver,
+                runtime_registry_for_product,
             )
             .await?;
         }
@@ -664,6 +885,10 @@ async fn daemon_loop(
     // (`BASTION_SECRETS_DIR`); a hosted operator's own secret manager is a
     // drop-in replacement built in `main()`, never a daemon_loop change.
     secret_resolver: Arc<dyn bastion_types::SecretResolver>,
+    // Fase 2.9: cloned BEFORE `agent.with_runtime_registry` moved the
+    // original — `/status` (webhook.rs) reports per-runtime
+    // `cli_present`/`logged_in` from this handle.
+    runtime_registry_for_product: bastion_runtime::agent::backend::RuntimeRegistry,
 ) -> anyhow::Result<()> {
     use bastion::agent::command::{CommandResources, CommandResult};
     use tokio::io::{AsyncBufReadExt, BufReader};
@@ -713,8 +938,14 @@ async fn daemon_loop(
             path: bastion::config::model_selection_path(cfg),
             default_model: cfg.agent.default_model.clone(),
         }),
+        auth: cfg.auth.clone(),
         ..Default::default()
     };
+
+    // Fase 2.3/2.4: `.bastion/backend-selection.json` — the persistence path
+    // both dispatch arms below pass into `backend_command::handle` (mirrors
+    // `command_resources.model_selection.path` for `/model`).
+    let backend_selection_path = bastion::config::backend_selection_path(cfg);
 
     // CR-07: create AgentHandle + inbound receiver BEFORE the select! loop.
     // Channels (Telegram, webhook) hold clones of `handle` and send messages into `inbound_rx`.
@@ -964,6 +1195,10 @@ async fn daemon_loop(
             // so the ORIGINAL bindings must survive this spawn, not be moved into it.
             let readiness_for_webhook = readiness.clone();
             let lifecycle_for_webhook = lifecycle.clone();
+            // Fase 2.9: `/status` needs its own registry handle + the
+            // `[auth.*]` table inside the spawned task.
+            let runtime_registry_for_webhook = runtime_registry_for_product.clone();
+            let auth_for_webhook = cfg.auth.clone();
             tokio::spawn(async move {
                 if let Err(e) = bastion::channel::webhook::serve_with_mesh(
                     h,
@@ -982,6 +1217,8 @@ async fn daemon_loop(
                     composio_oauth.clone(),
                     readiness_for_webhook,
                     lifecycle_for_webhook,
+                    runtime_registry_for_webhook,
+                    auth_for_webhook,
                 )
                 .await
                 {
@@ -1310,16 +1547,57 @@ async fn daemon_loop(
                     }
                     Some(s) if s.trim().is_empty() => continue,
                     Some(s) if s.trim().starts_with('/') => {
+                        let trimmed = s.trim();
+                        let first_token = trimmed.split_whitespace().next().unwrap_or("");
+                        // Fase 2.4: `/backend`/`/backends` need `&mut agent`
+                        // (registry.resolve, backend_profile mutation) —
+                        // AgentLoop::handle_command's CommandHandler port
+                        // doesn't get that, so it's special-cased here,
+                        // before the generic router, exactly like the
+                        // inbound_rx arm below.
+                        if first_token == "/backend" || first_token == "/backends" {
+                            let backend_arg = trimmed.splitn(2, ' ').nth(1);
+                            match bastion::agent::backend_command::handle(
+                                agent,
+                                backend_arg,
+                                &backend_selection_path,
+                                &cfg.auth,
+                            )
+                            .await
+                            {
+                                Ok(msg) => println!("{msg}"),
+                                Err(e) => println!("Erro no comando: {e}"),
+                            }
+                            continue;
+                        }
                         match agent
                             .handle_command(
-                                s.trim(),
+                                trimmed,
                                 bastion_runtime::agent::loop_::DEFAULT_OWNER,
                                 &command_handler,
                             )
                             .await?
                         {
                             CommandResult::Stop => break,
-                            CommandResult::Handled(msg) => println!("{msg}"),
+                            CommandResult::Handled(msg) => {
+                                // Fase 2.10: /model and /models don't see `agent.backend_profile`
+                                // (handle_command's CommandHandler port doesn't get `&mut
+                                // AgentLoop`) — prepend the truthful backend label/warning here,
+                                // where `agent` is actually in scope.
+                                let msg = if first_token == "/model" || first_token == "/models" {
+                                    let bare = trimmed == first_token;
+                                    format!(
+                                        "{}{msg}",
+                                        bastion::agent::backend_command::model_reply_prefix(
+                                            &agent.backend_profile,
+                                            bare,
+                                        )
+                                    )
+                                } else {
+                                    msg
+                                };
+                                println!("{msg}")
+                            }
                             CommandResult::Unknown(cmd) => {
                                 println!("Unknown command: {}. Type /help.", cmd);
                             }
@@ -1376,7 +1654,7 @@ async fn daemon_loop(
             // and scope are reviewed explicitly.
             Some(req) = inbound_rx.recv() => {
                 const REMOTE_ALLOWED_COMMANDS: &[&str] =
-                    &["/help", "/contest", "/connect", "/models", "/model"];
+                    &["/help", "/contest", "/connect", "/models", "/model", "/backend", "/backends"];
                 // CONC-1: acquire per-owner lock before processing turn.
                 // Two turns from the same owner cannot run concurrently (double-tap protection).
                 // Different owners are independent — their locks do not contend.
@@ -1397,19 +1675,60 @@ async fn daemon_loop(
                     command_token.filter(|c| is_known_command && !REMOTE_ALLOWED_COMMANDS.contains(c))
                 {
                     Ok(format!("{cmd} is console-only — not allowed remotely."))
+                } else if matches!(command_token, Some("/backend") | Some("/backends")) {
+                    // Fase 2.4: needs `&mut agent` — see the stdin arm's identical
+                    // special-case above for why this can't go through `handle_command`.
+                    let backend_arg = trimmed.splitn(2, ' ').nth(1);
+                    match bastion::agent::backend_command::handle(
+                        agent,
+                        backend_arg,
+                        &backend_selection_path,
+                        &cfg.auth,
+                    )
+                    .await
+                    {
+                        Ok(msg) => Ok(msg),
+                        // Fase 2.8: usage/domain errors from a command become a normal
+                        // chat reply (HTTP 200), not an opaque error status — mirrors
+                        // handle_command's own Err handling right below. Policy denials
+                        // from an actual TURN (the `else` branch further down) are
+                        // untouched and keep propagating typed errors/status codes.
+                        Err(e) => Ok(format!("Erro no comando: {e}")),
+                    }
                 } else if command_token.is_some() {
                     match agent
                         .handle_command(trimmed, &req.owner, &command_handler)
                         .await
                     {
-                        Ok(CommandResult::Handled(msg)) => Ok(msg),
+                        Ok(CommandResult::Handled(msg)) => {
+                            // Fase 2.10: same truthful-backend prepend as the stdin arm above.
+                            Ok(if matches!(command_token, Some("/model") | Some("/models")) {
+                                let bare = command_token == Some(trimmed);
+                                format!(
+                                    "{}{msg}",
+                                    bastion::agent::backend_command::model_reply_prefix(
+                                        &agent.backend_profile,
+                                        bare,
+                                    )
+                                )
+                            } else {
+                                msg
+                            })
+                        }
                         Ok(CommandResult::Unknown(cmd)) => {
                             Ok(format!("Unknown command: {cmd}. Type /help."))
                         }
                         Ok(CommandResult::Stop) => {
                             Ok("/stop is console-only — not allowed remotely.".to_string())
                         }
-                        Err(e) => Err(e),
+                        // Fase 2.8: handle_command's own errors are always usage/domain
+                        // messages (e.g. "/as requires a persona name"), never a typed
+                        // policy denial (those only ever come from the turn path in the
+                        // `else` branch below) — surface them as a normal chat reply
+                        // instead of an opaque HTTP error status. CR-05 is unaffected:
+                        // this is strictly narrower than "denials of policy continue with
+                        // status codes", which only ever applied to `run_turn_for_with_trust`.
+                        Err(e) => Ok(format!("Erro no comando: {e}")),
                     }
                 } else {
                     // SEC-05: threads the channel-resolved trust classification
