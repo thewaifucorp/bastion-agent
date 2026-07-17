@@ -436,19 +436,19 @@ const PET_COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "/pet feed",
         usage: "/pet feed",
-        desc: "feed the companion",
+        desc: "choose food — type space to see the pantry",
         remote: false,
     },
     CommandInfo {
         name: "/pet play",
         usage: "/pet play",
-        desc: "log a short break — stretch, walk, breathe",
+        desc: "choose an activity — type space to see games",
         remote: false,
     },
     CommandInfo {
         name: "/pet sleep",
         usage: "/pet sleep",
-        desc: "rest the companion and reset its needs",
+        desc: "choose a rest duration — type space to see options",
         remote: false,
     },
     CommandInfo {
@@ -458,6 +458,44 @@ const PET_COMMANDS: &[CommandInfo] = &[
         remote: false,
     },
 ];
+
+const FOOD_COMMANDS: &[CommandInfo] = &[
+    pet_option("/pet feed apple", "🍎 food 70% · water +15%"),
+    pet_option("/pet feed pizza", "🍕 food 100% · play +20%"),
+    pet_option("/pet feed salad", "🥗 food 80% · water +25%"),
+    pet_option("/pet feed burger", "🍔 food 100% · rest +10%"),
+    pet_option("/pet feed ice-cream", "🍨 food 55% · play +35%"),
+    pet_option("/pet feed carrot", "🥕 food 70% · water +20%"),
+    pet_option("/pet feed chocolate", "🍫 food 45% · play +30%"),
+    pet_option("/pet feed steak", "🥩 food 100% · rest +20%"),
+];
+
+const PLAY_COMMANDS: &[CommandInfo] = &[
+    pet_option("/pet play ball", "⚽ play 100% · rest +10%"),
+    pet_option("/pet play run", "🏃 play 100% · food +20%"),
+    pet_option("/pet play sing", "🎤 play 100% · rest +25%"),
+    pet_option("/pet play draw", "🎨 play 100% · rest +20%"),
+    pet_option("/pet play puzzle", "🧩 play 100% · rest +15%"),
+    pet_option("/pet play dance", "💃 play 100% · food +15%"),
+    pet_option("/pet play read", "📚 play 100% · rest +35%"),
+    pet_option("/pet play hide-seek", "🙈 play 100% · food +15%"),
+];
+
+const SLEEP_COMMANDS: &[CommandInfo] = &[
+    pet_option("/pet sleep nap", "😴 rest restored to at least 45%"),
+    pet_option("/pet sleep medium", "💤 rest 70% · play +10%"),
+    pet_option("/pet sleep long", "🌙 rest 90% · food +15%"),
+    pet_option("/pet sleep night", "🛏 restore every care need"),
+];
+
+const fn pet_option(command: &'static str, desc: &'static str) -> CommandInfo {
+    CommandInfo {
+        name: command,
+        usage: command,
+        desc,
+        remote: false,
+    }
+}
 
 /// Named `/theme` themes, expanded in the menu after the space — same
 /// mechanic as `/pet`. Hex colors (`/theme #RRGGBB`) are typed directly.
@@ -513,6 +551,21 @@ fn command_matches(input: &str) -> Vec<&'static CommandInfo> {
     if input.is_empty() || !input.starts_with('/') {
         return vec![];
     }
+    let nested = if input.starts_with("/pet feed ") {
+        Some(FOOD_COMMANDS)
+    } else if input.starts_with("/pet play ") {
+        Some(PLAY_COMMANDS)
+    } else if input.starts_with("/pet sleep ") {
+        Some(SLEEP_COMMANDS)
+    } else {
+        None
+    };
+    if let Some(commands) = nested {
+        return commands
+            .iter()
+            .filter(|command| command.name.starts_with(input))
+            .collect();
+    }
     if input.starts_with("/pet ") {
         return PET_COMMANDS
             .iter()
@@ -567,16 +620,7 @@ fn companion_command(app: &mut App, input: &str) -> Option<(String, VisualMode)>
     let command = parts.next().unwrap_or("stats");
     let mut mode = VisualMode::Success;
     let response = match command {
-        "stats" => format!(
-            "Companion: {}\nNeeds: {}\nGame mode: {}",
-            app.companion.status(),
-            app.companion.needs_status(),
-            if app.companion.game_enabled {
-                "on"
-            } else {
-                "off"
-            }
-        ),
+        "stats" => app.companion.status_panel(),
         "game" => match parts.next() {
             Some("on") => {
                 app.companion.game_enabled = true;
@@ -601,27 +645,33 @@ fn companion_command(app: &mut App, input: &str) -> Option<(String, VisualMode)>
                 "Keeper hydrated. Good moment to drink some water yourself.",
             )
         }
-        "feed" => {
-            app.companion.care(CareAction::Feed);
-            save_companion(
-                app,
-                "Keeper fed. Companion care stays separate from your progress.",
-            )
-        }
-        "play" => {
-            app.companion.care(CareAction::Play);
-            save_companion(
-                app,
-                "Play break logged. Stretch, walk, breathe, or pick any short reset that works for you.",
-            )
-        }
+        "feed" => match parts.next() {
+            Some(choice) => match app.companion.feed_choice(choice) {
+                Some(message) => save_companion(app, message),
+                None => "Unknown food. Type `/pet feed ` to see the pantry.".into(),
+            },
+            None => {
+                "Choose food: apple, pizza, salad, burger, ice-cream, carrot, chocolate, or steak."
+                    .into()
+            }
+        },
+        "play" => match parts.next() {
+            Some(choice) => match app.companion.play_choice(choice) {
+                Some(message) => save_companion(app, message),
+                None => "Unknown activity. Type `/pet play ` to see the games.".into(),
+            },
+            None => "Choose an activity: ball, run, sing, draw, puzzle, dance, read, or hide-seek."
+                .into(),
+        },
         "sleep" | "rest" => {
-            app.companion.care(CareAction::Sleep);
             mode = VisualMode::Sleep;
-            save_companion(
-                app,
-                "Companion resting. Your progress is safe; consider wrapping up your long session too.",
-            )
+            match parts.next() {
+                Some(choice) => match app.companion.sleep_choice(choice) {
+                    Some(message) => save_companion(app, message),
+                    None => "Unknown rest duration. Type `/pet sleep ` to see the options.".into(),
+                },
+                None => "Choose rest: nap, medium, long, or night.".into(),
+            }
         }
         "use" => match parts.next() {
             Some("builtin") => {
@@ -740,16 +790,7 @@ pub fn companion_care(action: &str) -> Result<String> {
 
 pub fn companion_status() -> String {
     let state = CompanionState::load(false);
-    format!(
-        "{}\n{}\ngame mode: {}",
-        state.status(),
-        state.needs_status(),
-        if state.game_enabled {
-            "on"
-        } else {
-            "off"
-        }
-    )
+    state.status_panel()
 }
 
 struct App {
@@ -1045,10 +1086,19 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         f.render_widget(Paragraph::new(items).block(suggestion_block), chunks[2]);
     }
 
+    let input_title =
+        if app.companion.game_enabled && !app.input.is_empty() && !app.input.starts_with('/') {
+            format!(
+                " {} · Enter sends · Esc/Ctrl+C quits ",
+                CompanionState::momentum_status(app.input.chars().count())
+            )
+        } else {
+            " message — Enter sends · Esc/Ctrl+C quits · Ctrl+U clears ".to_string()
+        };
     let input_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(app.appearance.accent(app.visual_mode)))
-        .title(" message — Enter sends · Esc/Ctrl+C quits · Ctrl+U clears ");
+        .title(input_title);
     let input = Paragraph::new(app.input.as_str())
         .style(Style::default().fg(app.appearance.text()))
         .block(input_block);
@@ -1194,6 +1244,26 @@ async fn run_app(
                                 app.lines.push(Line::Bastion(unknown));
                                 continue;
                             }
+                            let input_chars = text.chars().count();
+                            let input_xp = CompanionState::input_xp(input_chars);
+                            if app.companion.game_enabled
+                                && !text.starts_with('/')
+                                && input_xp > 0
+                            {
+                                if let Some(level) = app.companion.award_input(input_chars) {
+                                    app.lines.push(Line::Event(format!(
+                                        "⌨ Momentum reached level {level}."
+                                    )));
+                                }
+                                app.lines.push(Line::Event(format!(
+                                    "⌨ Momentum converted to +{input_xp} XP."
+                                )));
+                                if let Err(error) = app.companion.save() {
+                                    app.lines.push(Line::Event(format!(
+                                        "Companion progress could not be saved: {error}"
+                                    )));
+                                }
+                            }
                             app.thinking = true;
                             app.visual_mode = visual::mode_for_request(&text);
                             app.settle_at = None;
@@ -1229,6 +1299,12 @@ async fn run_app(
                 match outcome {
                     TurnOutcome::Reply(r) => {
                         let completed_mode = app.visual_mode;
+                        if app.companion.game_enabled {
+                            let reward = CompanionState::success_xp(completed_mode);
+                            app.lines.push(Line::Event(format!(
+                                "◈ Completed turn +{reward} XP · includes +1 AI sync."
+                            )));
+                        }
                         if let Some(level) = app.companion.award_success(completed_mode) {
                             app.lines.push(Line::Event(format!(
                                 "Companion reached level {level}. No capabilities or permissions changed."
@@ -1385,6 +1461,16 @@ mod tests {
             .map(|c| c.name)
             .collect();
         assert_eq!(game, vec!["/pet game on", "/pet game off"]);
+        assert_eq!(command_matches("/pet feed ").len(), FOOD_COMMANDS.len());
+        assert_eq!(command_matches("/pet play ").len(), PLAY_COMMANDS.len());
+        assert_eq!(command_matches("/pet sleep ").len(), SLEEP_COMMANDS.len());
+        assert_eq!(
+            command_matches("/pet feed ch")
+                .iter()
+                .map(|c| c.name)
+                .collect::<Vec<_>>(),
+            vec!["/pet feed chocolate"]
+        );
 
         // Comando completado (com espaço final) fecha o menu para o Enter enviar.
         assert!(command_matches("/pet stats ").is_empty());

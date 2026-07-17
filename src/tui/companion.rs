@@ -12,6 +12,8 @@ const WATER_DUE_SECS: u64 = 45 * 60;
 const FOOD_DUE_SECS: u64 = 75 * 60;
 const PLAY_DUE_SECS: u64 = 90 * 60;
 const REST_DUE_SECS: u64 = 150 * 60;
+const INPUT_XP_STEP: usize = 80;
+const INPUT_XP_CAP: u64 = 3;
 const ALLOWED_MARKUP: &[&str] = &[
     "primary",
     "secondary",
@@ -289,12 +291,45 @@ impl CompanionState {
         }
         let previous_level = self.level();
         self.successful_turns = self.successful_turns.saturating_add(1);
-        self.xp = self.xp.saturating_add(match mode {
-            VisualMode::Build => 5,
-            VisualMode::Cabinet => 4,
-            _ => 2,
-        });
+        self.xp = self.xp.saturating_add(Self::success_xp(mode));
         (self.level() > previous_level).then(|| self.level())
+    }
+
+    pub(super) fn success_xp(mode: VisualMode) -> u64 {
+        match mode {
+            VisualMode::Build => 6,
+            VisualMode::Cabinet => 5,
+            _ => 3,
+        }
+    }
+
+    pub(super) fn input_xp(chars: usize) -> u64 {
+        ((chars / INPUT_XP_STEP) as u64).min(INPUT_XP_CAP)
+    }
+
+    pub(super) fn award_input(&mut self, chars: usize) -> Option<u64> {
+        if !self.game_enabled {
+            return None;
+        }
+        let reward = Self::input_xp(chars);
+        if reward == 0 {
+            return None;
+        }
+        let previous_level = self.level();
+        self.xp = self.xp.saturating_add(reward);
+        (self.level() > previous_level).then(|| self.level())
+    }
+
+    pub(super) fn momentum_status(chars: usize) -> String {
+        let reward = Self::input_xp(chars);
+        if reward == INPUT_XP_CAP {
+            return format!("⌨ MOMENTUM MAX · +{reward} XP");
+        }
+        let current = chars % INPUT_XP_STEP;
+        format!(
+            "⌨ MOMENTUM {} {current}/{INPUT_XP_STEP} · +{reward} XP",
+            progress_bar(current as u64, INPUT_XP_STEP as u64, 6)
+        )
     }
 
     pub(super) fn record_activity(&mut self) -> Option<CareCue> {
@@ -367,13 +402,125 @@ impl CompanionState {
         }
     }
 
+    pub(super) fn feed_choice(&mut self, choice: &str) -> Option<&'static str> {
+        let (food, side, message) = match choice {
+            "apple" => (
+                70,
+                Some(("water", 15)),
+                "🍎 Apple served · food 70% · water +15%",
+            ),
+            "pizza" => (
+                100,
+                Some(("play", 20)),
+                "🍕 Pizza served · food 100% · play +20%",
+            ),
+            "salad" => (
+                80,
+                Some(("water", 25)),
+                "🥗 Salad served · food 80% · water +25%",
+            ),
+            "burger" => (
+                100,
+                Some(("rest", 10)),
+                "🍔 Burger served · food 100% · rest +10%",
+            ),
+            "ice-cream" => (
+                55,
+                Some(("play", 35)),
+                "🍨 Ice cream served · food 55% · play +35%",
+            ),
+            "carrot" => (
+                70,
+                Some(("water", 20)),
+                "🥕 Carrot served · food 70% · water +20%",
+            ),
+            "chocolate" => (
+                45,
+                Some(("play", 30)),
+                "🍫 Chocolate served · food 45% · play +30%",
+            ),
+            "steak" => (
+                100,
+                Some(("rest", 20)),
+                "🥩 Steak served · food 100% · rest +20%",
+            ),
+            _ => return None,
+        };
+        restore_to(&mut self.active_since_food_secs, FOOD_DUE_SECS, food);
+        if let Some((need, points)) = side {
+            self.restore_need(need, points);
+        }
+        Some(message)
+    }
+
+    pub(super) fn play_choice(&mut self, choice: &str) -> Option<&'static str> {
+        let (side, points, message) = match choice {
+            "ball" => ("rest", 10, "⚽ Played ball · play 100% · rest +10%"),
+            "run" => ("food", 20, "🏃 Ran around · play 100% · food +20%"),
+            "sing" => ("rest", 25, "🎤 Sang songs · play 100% · rest +25%"),
+            "draw" => ("rest", 20, "🎨 Drew pictures · play 100% · rest +20%"),
+            "puzzle" => ("rest", 15, "🧩 Solved a puzzle · play 100% · rest +15%"),
+            "dance" => ("food", 15, "💃 Dance party · play 100% · food +15%"),
+            "read" => ("rest", 35, "📚 Read together · play 100% · rest +35%"),
+            "hide-seek" => (
+                "food",
+                15,
+                "🙈 Played hide-and-seek · play 100% · food +15%",
+            ),
+            _ => return None,
+        };
+        self.active_since_play_secs = 0;
+        self.restore_need(side, points);
+        Some(message)
+    }
+
+    pub(super) fn sleep_choice(&mut self, choice: &str) -> Option<&'static str> {
+        let message = match choice {
+            "nap" => {
+                restore_to(&mut self.active_since_rest_secs, REST_DUE_SECS, 45);
+                "😴 Short nap · rest restored to at least 45%"
+            }
+            "medium" => {
+                restore_to(&mut self.active_since_rest_secs, REST_DUE_SECS, 70);
+                restore_by(&mut self.active_since_play_secs, PLAY_DUE_SECS, 10);
+                "💤 Medium sleep · rest 70% · play +10%"
+            }
+            "long" => {
+                restore_to(&mut self.active_since_rest_secs, REST_DUE_SECS, 90);
+                restore_by(&mut self.active_since_food_secs, FOOD_DUE_SECS, 15);
+                "🌙 Long sleep · rest 90% · food +15%"
+            }
+            "night" => {
+                self.active_since_rest_secs = 0;
+                self.active_since_water_secs = 0;
+                self.active_since_food_secs = 0;
+                self.active_since_play_secs = 0;
+                "🛏 Full night · all care needs restored"
+            }
+            _ => return None,
+        };
+        self.last_activity_unix = None;
+        self.last_source = None;
+        Some(message)
+    }
+
+    fn restore_need(&mut self, need: &str, points: u64) {
+        match need {
+            "water" => restore_by(&mut self.active_since_water_secs, WATER_DUE_SECS, points),
+            "food" => restore_by(&mut self.active_since_food_secs, FOOD_DUE_SECS, points),
+            "play" => restore_by(&mut self.active_since_play_secs, PLAY_DUE_SECS, points),
+            "rest" => restore_by(&mut self.active_since_rest_secs, REST_DUE_SECS, points),
+            _ => {}
+        }
+    }
+
     pub(super) fn needs_status(&self) -> String {
         format!(
-            "{} water · {} food · {} play · {} rest",
-            need_label(self.active_since_water_secs, WATER_DUE_SECS),
-            need_label(self.active_since_food_secs, FOOD_DUE_SECS),
-            need_label(self.active_since_play_secs, PLAY_DUE_SECS),
-            need_label(self.active_since_rest_secs, REST_DUE_SECS),
+            "water {} · food {} · play {} · rest {}",
+            need_indicator(self.active_since_water_secs, WATER_DUE_SECS),
+            need_indicator(self.active_since_food_secs, FOOD_DUE_SECS),
+            need_indicator(self.active_since_play_secs, PLAY_DUE_SECS),
+            need_indicator(self.active_since_rest_secs, REST_DUE_SECS),
         )
     }
 
@@ -399,9 +546,41 @@ impl CompanionState {
     pub(super) fn status(&self) -> String {
         let (current, target) = self.progress();
         format!(
-            "LV {} · XP {current}/{target} · {} turns",
+            "LV {} · XP {} {current}/{target} · {} turns",
             self.level(),
+            progress_bar(current, target, 10),
             self.successful_turns
+        )
+    }
+
+    pub(super) fn status_panel(&self) -> String {
+        let (current, target) = self.progress();
+        let game = if self.game_enabled {
+            "ON"
+        } else {
+            "OFF · XP PAUSED"
+        };
+        format!(
+            "╭─ KEEPER // GAME {game}\n\
+             │ LEVEL {:02}  ·  {} completed turns\n\
+             │ XP  {}  {current}/{target}\n\
+             │ NEXT LEVEL  {} XP\n\
+             ├─ CARE // ACTIVE TIME\n\
+             │ WATER {} {:>3}%  FOOD {} {:>3}%\n\
+             │ PLAY  {} {:>3}%  REST {} {:>3}%\n\
+             ╰─ Cosmetic progress only · no capabilities unlocked",
+            self.level(),
+            self.successful_turns,
+            progress_bar(current, target, 18),
+            target.saturating_sub(current),
+            need_bar(self.active_since_water_secs, WATER_DUE_SECS, 5),
+            need_percent(self.active_since_water_secs, WATER_DUE_SECS),
+            need_bar(self.active_since_food_secs, FOOD_DUE_SECS, 5),
+            need_percent(self.active_since_food_secs, FOOD_DUE_SECS),
+            need_bar(self.active_since_play_secs, PLAY_DUE_SECS, 5),
+            need_percent(self.active_since_play_secs, PLAY_DUE_SECS),
+            need_bar(self.active_since_rest_secs, REST_DUE_SECS, 5),
+            need_percent(self.active_since_rest_secs, REST_DUE_SECS),
         )
     }
 }
@@ -421,14 +600,44 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-fn need_label(active: u64, due: u64) -> &'static str {
+fn need_indicator(active: u64, due: u64) -> &'static str {
     if active >= due {
-        "now"
+        "● now"
     } else if active * 4 >= due * 3 {
-        "soon"
+        "◐ soon"
     } else {
-        "ok"
+        "○ ok"
     }
+}
+
+fn need_percent(active: u64, due: u64) -> u64 {
+    if due == 0 {
+        return 100;
+    }
+    100_u64.saturating_sub(active.min(due).saturating_mul(100) / due)
+}
+
+fn need_bar(active: u64, due: u64, width: usize) -> String {
+    progress_bar(need_percent(active, due), 100, width)
+}
+
+fn restore_to(active: &mut u64, due: u64, remaining_percent: u64) {
+    let target_active =
+        due.saturating_mul(100_u64.saturating_sub(remaining_percent.min(100))) / 100;
+    *active = (*active).min(target_active);
+}
+
+fn restore_by(active: &mut u64, due: u64, points: u64) {
+    *active = active.saturating_sub(due.saturating_mul(points) / 100);
+}
+
+fn progress_bar(current: u64, target: u64, width: usize) -> String {
+    let filled = if target == 0 {
+        width
+    } else {
+        ((current.min(target) as u128 * width as u128) / target as u128) as usize
+    };
+    format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
 }
 
 #[cfg(test)]
@@ -499,11 +708,29 @@ mod tests {
             ..CompanionState::default()
         };
         assert_eq!(state.award_success(VisualMode::Build), None);
-        assert_eq!(state.xp, 5);
+        assert_eq!(state.xp, 6);
         assert_eq!(state.level(), 1);
         state.xp = 10;
         assert_eq!(state.level(), 2);
         assert_eq!(state.progress(), (0, 20));
+    }
+
+    #[test]
+    fn input_xp_rewards_human_momentum_with_a_hard_cap() {
+        assert_eq!(CompanionState::input_xp(79), 0);
+        assert_eq!(CompanionState::input_xp(80), 1);
+        assert_eq!(CompanionState::input_xp(160), 2);
+        assert_eq!(CompanionState::input_xp(240), 3);
+        assert_eq!(CompanionState::input_xp(8_000), 3);
+
+        let mut state = CompanionState {
+            game_enabled: true,
+            xp: 9,
+            ..CompanionState::default()
+        };
+        assert_eq!(state.award_input(80), Some(2));
+        assert_eq!(state.xp, 10);
+        assert!(CompanionState::momentum_status(240).contains("MAX · +3 XP"));
     }
 
     #[test]
@@ -517,5 +744,65 @@ mod tests {
         state.care(CareAction::Water);
         assert_eq!(state.xp, 42);
         assert_eq!(state.active_since_water_secs, 0);
+    }
+
+    #[test]
+    fn status_panel_visualizes_xp_and_care_without_unlock_claims() {
+        let state = CompanionState {
+            game_enabled: true,
+            xp: 15,
+            successful_turns: 4,
+            active_since_food_secs: FOOD_DUE_SECS * 3 / 4,
+            active_since_rest_secs: REST_DUE_SECS,
+            ..CompanionState::default()
+        };
+
+        let panel = state.status_panel();
+        assert!(panel.contains("KEEPER // GAME ON"));
+        assert!(panel.contains("LEVEL 02"));
+        assert!(panel.contains("████░░░░░░░░░░░░░░  5/20"));
+        assert!(panel.contains("FOOD █░░░░  25%"));
+        assert!(panel.contains("REST ░░░░░   0%"));
+        assert!(panel.contains("no capabilities unlocked"));
+    }
+
+    #[test]
+    fn care_choices_have_distinct_non_punitive_effects() {
+        let mut state = CompanionState {
+            game_enabled: true,
+            xp: 42,
+            active_since_water_secs: WATER_DUE_SECS,
+            active_since_food_secs: FOOD_DUE_SECS,
+            active_since_play_secs: PLAY_DUE_SECS,
+            active_since_rest_secs: REST_DUE_SECS,
+            ..CompanionState::default()
+        };
+
+        assert!(state.feed_choice("salad").is_some());
+        assert_eq!(
+            need_percent(state.active_since_food_secs, FOOD_DUE_SECS),
+            80
+        );
+        assert_eq!(
+            need_percent(state.active_since_water_secs, WATER_DUE_SECS),
+            25
+        );
+
+        assert!(state.play_choice("read").is_some());
+        assert_eq!(
+            need_percent(state.active_since_play_secs, PLAY_DUE_SECS),
+            100
+        );
+        assert_eq!(
+            need_percent(state.active_since_rest_secs, REST_DUE_SECS),
+            35
+        );
+
+        assert!(state.sleep_choice("medium").is_some());
+        assert_eq!(
+            need_percent(state.active_since_rest_secs, REST_DUE_SECS),
+            70
+        );
+        assert_eq!(state.xp, 42);
     }
 }

@@ -48,26 +48,33 @@ qualquer fonte. `BASTION_TUI_GRAPHICS=off` força o modo texto.
 
 O game mode recompensa turnos concluídos, nunca volume de tokens. Turnos de
 build e Cabinet rendem um pouco mais de XP cosmético, mas níveis nunca concedem
-ferramentas, permissões ou bypass de políticas.
+ferramentas, permissões ou bypass de políticas. A entrada humana também
+preenche um medidor de momentum ao vivo: cada 80 caracteres vira 1 XP no envio,
+com limite de 3 XP por mensagem. Uma resposta concluída da IA contribui com 1
+XP fixo, independentemente da quantidade de tokens ou caracteres.
 
 Dentro da TUI:
 
 ```text
 /pet stats
 /pet game on
-/pet feed
+/pet feed apple
 /pet water
-/pet play
-/pet sleep
+/pet play puzzle
+/pet sleep nap
 /pet use caminho/pet.toml
 ```
 
-Alimentar, brincar e dormir formam o ciclo de cuidado do companion; a água
-também funciona como lembrete gentil para o dev. Necessidades avançam apenas durante tempo
-ativo observado; intervalos ociosos acima de cinco minutos já contam como
-pausa. O companion nunca morre, perde XP ou culpa o usuário. `play` pode ser
-alongar, caminhar, respirar, fazer um check-in ou qualquer reset curto — não
-apenas Pomodoro.
+Digite um espaço depois de `/pet feed`, `/pet play` ou `/pet sleep` para abrir
+os menus de escolha com emojis. A despensa tem oito comidas, `play` tem oito
+atividades e o descanso tem quatro durações; cada opção restaura uma combinação
+diferente dos medidores de água, comida, diversão e descanso mostrados por
+`/pet stats`.
+
+As necessidades avançam apenas durante tempo ativo observado; intervalos
+ociosos acima de cinco minutos já contam como pausa. A água também funciona
+como lembrete gentil para o dev. O companion nunca morre, perde XP ou culpa o
+usuário.
 
 ## Sessões de outros agentes
 

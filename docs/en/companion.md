@@ -48,25 +48,30 @@ falls back to a minimal glyph face — eyes and seal only, crisp in any font.
 
 Game mode rewards completed turns, never token volume. Build and Cabinet turns
 earn slightly more cosmetic XP, but levels never grant tools, permissions, or
-policy bypasses.
+policy bypasses. Human input also fills a live momentum meter: every 80
+characters becomes 1 XP when sent, capped at 3 XP per message. A completed AI
+reply contributes a fixed 1 XP regardless of its token or character count.
 
 Inside the TUI:
 
 ```text
 /pet stats
 /pet game on
-/pet feed
+/pet feed apple
 /pet water
-/pet play
-/pet sleep
+/pet play puzzle
+/pet sleep nap
 /pet use path/to/pet.toml
 ```
 
-Feed, play, and sleep are the companion's care loop; water doubles as a gentle
-reminder for the developer. Needs advance only during observed active
-time; idle gaps longer than five minutes count as breaks. The companion never
-dies, loses XP, or shames the user. `play` may mean stretching, walking,
-breathing, a short check-in, or any reset that works—not only Pomodoro.
+Type a trailing space after `/pet feed`, `/pet play`, or `/pet sleep` to open
+their emoji-assisted choice menus. The pantry has eight foods, play has eight
+activities, and rest has four durations; each choice restores a different mix
+of the water, food, play, and rest meters shown by `/pet stats`.
+
+Needs advance only during observed active time; idle gaps longer than five
+minutes count as breaks. Water also doubles as a gentle reminder for the
+developer. The companion never dies, loses XP, or shames the user.
 
 ## External coding-agent sessions
 

@@ -12,7 +12,11 @@ for how that differs from the library crates it depends on).
 
 - Interactive `/pet` subcommands for viewing stats, toggling game mode, caring
   for the companion, putting it to sleep, and selecting a pet pack; completion
-  options remain visible after typing `/pet `.
+  options remain visible after typing `/pet `. Nested menus offer eight foods,
+  eight activities, and four rest durations with distinct care effects, while
+  the status card visualizes XP and care as progress bars. Emoji-assisted menus
+  and a capped human-input momentum reward complement fixed XP for completed AI
+  replies without rewarding generated token volume.
 - Instant `/theme` switching with named palettes or a custom `#RRGGBB` accent,
   persisted in `~/.config/bastion/tui.json` across sessions.
 - Pixel-art Keeper and Patchwork mascot rendering through supported terminal
