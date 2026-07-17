@@ -337,7 +337,10 @@ mod tests {
                 .expect("chmod fake claude");
         }
         let original_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", format!("{}:{}", dir.path().display(), original_path));
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", dir.path().display(), original_path),
+        );
 
         let mut configured = HashMap::new();
         configured.insert(
@@ -359,7 +362,10 @@ mod tests {
         std::env::set_var("PATH", original_path);
 
         assert!(result.is_ok(), "lazy re-probe must succeed: {result:?}");
-        assert!(cached, "successful lazy probe must be cached into `verified`");
+        assert!(
+            cached,
+            "successful lazy probe must be cached into `verified`"
+        );
     }
 
     /// An id that was never configured at all must never trigger a probe —

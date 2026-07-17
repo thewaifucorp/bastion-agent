@@ -1651,7 +1651,9 @@ mod tests {
         assert_eq!(error_status(&other), StatusCode::INTERNAL_SERVER_ERROR);
 
         // Fase 2.8: BackendUnavailable/ApprovalDenied also get specific statuses now.
-        let backend_err = anyhow::anyhow!(BastionError::BackendUnavailable("codex_app_server: not logged in".to_string()));
+        let backend_err = anyhow::anyhow!(BastionError::BackendUnavailable(
+            "codex_app_server: not logged in".to_string()
+        ));
         assert_eq!(error_status(&backend_err), StatusCode::SERVICE_UNAVAILABLE);
 
         let denied_err = anyhow::anyhow!(BastionError::ApprovalDenied {
@@ -1673,10 +1675,16 @@ mod tests {
         assert!(error_body(&backend_err).contains("codex_app_server"));
 
         let budget_err = anyhow::anyhow!(BastionError::BudgetExceeded);
-        assert_eq!(error_body(&budget_err), BastionError::BudgetExceeded.to_string());
+        assert_eq!(
+            error_body(&budget_err),
+            BastionError::BudgetExceeded.to_string()
+        );
 
         let egress_err = anyhow::anyhow!(BastionError::PrivacyEgressBlocked);
-        assert_eq!(error_body(&egress_err), BastionError::PrivacyEgressBlocked.to_string());
+        assert_eq!(
+            error_body(&egress_err),
+            BastionError::PrivacyEgressBlocked.to_string()
+        );
 
         let denied_err = anyhow::anyhow!(BastionError::ApprovalDenied {
             capability: "shell_exec".to_string(),

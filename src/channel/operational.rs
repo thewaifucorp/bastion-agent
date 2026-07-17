@@ -245,9 +245,7 @@ pub struct StatusSnapshot {
 /// `[auth.<profile>]` entry. `ready` is `session && memory && provider &&
 /// channels` from the SAME `ReadinessState` `/readyz` already reports (not a
 /// new gate) — this route just adds runtime/login detail alongside it.
-pub async fn status_handler(
-    State(state): State<StatusState>,
-) -> impl IntoResponse {
+pub async fn status_handler(State(state): State<StatusState>) -> impl IntoResponse {
     let mut runtimes = Vec::new();
     for descriptor in state.runtime_registry.descriptors() {
         let cli_present = state.runtime_registry.resolve(descriptor.id).await.is_ok();
@@ -257,7 +255,9 @@ pub async fn status_handler(
             .and_then(|(_, profile)| state.auth.profiles.get(*profile))
         {
             Some(crate::config::AuthProfileEntry::HostCli { cli }) => {
-                crate::auth_profile_registry::probe_host_cli(cli).await.is_ok()
+                crate::auth_profile_registry::probe_host_cli(cli)
+                    .await
+                    .is_ok()
             }
             _ => false,
         };

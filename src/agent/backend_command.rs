@@ -106,7 +106,10 @@ pub async fn handle(
 async fn list_backends(agent: &AgentLoop, auth_cfg: &AuthConfig) -> anyhow::Result<String> {
     let mut lines = vec!["Backends de conversa disponíveis:".to_string()];
 
-    let model_active = matches!(agent.backend_profile.conversation, ConversationBackend::Model);
+    let model_active = matches!(
+        agent.backend_profile.conversation,
+        ConversationBackend::Model
+    );
     lines.push(format!(
         "  model{} — Bastion tool loop (provider/model via /model)",
         if model_active { "  [ativo]" } else { "" }
@@ -253,7 +256,10 @@ pub fn backend_notice(profile: &BackendProfile) -> Option<String> {
 pub fn model_reply_prefix(profile: &BackendProfile, bare: bool) -> String {
     let mut lines = Vec::new();
     if bare {
-        lines.push(format!("Backend de conversa: {}", conversation_label(profile)));
+        lines.push(format!(
+            "Backend de conversa: {}",
+            conversation_label(profile)
+        ));
     }
     if let Some(notice) = backend_notice(profile) {
         lines.push(notice);
@@ -272,7 +278,10 @@ mod tests {
 
     #[test]
     fn runtime_auth_profiles_cover_all_three_subscription_runtimes() {
-        assert_eq!(mapped_auth_profile("acpx_claude"), Some("claude-subscription"));
+        assert_eq!(
+            mapped_auth_profile("acpx_claude"),
+            Some("claude-subscription")
+        );
         assert_eq!(
             mapped_auth_profile("codex_app_server"),
             Some("codex-subscription")
@@ -360,6 +369,9 @@ mod tests {
         // constructing a real AgentLoop is out of scope for a pure unit test
         // here (covered by the E2E checklist in the plan instead).
         assert!(!auth_cfg.profiles.contains_key("claude-subscription"));
-        assert_eq!(mapped_auth_profile("acpx_claude"), Some("claude-subscription"));
+        assert_eq!(
+            mapped_auth_profile("acpx_claude"),
+            Some("claude-subscription")
+        );
     }
 }

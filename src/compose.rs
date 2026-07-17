@@ -52,11 +52,14 @@ pub fn locate_project_dir() -> Option<PathBuf> {
         return Some(dir);
     }
 
-    let data_home = std::env::var("XDG_DATA_HOME").ok().map(PathBuf::from).or_else(|| {
-        std::env::var("HOME")
-            .ok()
-            .map(|home| PathBuf::from(home).join(".local/share"))
-    })?;
+    let data_home = std::env::var("XDG_DATA_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|home| PathBuf::from(home).join(".local/share"))
+        })?;
     let install_dir = data_home.join("bastion");
     COMPOSE_FILES
         .iter()

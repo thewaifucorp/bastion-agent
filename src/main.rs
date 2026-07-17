@@ -248,7 +248,10 @@ fn default_chat_command() -> Command {
 /// <provider>` — kept local to main.rs (the CLI side) since the shared
 /// STATUS-verb table lives in `auth_profile_registry::host_cli_status_args`
 /// and is a different verb set (login vs. status).
-fn connect_login_args(provider: &str, setup_token: bool) -> anyhow::Result<&'static [&'static str]> {
+fn connect_login_args(
+    provider: &str,
+    setup_token: bool,
+) -> anyhow::Result<&'static [&'static str]> {
     match provider {
         "claude" if setup_token => Ok(&["setup-token"]),
         "claude" => Ok(&["auth", "login"]),
@@ -316,8 +319,9 @@ fn connect_subscription(
     // `AuthResolver` probes against, so `bastion connect` and the daemon can
     // never disagree on what "logged in" means. Runs INSIDE the container
     // (`exec -T`, no tty) since that's where the login just happened.
-    let (verify_program, verify_args) = bastion::auth_profile_registry::host_cli_status_args(provider)
-        .expect("provider already validated as claude|codex|opencode above");
+    let (verify_program, verify_args) =
+        bastion::auth_profile_registry::host_cli_status_args(provider)
+            .expect("provider already validated as claude|codex|opencode above");
     let verify_status = ProcessCommand::new("docker")
         .args(["compose", "exec", "-T", "core", verify_program])
         .args(verify_args)
@@ -408,8 +412,14 @@ fn import_host_credentials(project_dir: &std::path::Path, yes: bool) -> anyhow::
     let tar_status = tar_child
         .wait()
         .map_err(|e| anyhow::anyhow!("tar (producer) failed: {e}"))?;
-    anyhow::ensure!(tar_status.success(), "tar (producer) failed with {tar_status}");
-    anyhow::ensure!(status.success(), "import into container failed (exit {status})");
+    anyhow::ensure!(
+        tar_status.success(),
+        "tar (producer) failed with {tar_status}"
+    );
+    anyhow::ensure!(
+        status.success(),
+        "import into container failed (exit {status})"
+    );
     println!("✔ host credentials imported into the container (one-shot copy).");
     Ok(())
 }
@@ -431,7 +441,12 @@ async fn main() -> anyhow::Result<()> {
         return bastion::tui::run(url, token.as_deref(), owner, !no_auto_start).await;
     }
     if let Command::Completions { shell } = &command {
-        clap_complete::generate(*shell, &mut Cli::command(), "bastion", &mut std::io::stdout());
+        clap_complete::generate(
+            *shell,
+            &mut Cli::command(),
+            "bastion",
+            &mut std::io::stdout(),
+        );
         return Ok(());
     }
     if let Command::Companion { action } = &command {
@@ -656,11 +671,12 @@ async fn main() -> anyhow::Result<()> {
     // "model"/"runtime:<id>" grammar and the empty-auth-string-to-None fix
     // stay single-sourced.
     if let Some(selection) = bastion::config::load_backend_selection(&cfg) {
-        backend_profile = bastion::config::backend_profile_from_config(&bastion::config::BackendConfig {
-            conversation: Some(selection.conversation.clone()),
-            task_runtime: selection.task_runtime.clone(),
-            auth: selection.auth.clone(),
-        });
+        backend_profile =
+            bastion::config::backend_profile_from_config(&bastion::config::BackendConfig {
+                conversation: Some(selection.conversation.clone()),
+                task_runtime: selection.task_runtime.clone(),
+                auth: selection.auth.clone(),
+            });
         tracing::info!(
             event = "backend_selection_loaded",
             conversation = %selection.conversation,

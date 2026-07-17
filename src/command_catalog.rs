@@ -300,18 +300,31 @@ mod tests {
         "/help",
     ];
 
-    const OLD_REMOTE_ALLOWED: &[&str] =
-        &["/help", "/contest", "/connect", "/models", "/model", "/backend", "/backends"];
+    const OLD_REMOTE_ALLOWED: &[&str] = &[
+        "/help",
+        "/contest",
+        "/connect",
+        "/models",
+        "/model",
+        "/backend",
+        "/backends",
+    ];
 
     #[test]
     fn known_daemon_commands_matches_old_known_commands_exactly() {
         let known = known_daemon_commands();
         assert_eq!(known.len(), OLD_KNOWN_COMMANDS.len());
         for name in OLD_KNOWN_COMMANDS {
-            assert!(known.contains(name), "missing from known_daemon_commands: {name}");
+            assert!(
+                known.contains(name),
+                "missing from known_daemon_commands: {name}"
+            );
         }
         for name in &known {
-            assert!(is_known(name), "is_known must agree with known_daemon_commands: {name}");
+            assert!(
+                is_known(name),
+                "is_known must agree with known_daemon_commands: {name}"
+            );
         }
         // TuiLocal commands never reach the daemon.
         assert!(!known.contains(&"/pet"));
@@ -324,10 +337,24 @@ mod tests {
             assert!(is_remote_allowed(name), "must stay remote-allowed: {name}");
         }
         // Fase 3.1 promotion.
-        assert!(is_remote_allowed("/logs"), "/logs must be promoted to Remote");
+        assert!(
+            is_remote_allowed("/logs"),
+            "/logs must be promoted to Remote"
+        );
         // Console-only and TUI-local commands must never be remote-allowed.
-        for name in ["/as", "/cabinet", "/stop", "/connect-app", "/connect-app-composio", "/pet", "/theme"] {
-            assert!(!is_remote_allowed(name), "{name} must not be remote-allowed");
+        for name in [
+            "/as",
+            "/cabinet",
+            "/stop",
+            "/connect-app",
+            "/connect-app-composio",
+            "/pet",
+            "/theme",
+        ] {
+            assert!(
+                !is_remote_allowed(name),
+                "{name} must not be remote-allowed"
+            );
         }
     }
 

@@ -213,8 +213,7 @@ pub fn save_backend_selection(path: &Path, selection: &BackendSelection) -> std:
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
     let temporary = path.with_extension("json.tmp");
-    let contents =
-        serde_json::to_vec_pretty(selection).expect("backend selection must serialize");
+    let contents = serde_json::to_vec_pretty(selection).expect("backend selection must serialize");
     std::fs::write(&temporary, contents)?;
     std::fs::rename(temporary, path)
 }
@@ -1122,7 +1121,10 @@ auth = "host-chatgpt-login"
             auth: Some("   ".to_string()),
         };
         let profile = backend_profile_from_config(&cfg);
-        assert!(profile.auth.is_none(), "whitespace-only auth must become None");
+        assert!(
+            profile.auth.is_none(),
+            "whitespace-only auth must become None"
+        );
     }
 
     #[test]

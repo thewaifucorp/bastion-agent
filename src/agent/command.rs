@@ -283,9 +283,14 @@ pub async fn handle_command(
         }
 
         "/connect" => {
-            let requested = parts.get(1).map(|value| value.trim()).filter(|value| !value.is_empty());
+            let requested = parts
+                .get(1)
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty());
             match requested {
-                None => Ok(CommandResult::Handled(connect_status_overview(auth_cfg).await)),
+                None => Ok(CommandResult::Handled(
+                    connect_status_overview(auth_cfg).await,
+                )),
                 Some(provider) => Ok(CommandResult::Handled(connect_instructions(Some(provider)))),
             }
         }
@@ -297,7 +302,10 @@ pub async fn handle_command(
         // can never diverge again; `command_catalog::CATALOG` documents
         // `/models` as an alias of `/model` for `/help`/autocomplete.
         "/model" | "/models" => {
-            let requested = parts.get(1).map(|value| value.trim()).filter(|value| !value.is_empty());
+            let requested = parts
+                .get(1)
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty());
             match requested {
                 None => {
                     let current = provider.read().await.model_name().to_string();
@@ -448,9 +456,9 @@ pub async fn handle_command(
         // through the exact same `CockpitCommandHandler`), so this always
         // renders the full console view (`remote_caller: false`) — the same
         // behavior every prior version of this text had.
-        "/help" => Ok(CommandResult::Handled(
-            crate::command_catalog::help_text(false),
-        )),
+        "/help" => Ok(CommandResult::Handled(crate::command_catalog::help_text(
+            false,
+        ))),
 
         _ => Ok(CommandResult::Unknown(trimmed.to_owned())),
     }

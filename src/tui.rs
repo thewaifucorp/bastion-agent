@@ -584,11 +584,26 @@ const CONNECT_COMMANDS: &[CommandInfo] = &[
 /// prefix would work too, but the short form is what `/backend`'s own
 /// listing echoes back.
 const BACKEND_COMMANDS: &[CommandInfo] = &[
-    pet_option("/backend", "list backends + login status · type space to browse"),
-    pet_option("/backend use model", "Bastion tool loop (provider/model via /model)"),
-    pet_option("/backend use acpx_claude", "Claude Code subscription runtime"),
-    pet_option("/backend use codex_app_server", "Codex subscription runtime"),
-    pet_option("/backend use acpx_opencode", "OpenCode subscription runtime"),
+    pet_option(
+        "/backend",
+        "list backends + login status · type space to browse",
+    ),
+    pet_option(
+        "/backend use model",
+        "Bastion tool loop (provider/model via /model)",
+    ),
+    pet_option(
+        "/backend use acpx_claude",
+        "Claude Code subscription runtime",
+    ),
+    pet_option(
+        "/backend use codex_app_server",
+        "Codex subscription runtime",
+    ),
+    pet_option(
+        "/backend use acpx_opencode",
+        "OpenCode subscription runtime",
+    ),
 ];
 
 /// Fase 2.10 cross-link (Fase 3.2: shown for either `/model `/`/models `
@@ -597,8 +612,10 @@ const BACKEND_COMMANDS: &[CommandInfo] = &[
 /// which would route through `resolve_provider` and fail) so an owner
 /// browsing models notices there's a whole other kind of backend one
 /// space-key press away.
-const MODEL_BACKEND_CROSSLINK: CommandInfo =
-    pet_option("/backend", "switch to a subscription backend instead — see /backend");
+const MODEL_BACKEND_CROSSLINK: CommandInfo = pet_option(
+    "/backend",
+    "switch to a subscription backend instead — see /backend",
+);
 
 const fn pet_option(command: &'static str, desc: &'static str) -> CommandInfo {
     CommandInfo {
@@ -1075,7 +1092,9 @@ fn spawn_sse_listener(tx: UnboundedSender<AppMsg>, client: Client, base_url: Str
 /// crate targets (binary vs. lib) with no shared module for this, and the
 /// TUI's flow has no `--setup-token` equivalent (that's a headless-CLI-only
 /// escape hatch per the plan).
-fn connect_subscription_target(text: &str) -> Option<(&'static str, &'static [&'static str], &'static str)> {
+fn connect_subscription_target(
+    text: &str,
+) -> Option<(&'static str, &'static [&'static str], &'static str)> {
     match text {
         "/connect claude" => Some(("claude", &["auth", "login"], "acpx_claude")),
         "/connect codex" => Some(("codex", &["login"], "codex_app_server")),
@@ -1188,7 +1207,11 @@ fn spawn_turn(
                     .json::<serde_json::Value>()
                     .await
                     .ok()
-                    .and_then(|body| body.get("error").and_then(|e| e.as_str()).map(str::to_string));
+                    .and_then(|body| {
+                        body.get("error")
+                            .and_then(|e| e.as_str())
+                            .map(str::to_string)
+                    });
                 match detail {
                     Some(msg) => TurnOutcome::Error(format!("HTTP {status}: {msg}")),
                     None => TurnOutcome::Error(format!("HTTP {status}")),
@@ -1421,8 +1444,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     // on-screen column (multibyte-safe: `cursor` is only ever set to a char
     // boundary, so this slice never panics).
     let cursor_chars = app.input[..app.cursor.min(app.input.len())].chars().count() as u16;
-    let cursor_x = (chunks[3].x + 1 + cursor_chars)
-        .min(chunks[3].x + chunks[3].width.saturating_sub(2));
+    let cursor_x =
+        (chunks[3].x + 1 + cursor_chars).min(chunks[3].x + chunks[3].width.saturating_sub(2));
     f.set_cursor_position((cursor_x, chunks[3].y + 1));
 }
 
@@ -1584,8 +1607,9 @@ async fn run_app(
                                 match login_result {
                                     Ok(status) if status.success() => {
                                         app.visual_mode = VisualMode::Success;
-                                        app.settle_at =
-                                            Some(Instant::now() + settle_after(VisualMode::Success));
+                                        app.settle_at = Some(
+                                            Instant::now() + settle_after(VisualMode::Success),
+                                        );
                                         app.lines.push(Line::System(format!(
                                             "✔ {cli} login exited with {status}. Run \
                                              /backend use {runtime_id} to switch (or /backend \
@@ -1959,7 +1983,10 @@ mod tests {
 
     #[test]
     fn theme_menu_expands_and_unknown_commands_answer_locally() {
-        let themes: Vec<&str> = command_matches("/theme ").iter().map(|c| c.name()).collect();
+        let themes: Vec<&str> = command_matches("/theme ")
+            .iter()
+            .map(|c| c.name())
+            .collect();
         assert_eq!(themes.len(), THEME_COMMANDS.len());
         assert!(themes.contains(&"/theme rgb"));
         assert_eq!(
@@ -1998,7 +2025,10 @@ mod tests {
         // Fase 2.10: same mechanic as `/model` — both the bare command and
         // the trailing-space form open the picker (unlike `/pet`/`/theme`,
         // which only expand after the space).
-        let bare: Vec<&str> = command_matches("/backend").iter().map(|c| c.name()).collect();
+        let bare: Vec<&str> = command_matches("/backend")
+            .iter()
+            .map(|c| c.name())
+            .collect();
         assert_eq!(bare.len(), BACKEND_COMMANDS.len());
         assert_eq!(bare[0], "/backend");
 
@@ -2023,7 +2053,10 @@ mod tests {
 
     #[test]
     fn connect_picker_includes_opencode() {
-        let names: Vec<&str> = command_matches("/connect ").iter().map(|c| c.name()).collect();
+        let names: Vec<&str> = command_matches("/connect ")
+            .iter()
+            .map(|c| c.name())
+            .collect();
         assert!(names.contains(&"/connect opencode"));
         assert!(names.contains(&"/connect claude"));
         assert!(names.contains(&"/connect codex"));
@@ -2039,7 +2072,10 @@ mod tests {
         assert!(command_matches("/s").iter().all(|c| c.name() != "/stop"));
         // Fase 3.3: subsequence fallback when no prefix matches.
         let fuzzy: Vec<&str> = command_matches("/bkd").iter().map(|c| c.name()).collect();
-        assert!(fuzzy.contains(&"/backend"), "subsequence fallback must find /backend: {fuzzy:?}");
+        assert!(
+            fuzzy.contains(&"/backend"),
+            "subsequence fallback must find /backend: {fuzzy:?}"
+        );
     }
 
     #[test]
