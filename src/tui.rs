@@ -39,6 +39,8 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use url::{Host, Url};
 use visual::{Appearance, Identity, VisualMode};
 
+use crate::compose::find_compose_dir;
+
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -140,22 +142,6 @@ fn token_session(token: &str, owner: &str) -> Session {
         owner_id: owner.to_owned(),
         device_name: "terminal".to_string(),
     }
-}
-
-fn find_compose_dir(start: &Path) -> Option<PathBuf> {
-    const COMPOSE_FILES: &[&str] = &[
-        "compose.yaml",
-        "compose.yml",
-        "docker-compose.yaml",
-        "docker-compose.yml",
-    ];
-
-    start.ancestors().find_map(|dir| {
-        COMPOSE_FILES
-            .iter()
-            .any(|name| dir.join(name).is_file())
-            .then(|| dir.to_path_buf())
-    })
 }
 
 async fn runtime_ready(client: &Client, base_url: &str) -> bool {
@@ -1541,14 +1527,5 @@ mod tests {
         assert!(unknown_command("/pet feed").is_none());
         assert!(unknown_command("/theme rgb").is_none());
         assert!(unknown_command("oi bastion").is_none());
-    }
-
-    #[test]
-    fn compose_search_walks_parent_directories() {
-        let temp = tempfile::tempdir().unwrap();
-        let nested = temp.path().join("a/b");
-        std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(temp.path().join("docker-compose.yml"), "services: {}").unwrap();
-        assert_eq!(find_compose_dir(&nested), Some(temp.path().to_path_buf()));
     }
 }
