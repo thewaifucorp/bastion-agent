@@ -6,35 +6,6 @@ use std::path::PathBuf;
 
 use crate::config::{AuthConfig, AuthProfileEntry};
 
-/// Every real Bastion slash command — single source of truth so callers (e.g.
-/// main.rs's inbound_rx arm, WEB-CMD-01) can tell "known command that's
-/// console-only" apart from "not a Bastion command at all" (a Claude-Code-style
-/// `/usage` typed out of habit should fall through to the normal Unknown-command
-/// message, not be mislabeled "console-only" as if it would work at the console).
-///
-/// Fase 2.4: `/backend`/`/backends` are listed here too, but they are NEVER
-/// routed through this module's `handle_command` — `main.rs`'s dispatch arms
-/// special-case them into `agent::backend_command::handle` (which needs
-/// `&mut AgentLoop`, unavailable to this module) BEFORE falling through to
-/// the generic router. They're still in `KNOWN_COMMANDS` so the
-/// known-vs-unknown classification (and REMOTE_ALLOWED_COMMANDS in main.rs)
-/// works correctly for them.
-pub const KNOWN_COMMANDS: &[&str] = &[
-    "/connect-app",
-    "/connect-app-composio",
-    "/connect",
-    "/model",
-    "/models",
-    "/backend",
-    "/backends",
-    "/stop",
-    "/as",
-    "/cabinet",
-    "/contest",
-    "/logs",
-    "/help",
-];
-
 /// P5 despejo (M2): product-level resources a command dispatch needs beyond
 /// what the kernel loop itself tracks — the shared OTC pairing store
 /// (`/connect-app`) and the opt-in Composio OAuth client
@@ -319,28 +290,19 @@ pub async fn handle_command(
             }
         }
 
-        "/models" => {
-            let requested = parts.get(1).map(|value| value.trim()).filter(|value| !value.is_empty());
-            match requested {
-                Some(model) => Ok(CommandResult::Handled(
-                    switch_model(model, provider, model_selection).await?,
-                )),
-                None => {
-                    let current = provider.read().await.model_name().to_string();
-                    Ok(CommandResult::Handled(format!(
-                        "Current model: {current}\nIn the local TUI, type `/models ` to browse recommended models. You can also enter any supported provider/model ID manually."
-                    )))
-                }
-            }
-        }
-
-        "/model" => {
+        // Fase 3.2: `/model` is canonical, `/models` a full alias — merged into
+        // one arm (both used to carry near-identical show/switch bodies that
+        // had already drifted: only the `/model` arm supported `reset`, and
+        // the two no-arg hints disagreed on wording). One body now, so they
+        // can never diverge again; `command_catalog::CATALOG` documents
+        // `/models` as an alias of `/model` for `/help`/autocomplete.
+        "/model" | "/models" => {
             let requested = parts.get(1).map(|value| value.trim()).filter(|value| !value.is_empty());
             match requested {
                 None => {
                     let current = provider.read().await.model_name().to_string();
                     Ok(CommandResult::Handled(format!(
-                        "Current model: {current}\nUse /models to browse and switch, or /model reset to restore the configured default."
+                        "Current model: {current}\nIn the local TUI, type `/model ` to browse recommended models — or /model reset to restore the configured default. You can also enter any supported provider/model ID manually."
                     )))
                 }
                 Some("reset") => {
@@ -478,20 +440,16 @@ pub async fn handle_command(
             Ok(CommandResult::Handled(msg))
         }
 
+        // Fase 3.1: generated from `command_catalog::CATALOG` — the single
+        // source of truth for scope, so this can no longer drift into stale
+        // labels (e.g. `/model` was wrongly marked "console only" here even
+        // after it became remote-allowed). `handle_command` has no signal
+        // distinguishing a console caller from a channel one (both funnel
+        // through the exact same `CockpitCommandHandler`), so this always
+        // renders the full console view (`remote_caller: false`) — the same
+        // behavior every prior version of this text had.
         "/help" => Ok(CommandResult::Handled(
-            "Available commands:\n\
-             \x20 /model <name>         Switch LLM provider+model (console only — daemon-wide state)\n\
-             \x20 /models [name]        Browse or select a saved model (console only)\n\
-             \x20 /backend [use <id>]   Show or switch the conversation backend (also over webhook/Telegram)\n\
-             \x20 /connect [provider]   Show secure provider setup steps / live subscription status (also over webhook/Telegram)\n\
-             \x20 /stop                 Shut down daemon (console only)\n\
-             \x20 /as <persona>         Force persona for next turn (console only — daemon-wide state)\n\
-             \x20 /cabinet [personas..] Convene Cabinet with named personas (console only)\n\
-             \x20 /contest <id>         Revoke a belief by ID (D-14 — also over webhook/Telegram)\n\
-             \x20 /connect-app-composio <toolkit>  Start a Composio OAuth connection (SEC-03)\n\
-             \x20 /logs                 Show recent ERROR/WARN log entries (console only)\n\
-             \x20 /help                 Show this help (also over webhook/Telegram)"
-                .to_string(),
+            crate::command_catalog::help_text(false),
         )),
 
         _ => Ok(CommandResult::Unknown(trimmed.to_owned())),
@@ -506,7 +464,10 @@ pub async fn handle_command(
 ///     conversation payload. The caller can grep this function to verify.
 ///   - Returns at most `max` entries in chronological order.
 ///   - If the file does not exist or cannot be read, returns an empty vec (silent fail).
-fn read_recent_log_errors(path: &str, max: usize) -> Vec<String> {
+// Fase 3.5: made `pub` so `tui.rs`'s `ensure_runtime` can reuse the exact
+// same safe extraction (timestamp/level/message only) to tail the last
+// startup ERROR line when the daemon exits early — see its call site.
+pub fn read_recent_log_errors(path: &str, max: usize) -> Vec<String> {
     use std::io::{BufRead, BufReader};
 
     let file = match std::fs::File::open(path) {
@@ -949,8 +910,8 @@ mod tests {
     #[test]
     fn connect_app_composio_is_a_known_command() {
         assert!(
-            KNOWN_COMMANDS.contains(&"/connect-app-composio"),
-            "must be registered in KNOWN_COMMANDS so channel dispatch classifies it as console-only, not Unknown"
+            crate::command_catalog::is_known("/connect-app-composio"),
+            "must be a known daemon command so channel dispatch classifies it as console-only, not Unknown"
         );
     }
 
