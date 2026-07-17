@@ -522,6 +522,8 @@ const CONNECT_COMMANDS: &[CommandInfo] = &[
     pet_option("/connect openai", "set up OpenAI"),
     pet_option("/connect openrouter", "set up OpenRouter"),
     pet_option("/connect ollama", "set up local Ollama"),
+    pet_option("/connect claude", "log in to Claude Code subscription"),
+    pet_option("/connect codex", "log in to Codex subscription"),
 ];
 
 const fn pet_option(command: &'static str, desc: &'static str) -> CommandInfo {

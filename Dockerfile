@@ -21,14 +21,16 @@ RUN cargo build --jobs "${CARGO_BUILD_JOBS}" --locked --release --no-default-fea
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl libssl3 \
+    && apt-get install -y --no-install-recommends ca-certificates curl libssl3 nodejs npm \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 bastion \
-    && useradd --uid 1000 --gid bastion --no-create-home --shell /usr/sbin/nologin bastion
+    && useradd --uid 1000 --gid bastion --create-home --shell /bin/bash bastion \
+    && npm install --global acpx @anthropic-ai/claude-code @openai/codex
 
 COPY --from=builder /build/target/release/bastion /usr/local/bin/bastion
 
 USER bastion:bastion
+ENV HOME=/home/bastion
 EXPOSE 8080 3000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=5 \
     CMD curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null || exit 1

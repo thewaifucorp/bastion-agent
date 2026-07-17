@@ -142,6 +142,41 @@ configure_provider() {
   env_set BASTION__AGENT__DEFAULT_MODEL "$model"
 }
 
+configure_backend() {
+  # Preserve an explicit previous choice on updates. The CLIs are installed in
+  # every core image; only this selection decides whether Bastion uses an API
+  # model or a logged-in subscription runtime for conversations.
+  [[ -n "$(env_get BASTION_BACKEND_CONVERSATION)" ]] && return 0
+  if ((NON_INTERACTIVE)) || [[ ! -t 0 ]]; then
+    env_set BASTION_BACKEND_CONVERSATION model
+    env_set BASTION_BACKEND_AUTH ""
+    configure_provider
+    return 0
+  fi
+
+  printf '\nConversation backend: 1) API provider  2) Claude Code subscription  3) Codex subscription\nchoice [1]: '
+  local choice
+  read -r choice
+  case "${choice:-1}" in
+    1)
+      env_set BASTION_BACKEND_CONVERSATION model
+      env_set BASTION_BACKEND_AUTH ""
+      configure_provider
+      ;;
+    2)
+      env_set BASTION_BACKEND_CONVERSATION runtime:acpx_claude
+      env_set BASTION_BACKEND_AUTH claude-subscription
+      info "Claude Code will ask you to complete its browser login after startup."
+      ;;
+    3)
+      env_set BASTION_BACKEND_CONVERSATION runtime:codex_app_server
+      env_set BASTION_BACKEND_AUTH codex-subscription
+      info "Codex will ask you to complete its ChatGPT login after startup."
+      ;;
+    *) die "invalid backend choice" ;;
+  esac
+}
+
 prepare_environment() {
   [[ -f "$INSTALL_DIR/.env.example" ]] || die "missing .env.example in $INSTALL_DIR"
   if [[ ! -f "$INSTALL_DIR/.env" ]]; then
@@ -158,7 +193,7 @@ prepare_environment() {
   [[ -n "$(env_get BASTION_BOOTSTRAP_TOKEN)" ]] || env_set BASTION_BOOTSTRAP_TOKEN "$(random_secret)"
   env_set BASTION_UID "$(id -u)"
   env_set BASTION_GID "$(id -g)"
-  configure_provider
+  configure_backend
   info "Configuration prepared (internal secrets were not printed)."
 }
 

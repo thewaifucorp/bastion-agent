@@ -18,11 +18,14 @@ services:
       - sh
       - -c
       - |
-        chown -R ${BASTION_UID:-1000}:${BASTION_GID:-1000} /bastion-data &&
+        chown -R ${BASTION_UID:-1000}:${BASTION_GID:-1000} /bastion-data /claude-home /codex-home /acpx-home &&
         chown -R 1001:1001 /memupalace-data /skill-writer-data /self-improving-data &&
         echo "volume ownership initialized (core=${BASTION_UID:-1000}:${BASTION_GID:-1000}, python=1001:1001)"
     volumes:
       - bastion-data:/bastion-data
+      - claude-home:/claude-home
+      - codex-home:/codex-home
+      - acpx-home:/acpx-home
       - memupalace-data:/memupalace-data
       - skill-writer-data:/skill-writer-data
       - self-improving-data:/self-improving-data
@@ -50,6 +53,9 @@ services:
       - "${BASTION_PUBLISH_HOST:-127.0.0.1}:${BASTION_HTTP_PORT:-8080}:8080"
     volumes:
       - bastion-data:/bastion-data                # sessions.db + bastion.log
+      - claude-home:/home/bastion/.claude          # Claude Code subscription login
+      - codex-home:/home/bastion/.codex            # Codex subscription login
+      - acpx-home:/home/bastion/.acpx              # ACP runtime sessions
       - ./personas:/personas:ro                   # SOUL.md files (D-02: bind-mount, no copy)
       - ./skills:/skills:ro                       # SKILL.md files (read-only)
       - ./bastion.toml:/bastion.toml:ro           # non-secret config (D-09)
@@ -70,6 +76,8 @@ services:
       - APP_JWT_SECRET=${APP_JWT_SECRET}
       - BASTION_BOOTSTRAP_TOKEN=${BASTION_BOOTSTRAP_TOKEN}
       - BASTION_OWNER_ID=${BASTION_OWNER_ID:-_local}
+      - BASTION__BACKEND__CONVERSATION=${BASTION_BACKEND_CONVERSATION:-model}
+      - BASTION__BACKEND__AUTH=${BASTION_BACKEND_AUTH:-}
       # Observability (PKG): without RUST_LOG the EnvFilter suppresses ALL tracing events,
       # leaving bastion.log empty. Default to info so the soak is debuggable; override via env.
       - RUST_LOG=${RUST_LOG:-info}
@@ -237,6 +245,9 @@ networks:
 # ── Volumes ─────────────────────────────────────────────────────────────────
 volumes:
   bastion-data:          # core: sessions.db + bastion.log
+  claude-home:           # Claude Code login and settings
+  codex-home:            # Codex login and settings
+  acpx-home:             # ACP runtime sessions
   memupalace-data:       # memupalace: KG + embeddings
   skill-writer-data:     # skill-writer: internal state
   self-improving-data:   # self-improving: analysis data

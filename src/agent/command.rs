@@ -139,13 +139,15 @@ async fn switch_model(
 
 fn connect_instructions(provider: Option<&str>) -> String {
     match provider {
-        None => "Choose a provider: /connect gemini, /connect anthropic, /connect openai, /connect openrouter, or /connect ollama. Credentials stay outside chat and are never stored in conversation history.".to_string(),
+        None => "Choose a provider: /connect gemini, /connect anthropic, /connect openai, /connect openrouter, /connect ollama, /connect claude, or /connect codex. Subscription logins stay in Docker volumes and are never stored in chat.".to_string(),
+        Some("claude") => "Claude Code subscription: run `docker compose exec -it core claude`, complete the browser login, then restart core. Select Claude Code as the conversation backend in installer.sh on the next install/update.".to_string(),
+        Some("codex") => "Codex subscription: run `docker compose exec -it core codex login`, complete the ChatGPT browser login, then restart core. Select Codex as the conversation backend in installer.sh on the next install/update.".to_string(),
         Some("gemini") => "Gemini: add GEMINI_API_KEY to .env or your secret manager, restart the daemon, then open /models.".to_string(),
         Some("anthropic") => "Anthropic: add ANTHROPIC_API_KEY to .env or your secret manager, restart the daemon, then open /models.".to_string(),
         Some("openai") => "OpenAI: add OPENAI_API_KEY to .env or your secret manager, restart the daemon, then open /models.".to_string(),
         Some("openrouter") => "OpenRouter: add OPENROUTER_API_KEY to .env or your secret manager, restart the daemon, then open /models.".to_string(),
         Some("ollama") => "Ollama: start the local Ollama service, then choose one of its installed models from /models. No API key is needed.".to_string(),
-        Some(_) => "Unknown provider. Choose gemini, anthropic, openai, openrouter, or ollama.".to_string(),
+        Some(_) => "Unknown provider. Choose gemini, anthropic, openai, openrouter, ollama, claude, or codex.".to_string(),
     }
 }
 

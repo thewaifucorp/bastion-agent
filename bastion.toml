@@ -12,6 +12,16 @@ default_model         = "gemini-2.5-flash"
 daily_budget_usd      = 5.0
 # fallback_models = ["groq/llama-3.1-8b-instant"]  # D-11: tried in order on hard provider failure
 
+# Subscription runtimes are selected by the installer through environment
+# overrides. Their actual OAuth credentials stay in Docker volumes, never here.
+[auth.claude-subscription]
+kind = "host-cli"
+cli = "claude"
+
+[auth.codex-subscription]
+kind = "host-cli"
+cli = "codex"
+
 [session]
 db_path               = ".bastion/sessions.db"
 autocompact_threshold = 0.80
