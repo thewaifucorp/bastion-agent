@@ -1822,6 +1822,16 @@ async fn daemon_loop(
                         // no extra LLM call). Respond/Act run the turn as before;
                         // Pursue also enqueues a durable task the executor drains.
                         let decision = bastion::adaptive::select_mode(&s);
+                        // US-208: per-mode telemetry — attributes where a turn's
+                        // cost/latency goes. Respond/Act pay nothing durable
+                        // (no task, no aux LLM call); only Pursue persists.
+                        tracing::info!(
+                            target: "bastion::mode",
+                            event = "mode_selected",
+                            mode = ?decision.mode,
+                            source = ?decision.source,
+                            reason = decision.reason,
+                        );
                         if decision.mode == bastion_runtime::task::ExecutionMode::Pursue {
                             match bastion::adaptive::enqueue_pursue(
                                 &task_store,
