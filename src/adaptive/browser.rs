@@ -30,8 +30,10 @@ use bastion_runtime::capability::{Capability, InvokeCtx};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::path::{Component, PathBuf};
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 
 /// Maximum snapshot text retained, in bytes. Web pages can be arbitrarily large;
 /// we cap the extracted text to a sane size before handing it upward (US-204).
@@ -165,10 +167,18 @@ pub struct HttpFetchBackend {
 
 impl HttpFetchBackend {
     /// Build a backend around a fresh `reqwest::Client`.
+    ///
+    /// SECURITY (SSRF): redirects are NOT followed
+    /// (`redirect::Policy::none()`) so a 3xx can never bounce a validated
+    /// public URL to an internal target behind the client's back — a redirect
+    /// is surfaced as its (empty) 3xx body instead. Combined with
+    /// [`validate_public_url`], which runs before every request.
     pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::new(),
-        }
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("reqwest client with a static redirect policy always builds");
+        Self { client }
     }
 
     /// Build a backend around a caller-provided client (connection reuse).
@@ -196,6 +206,7 @@ impl BrowserBackend for HttpFetchBackend {
             .current_url
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("no current url: navigate before snapshot"))?;
+        validate_public_url(url).await?;
         let resp = self.client.get(url).send().await?;
         let final_url = resp.url().to_string();
         let text = resp.text().await?;
@@ -208,13 +219,89 @@ impl BrowserBackend for HttpFetchBackend {
         url: &str,
         dest: &std::path::Path,
     ) -> anyhow::Result<PathBuf> {
+        validate_public_url(url).await?;
         let resp = self.client.get(url).send().await?;
         let bytes = resp.bytes().await?;
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        tokio::fs::write(dest, &bytes).await?;
+        // SECURITY: `create_new` fails if `dest` already exists — so a
+        // pre-planted symlink at the final component causes the write to error
+        // (EEXIST) instead of being followed out of the workspace.
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dest)
+            .await?;
+        file.write_all(&bytes).await?;
+        file.flush().await?;
         Ok(dest.to_path_buf())
+    }
+}
+
+/// SSRF guard: reject anything that isn't a public http(s) URL (US-204).
+///
+/// Parses the URL, requires an `http`/`https` scheme, then resolves the host
+/// and rejects the request if ANY resolved address is loopback, private,
+/// link-local (incl. the `169.254.169.254` cloud-metadata address),
+/// unspecified, or otherwise internal/reserved. Runs before every fetch, and
+/// the client does not follow redirects, so a public host cannot rebound to an
+/// internal one. (DNS-rebinding between this check and the socket connect is
+/// the residual gap; the approval gate — `needs_approval=true` — is the
+/// second line of defence.)
+async fn validate_public_url(url: &str) -> anyhow::Result<()> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| anyhow::anyhow!("invalid url: {e}"))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => anyhow::bail!("scheme '{other}' not allowed; only http/https"),
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("url has no host"))?;
+    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".localhost") {
+        anyhow::bail!("refusing to fetch localhost");
+    }
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let mut resolved_any = false;
+    for addr in tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| anyhow::anyhow!("could not resolve host '{host}': {e}"))?
+    {
+        resolved_any = true;
+        if is_blocked_ip(&addr.ip()) {
+            anyhow::bail!("refusing to fetch internal/reserved address for host '{host}'");
+        }
+    }
+    if !resolved_any {
+        anyhow::bail!("host '{host}' did not resolve to any address");
+    }
+    Ok(())
+}
+
+/// True if `ip` is loopback, private, link-local, unspecified or otherwise
+/// internal/reserved and must not be fetched (US-204 SSRF guard).
+fn is_blocked_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.octets()[0] == 0
+        }
+        IpAddr::V6(v6) => {
+            // v4-mapped (::ffff:a.b.c.d) is checked as its embedded v4.
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_blocked_ip(&IpAddr::V4(v4));
+            }
+            let seg0 = v6.segments()[0];
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || (seg0 & 0xfe00) == 0xfc00 // unique-local fc00::/7
+                || (seg0 & 0xffc0) == 0xfe80 // link-local fe80::/10
+        }
     }
 }
 
@@ -257,7 +344,29 @@ fn resolve_in_workspace(
     if dest_rel.trim().is_empty() {
         anyhow::bail!("dest_rel must not be empty");
     }
-    Ok(workspace_root.join(rel))
+    let joined = workspace_root.join(rel);
+    // SECURITY (symlink): reject a component-clean path whose closest EXISTING
+    // ancestor canonicalizes outside the workspace — i.e. a symlink in the
+    // workspace pointing elsewhere. `..` is already refused above; this closes
+    // the symlink-escape the lexical check can't see.
+    let base =
+        std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
+    let mut probe = joined.clone();
+    let existing = loop {
+        if probe.exists() {
+            break probe;
+        }
+        match probe.parent() {
+            Some(p) => probe = p.to_path_buf(),
+            None => break base.clone(),
+        }
+    };
+    if let Ok(canon) = std::fs::canonicalize(&existing) {
+        if !canon.starts_with(&base) {
+            anyhow::bail!("dest_rel resolves outside the workspace (symlink escape)");
+        }
+    }
+    Ok(joined)
 }
 
 /// The governed browser capability (US-204).
