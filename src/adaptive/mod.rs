@@ -6,8 +6,10 @@
 //! `Observer` bridge so the kernel's neutral lifecycle events reach tracing
 //! (the cycle needs one; the kernel ships only a no-op default).
 
+pub mod enqueue;
 pub mod mode;
 pub mod observer;
 
+pub use enqueue::enqueue_pursue;
 pub use mode::{select_mode, ModeDecision, ModeSource};
 pub use observer::TracingObserver;

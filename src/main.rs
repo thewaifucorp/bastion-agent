@@ -15,6 +15,7 @@ use bastion_providers::registry::resolve_provider;
 use bastion_runtime::agent::handle;
 use bastion_runtime::agent::loop_::AgentLoop;
 use bastion_runtime::session::SessionManager;
+use bastion_runtime::task::{SqliteTaskStore, TaskStore};
 
 /// Inicializa o OTel TracerProvider.
 ///
@@ -496,6 +497,14 @@ async fn main() -> anyhow::Result<()> {
     let session = SessionManager::new(&db_path);
     session.init_schema().await?;
 
+    // Adaptive Execution (US-201): durable store for Pursue tasks, sharing the
+    // one session DB. Pending tasks enqueued here are drained by the executor.
+    let task_store: Arc<dyn TaskStore> = {
+        let store = SqliteTaskStore::new(db_path.clone());
+        store.init_schema().await?;
+        Arc::new(store)
+    };
+
     // D-02: auto-resume most recent session, or create new one
     let session_id = match session.load_most_recent_id().await? {
         Some(id) => {
@@ -808,6 +817,7 @@ async fn main() -> anyhow::Result<()> {
                 registry_for_product,
                 secret_resolver,
                 runtime_registry_for_product,
+                task_store,
             )
             .await?;
         }
@@ -991,6 +1001,8 @@ async fn daemon_loop(
     // original — `/status` (webhook.rs) reports per-runtime
     // `cli_present`/`logged_in` from this handle.
     runtime_registry_for_product: bastion_runtime::agent::backend::RuntimeRegistry,
+    // US-201: durable Pursue-task store, shared with the cockpit/executor.
+    task_store: Arc<dyn TaskStore>,
 ) -> anyhow::Result<()> {
     use bastion::agent::command::{CommandResources, CommandResult};
     use tokio::io::{AsyncBufReadExt, BufReader};
@@ -1710,6 +1722,28 @@ async fn daemon_loop(
                         }
                     }
                     Some(s) => {
+                        // US-201: pick the smallest capable mode (deterministic,
+                        // no extra LLM call). Respond/Act run the turn as before;
+                        // Pursue also enqueues a durable task the executor drains.
+                        let decision = bastion::adaptive::select_mode(&s);
+                        if decision.mode == bastion_runtime::task::ExecutionMode::Pursue {
+                            match bastion::adaptive::enqueue_pursue(
+                                &task_store,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                                &s,
+                                decision.reason,
+                            )
+                            .await
+                            {
+                                Ok(id) => println!(
+                                    "↳ pursuing as task {id} (why: {}). Say \"só responda\" for a one-off.",
+                                    decision.reason
+                                ),
+                                Err(e) => {
+                                    tracing::error!(event = "pursue_enqueue_error", error = %e)
+                                }
+                            }
+                        }
                         match agent.run_turn(&s).await {
                             Ok(response) => {
                                 println!("{}", response);
