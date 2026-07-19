@@ -1684,6 +1684,22 @@ async fn daemon_loop(
                             }
                             continue;
                         }
+                        // US-202: task cockpit — needs the store, not the
+                        // CommandHandler port, so special-cased like /backend.
+                        if first_token == "/task" {
+                            let task_arg = trimmed.split_once(' ').map(|x| x.1);
+                            match bastion::agent::task_command::handle(
+                                &task_store,
+                                task_arg,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                            )
+                            .await
+                            {
+                                Ok(msg) => println!("{msg}"),
+                                Err(e) => println!("Erro no comando: {e}"),
+                            }
+                            continue;
+                        }
                         match agent
                             .handle_command(
                                 trimmed,
@@ -1837,6 +1853,16 @@ async fn daemon_loop(
                         // handle_command's own Err handling right below. Policy denials
                         // from an actual TURN (the `else` branch further down) are
                         // untouched and keep propagating typed errors/status codes.
+                        Err(e) => Ok(format!("Erro no comando: {e}")),
+                    }
+                } else if matches!(command_token, Some("/task")) {
+                    // US-202: owner-scoped task cockpit over channels — the
+                    // channel-resolved req.owner only ever sees its own tasks.
+                    let task_arg = trimmed.split_once(' ').map(|x| x.1);
+                    match bastion::agent::task_command::handle(&task_store, task_arg, &req.owner)
+                        .await
+                    {
+                        Ok(msg) => Ok(msg),
                         Err(e) => Ok(format!("Erro no comando: {e}")),
                     }
                 } else if command_token.is_some() {

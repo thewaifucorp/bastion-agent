@@ -79,6 +79,14 @@ pub const CATALOG: &[CommandSpec] = &[
         aliases: &[],
     },
     CommandSpec {
+        name: "/task",
+        usage:
+            "/task list | inspect <id> | pause <id> | resume <id> | steer <id> <text> | cancel <id>",
+        desc: "inspect and control durable Pursue tasks (owner-scoped)",
+        scope: Scope::Remote,
+        aliases: &[],
+    },
+    CommandSpec {
         name: "/model",
         usage: "/model <name>",
         desc: "show/switch/reset the LLM provider+model — type space to browse",
