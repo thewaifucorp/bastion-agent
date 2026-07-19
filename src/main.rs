@@ -1836,24 +1836,41 @@ async fn daemon_loop(
                                         "↳ pursuing as task {id} (why: {}). Say \"só responda\" for a one-off.",
                                         decision.reason
                                     );
-                                    // US-203: drain the enqueued task in the
-                                    // background via the adaptive cycle, so the
-                                    // conversation stays responsive while the
-                                    // coding task delegates to a runtime.
-                                    let cycle = bastion::adaptive::coding_cycle(
-                                        &task_store,
-                                        &runtime_registry_for_product,
-                                        bastion_runtime::agent::loop_::DEFAULT_OWNER,
-                                    );
+                                    // US-203/206: drain the task in the
+                                    // background so the conversation stays
+                                    // responsive. A decomposable objective fans
+                                    // out into independent child tasks
+                                    // (delegation); otherwise a single coding
+                                    // cycle delegates to a runtime.
+                                    let store = task_store.clone();
+                                    let registry = runtime_registry_for_product.clone();
+                                    let objective = s.clone();
                                     let owner =
                                         bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string();
                                     tokio::spawn(async move {
-                                        if let Err(e) = cycle.run(&owner, &id, None).await {
-                                            tracing::error!(
-                                                event = "pursue_cycle_error",
-                                                task = %id,
-                                                error = %e
-                                            );
+                                        match bastion::adaptive::decompose(&objective) {
+                                            Some(children) => {
+                                                match store.load_case(&owner, &id).await {
+                                                    Ok(Some(parent)) => {
+                                                        if let Err(e) = bastion::adaptive::run_delegated(
+                                                            store, registry, parent, children,
+                                                        )
+                                                        .await
+                                                        {
+                                                            tracing::error!(event = "pursue_delegate_error", task = %id, error = %e);
+                                                        }
+                                                    }
+                                                    _ => tracing::error!(event = "pursue_delegate_load_error", task = %id),
+                                                }
+                                            }
+                                            None => {
+                                                let cycle = bastion::adaptive::coding_cycle(
+                                                    &store, &registry, &owner,
+                                                );
+                                                if let Err(e) = cycle.run(&owner, &id, None).await {
+                                                    tracing::error!(event = "pursue_cycle_error", task = %id, error = %e);
+                                                }
+                                            }
                                         }
                                     });
                                 }

@@ -9,12 +9,14 @@
 //! `Pursue` coding task actually run by delegating to a registered external
 //! `AgentRuntime` (US-203/206, `exec`).
 
+pub mod delegate;
 pub mod enqueue;
 pub mod exec;
 pub mod mode;
 pub mod observer;
 pub mod schedule;
 
+pub use delegate::{decompose, run_delegated};
 pub use enqueue::enqueue_pursue;
 pub use exec::{coding_cycle, CodingChooser, RuntimeOutcomeVerifier, RuntimeTaskExecutor};
 pub use mode::{select_mode, ModeDecision, ModeSource};
