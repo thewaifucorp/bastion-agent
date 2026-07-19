@@ -22,9 +22,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bastion_agent_runtime::{
-    AgentRuntime, AuthProfileRef, DenyScope, EnvPolicy, OtelContext, PermissionDecision,
-    PermissionProfile, RuntimeEvent, RuntimeSession, SandboxProfile, SessionSpec, TaskExpectation,
-    TaskInput, TaskOutcome, TimeoutPolicy, WorkspacePolicy,
+    AuthProfileRef, DenyScope, EnvPolicy, OtelContext, PermissionDecision, PermissionProfile,
+    RuntimeEvent, SandboxProfile, SessionSpec, TaskExpectation, TaskInput, TaskOutcome,
+    TimeoutPolicy, WorkspacePolicy,
 };
 use bastion_runtime::agent::backend::RuntimeRegistry;
 use bastion_runtime::task::{
