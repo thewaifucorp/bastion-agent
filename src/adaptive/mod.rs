@@ -13,8 +13,13 @@ pub mod enqueue;
 pub mod exec;
 pub mod mode;
 pub mod observer;
+pub mod schedule;
 
 pub use enqueue::enqueue_pursue;
 pub use exec::{coding_cycle, CodingChooser, RuntimeOutcomeVerifier, RuntimeTaskExecutor};
 pub use mode::{select_mode, ModeDecision, ModeSource};
 pub use observer::TracingObserver;
+pub use schedule::{
+    compute_next_fire, plan_fire, run_scheduler, FirePlan, MissedPolicy, ScheduleKind,
+    ScheduleSpec, SqliteScheduleStore,
+};

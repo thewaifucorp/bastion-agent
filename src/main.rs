@@ -1555,6 +1555,70 @@ async fn daemon_loop(
         });
     }
 
+    // US-205: durable personal scheduler. Fires arbitrary authorized intents
+    // (one-shot/recurring) through the SAME mode selection an interactive
+    // message gets — Pursue enqueues + drives a task, Respond/Act run a turn
+    // via the proactive queue. Own SQLite table on the session DB; survives
+    // restart.
+    {
+        use bastion::adaptive;
+        let schedule_store = Arc::new(adaptive::SqliteScheduleStore::new(
+            cfg.session.db_path.clone(),
+        ));
+        if let Err(e) = schedule_store.init_schema().await {
+            tracing::error!(event = "schedule_store_init_failed", error = %e);
+        }
+        let task_store_for_sched = task_store.clone();
+        let registry_for_sched = runtime_registry_for_product.clone();
+        let pending_tx_for_sched = agent.pending_tx.clone();
+        tokio::spawn(adaptive::run_scheduler(
+            schedule_store,
+            std::time::Duration::from_secs(30),
+            move |spec: adaptive::ScheduleSpec| {
+                let store = task_store_for_sched.clone();
+                let registry = registry_for_sched.clone();
+                let tx = pending_tx_for_sched.clone();
+                async move {
+                    let decision = adaptive::select_mode(&spec.intent);
+                    if decision.mode == bastion_runtime::task::ExecutionMode::Pursue {
+                        match adaptive::enqueue_pursue(
+                            &store,
+                            &spec.owner,
+                            &spec.intent,
+                            decision.reason,
+                        )
+                        .await
+                        {
+                            Ok(id) => {
+                                let cycle = adaptive::coding_cycle(&store, &registry, &spec.owner);
+                                let owner = spec.owner.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = cycle.run(&owner, &id, None).await {
+                                        tracing::error!(
+                                            event = "scheduled_pursue_cycle_error",
+                                            error = %e
+                                        );
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                tracing::error!(event = "scheduled_enqueue_error", error = %e)
+                            }
+                        }
+                    } else {
+                        let item = bastion_runtime::agent::loop_::PendingItem::for_owner(
+                            spec.owner.as_str(),
+                            spec.intent.as_str(),
+                        );
+                        if let Err(e) = tx.send(item).await {
+                            tracing::error!(event = "scheduled_dispatch_error", error = %e);
+                        }
+                    }
+                }
+            },
+        ));
+    }
+
     // LEARN-02/LEARN-05: spawn the offline Reflector. Budget/interval/model/dedup-cadence
     // come from bastion.toml [reflector] (defaults if absent). Never reachable from a
     // user-facing turn (ADR D-4) — this is a separate tokio::spawn, same idiom as
