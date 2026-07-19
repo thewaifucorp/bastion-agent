@@ -659,6 +659,14 @@ async fn main() -> anyhow::Result<()> {
     agent.capability_registry.register(Arc::new(
         bastion::companion_capability::CompanionEventCapability::new(),
     ))?;
+    // US-204: governed browser (read-only HTTP backend; interaction/screenshot
+    // via CDP is backlog). needs_approval=true, so every web reach crosses the
+    // Core approval gate; page content is returned marked untrusted.
+    agent
+        .capability_registry
+        .register(Arc::new(bastion::adaptive::BrowserCapability::http(
+            std::env::temp_dir().join("bastion-browser"),
+        )))?;
 
     // Ciclo 2.4 (`docs/revamp/C2-backend-profile-design.md` §2): build the
     // RuntimeRegistry from whatever AgentRuntime adapters are actually
