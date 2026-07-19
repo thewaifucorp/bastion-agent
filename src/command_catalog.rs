@@ -87,6 +87,14 @@ pub const CATALOG: &[CommandSpec] = &[
         aliases: &[],
     },
     CommandSpec {
+        name: "/schedule",
+        usage:
+            "/schedule list | add every <secs> <intent> | add once <secs> <intent> | cancel <id>",
+        desc: "schedule an authorized intent to fire once or on a recurrence (owner-scoped)",
+        scope: Scope::Remote,
+        aliases: &[],
+    },
+    CommandSpec {
         name: "/model",
         usage: "/model <name>",
         desc: "show/switch/reset the LLM provider+model — type space to browse",
@@ -292,6 +300,8 @@ mod tests {
         "/help",
         // Adaptive Execution (US-202): durable-task cockpit.
         "/task",
+        // Adaptive Execution (US-205): personal scheduler cockpit.
+        "/schedule",
     ];
 
     const OLD_REMOTE_ALLOWED: &[&str] = &["/help", "/contest", "/connect", "/model", "/backend"];

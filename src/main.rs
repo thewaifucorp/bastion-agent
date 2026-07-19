@@ -1560,14 +1560,15 @@ async fn daemon_loop(
     // message gets — Pursue enqueues + drives a task, Respond/Act run a turn
     // via the proactive queue. Own SQLite table on the session DB; survives
     // restart.
+    let schedule_store = Arc::new(bastion::adaptive::SqliteScheduleStore::new(
+        cfg.session.db_path.clone(),
+    ));
+    if let Err(e) = schedule_store.init_schema().await {
+        tracing::error!(event = "schedule_store_init_failed", error = %e);
+    }
     {
         use bastion::adaptive;
-        let schedule_store = Arc::new(adaptive::SqliteScheduleStore::new(
-            cfg.session.db_path.clone(),
-        ));
-        if let Err(e) = schedule_store.init_schema().await {
-            tracing::error!(event = "schedule_store_init_failed", error = %e);
-        }
+        let schedule_store = schedule_store.clone();
         let task_store_for_sched = task_store.clone();
         let registry_for_sched = runtime_registry_for_product.clone();
         let pending_tx_for_sched = agent.pending_tx.clone();
@@ -1764,6 +1765,21 @@ async fn daemon_loop(
                             }
                             continue;
                         }
+                        // US-205: schedule cockpit — needs the schedule store.
+                        if first_token == "/schedule" {
+                            let sched_arg = trimmed.split_once(' ').map(|x| x.1);
+                            match bastion::agent::schedule_command::handle(
+                                &schedule_store,
+                                sched_arg,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                            )
+                            .await
+                            {
+                                Ok(msg) => println!("{msg}"),
+                                Err(e) => println!("Erro no comando: {e}"),
+                            }
+                            continue;
+                        }
                         match agent
                             .handle_command(
                                 trimmed,
@@ -1947,6 +1963,18 @@ async fn daemon_loop(
                     let task_arg = trimmed.split_once(' ').map(|x| x.1);
                     match bastion::agent::task_command::handle(&task_store, task_arg, &req.owner)
                         .await
+                    {
+                        Ok(msg) => Ok(msg),
+                        Err(e) => Ok(format!("Erro no comando: {e}")),
+                    }
+                } else if matches!(command_token, Some("/schedule")) {
+                    let sched_arg = trimmed.split_once(' ').map(|x| x.1);
+                    match bastion::agent::schedule_command::handle(
+                        &schedule_store,
+                        sched_arg,
+                        &req.owner,
+                    )
+                    .await
                     {
                         Ok(msg) => Ok(msg),
                         Err(e) => Ok(format!("Erro no comando: {e}")),

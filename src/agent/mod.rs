@@ -1,5 +1,6 @@
 pub mod backend_command;
 pub mod command;
+pub mod schedule_command;
 pub mod skills;
 pub mod task_command;
 
