@@ -98,30 +98,9 @@ const PURSUE_CUES: &[&str] = &[
 /// Verbs that name a bounded side effect (single `Act`) when no `Pursue` cue
 /// is present.
 const ACT_CUES: &[&str] = &[
-    "crie ",
-    "criar ",
-    "delete",
-    "apague",
-    "remova",
-    "envie",
-    "enviar",
-    "mande",
-    "commit",
-    "rode ",
-    "rodar ",
-    "execute ",
-    "abra ",
-    "baixe",
-    "download",
-    "instale",
-    "escreva ",
-    "send ",
-    "create ",
-    "open ",
-    "run ",
-    "delete ",
-    "write ",
-    "install ",
+    "crie ", "criar ", "delete", "apague", "remova", "envie", "enviar", "mande", "commit", "rode ",
+    "rodar ", "execute ", "abra ", "baixe", "download", "instale", "escreva ", "send ", "create ",
+    "open ", "run ", "delete ", "write ", "install ",
 ];
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
