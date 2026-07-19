@@ -345,25 +345,28 @@ fn resolve_in_workspace(
         anyhow::bail!("dest_rel must not be empty");
     }
     let joined = workspace_root.join(rel);
-    // SECURITY (symlink): reject a component-clean path whose closest EXISTING
-    // ancestor canonicalizes outside the workspace — i.e. a symlink in the
-    // workspace pointing elsewhere. `..` is already refused above; this closes
-    // the symlink-escape the lexical check can't see.
-    let base =
-        std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
-    let mut probe = joined.clone();
-    let existing = loop {
-        if probe.exists() {
-            break probe;
-        }
-        match probe.parent() {
-            Some(p) => probe = p.to_path_buf(),
-            None => break base.clone(),
-        }
-    };
-    if let Ok(canon) = std::fs::canonicalize(&existing) {
-        if !canon.starts_with(&base) {
-            anyhow::bail!("dest_rel resolves outside the workspace (symlink escape)");
+    // SECURITY (symlink): when the workspace already exists, reject a
+    // component-clean path whose closest EXISTING ancestor canonicalizes
+    // outside it — i.e. a symlink inside the workspace pointing elsewhere.
+    // `..` is already refused above; this closes the symlink escape the
+    // lexical check can't see. If the workspace root doesn't exist yet there
+    // is no symlink to traverse (download creates the dirs fresh), so the
+    // check is skipped rather than producing a false positive.
+    if let Ok(base) = std::fs::canonicalize(workspace_root) {
+        let mut probe = joined.clone();
+        loop {
+            match std::fs::canonicalize(&probe) {
+                Ok(canon) => {
+                    if !canon.starts_with(&base) {
+                        anyhow::bail!("dest_rel resolves outside the workspace (symlink escape)");
+                    }
+                    break;
+                }
+                Err(_) => match probe.parent() {
+                    Some(p) => probe = p.to_path_buf(),
+                    None => break,
+                },
+            }
         }
     }
     Ok(joined)
