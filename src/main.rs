@@ -1751,10 +1751,32 @@ async fn daemon_loop(
                             )
                             .await
                             {
-                                Ok(id) => println!(
-                                    "↳ pursuing as task {id} (why: {}). Say \"só responda\" for a one-off.",
-                                    decision.reason
-                                ),
+                                Ok(id) => {
+                                    println!(
+                                        "↳ pursuing as task {id} (why: {}). Say \"só responda\" for a one-off.",
+                                        decision.reason
+                                    );
+                                    // US-203: drain the enqueued task in the
+                                    // background via the adaptive cycle, so the
+                                    // conversation stays responsive while the
+                                    // coding task delegates to a runtime.
+                                    let cycle = bastion::adaptive::coding_cycle(
+                                        &task_store,
+                                        &runtime_registry_for_product,
+                                        bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                                    );
+                                    let owner =
+                                        bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = cycle.run(&owner, &id, None).await {
+                                            tracing::error!(
+                                                event = "pursue_cycle_error",
+                                                task = %id,
+                                                error = %e
+                                            );
+                                        }
+                                    });
+                                }
                                 Err(e) => {
                                     tracing::error!(event = "pursue_enqueue_error", error = %e)
                                 }
