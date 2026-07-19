@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use bastion_runtime::agent::backend::RuntimeRegistry;
 use bastion_runtime::task::{
-    Bounds, ChildSummary, CorrelationIds, ExecutionMode, Frame, Intent, IntentOrigin, OpaqueState,
+    ChildSummary, CorrelationIds, ExecutionMode, Frame, Intent, IntentOrigin, OpaqueState,
     Orchestrator, StopReason, TaskCase, TaskCaseId, TaskStatus, TaskStore, UsageAccum,
 };
 use tokio::sync::Semaphore;
@@ -184,6 +184,7 @@ pub async fn run_delegated(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bastion_runtime::task::Bounds;
 
     #[test]
     fn small_objective_is_not_decomposed() {
