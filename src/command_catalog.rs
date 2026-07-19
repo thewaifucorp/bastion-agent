@@ -290,6 +290,8 @@ mod tests {
         "/contest",
         "/logs",
         "/help",
+        // Adaptive Execution (US-202): durable-task cockpit.
+        "/task",
     ];
 
     const OLD_REMOTE_ALLOWED: &[&str] = &["/help", "/contest", "/connect", "/model", "/backend"];
