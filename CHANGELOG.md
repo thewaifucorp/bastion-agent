@@ -12,21 +12,48 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
-- Adaptive Execution: requests are selected as `Respond`, `Act`, or `Pursue`.
-  Only `Pursue` creates a durable, owner-scoped `TaskCase`, with attempts,
-  evidence, verification, budgets, and a recomputed next decision.
-- `/task` cockpit to list, inspect, pause, resume, steer, and cancel durable
-  tasks; owner isolation applies to every operation.
-- Durable personal `/schedule` commands, the governed browser capability,
-  delegated external-agent runtimes, and concurrent child-task orchestration
-  for `Pursue` objectives.
-- Mode selection for console input, schedules, and inbound channels, together
-  with per-mode observability and cost attribution.
-- English and Brazilian Portuguese Adaptive Execution guides.
+- **Adaptive Execution**, a progressive request lifecycle selected without an
+  extra LLM call: `Respond` is the cheap, side-effect-free default; `Act`
+  permits one bounded effect; and `Pursue` creates a durable, resumable,
+  owner-scoped `TaskCase`. Explicit mode overrides take precedence over the
+  conservative selector.
+- A background `Pursue` driver backed by Bastion Core's task contract. Each
+  case retains attempts, evidence, verdicts, usage/budgets, status transitions,
+  and its recomputed next decision across restart.
+- `/task` cockpit: list tasks, inspect their attempts/evidence/verdicts, pause,
+  resume, steer, and cancel them. Every lookup and mutation is owner-scoped.
+- Delegated coding execution through registered external `AgentRuntime`s.
+  Bastion captures runtime diffs, artifacts, usage, and terminal exit status as
+  task evidence; it verifies deterministically before accepting a result,
+  retries within the task budget, and escalates rather than looping forever.
+- Conservative concurrent delegation for independent `Pursue` objectives:
+  child tasks retain parent/child provenance, share the parent's budget, obey a
+  parallelism bound, and leave divergent child outcomes inspectable.
+- A governed, provider-neutral browser capability with per-owner sessions and a
+  functional read-only HTTP backend for navigate, snapshot, and download.
+  Snapshots return the resolved source URL and truncated text explicitly marked
+  `trusted: false`, so web content is never promoted to an instruction source.
+- Browser egress safeguards: approval before fetch, public `http(s)` URL
+  validation, private/link-local/metadata-address rejection, redirects disabled,
+  no cookies or credentials returned, and downloads restricted to new,
+  workspace-relative files to prevent path escape and symlink overwrite.
+- Durable owner-scoped `/schedule` commands for one-shot and repeating intents.
+  Schedules survive restart, have defined missed-run handling, and re-enter the
+  same adaptive path when they fire.
+- Mode selection for console input, schedules, and inbound channels. Trusted
+  inbound requests may create durable tasks; untrusted email and public-channel
+  content is classified only for telemetry and cannot escalate into `Pursue` or
+  delegated execution.
+- Privacy-conscious per-mode tracing and cost attribution: lifecycle events
+  expose only identifiers/status, never prompts or evidence payloads.
+- English and Brazilian Portuguese Adaptive Execution guides, plus a README
+  introduction to task mode.
 
 ### Changed
 
-- Updated the Bastion Core revision to the Adaptive Execution substrate.
+- Updated all `bastion-*` dependencies to the Core revision that supplies the
+  Adaptive Execution task substrate.
+
 
 ## [0.1.3] — 2026-07-17
 
