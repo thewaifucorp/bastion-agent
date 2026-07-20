@@ -90,7 +90,7 @@ console input.
 
 ## Not in this build (🕓 planned / backlog)
 
-- Offline outcome evaluation (Katsui Judge).
+- Offline outcome evaluation by a separate judge service.
 - Promotion of learned procedures into shared skills/rules.
 - Automatic mode selection on inbound channels (see above).
 
