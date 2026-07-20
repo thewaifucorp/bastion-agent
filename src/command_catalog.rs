@@ -123,6 +123,13 @@ pub const CATALOG: &[CommandSpec] = &[
         aliases: &[],
     },
     CommandSpec {
+        name: "/update",
+        usage: "/update [status|apply]",
+        desc: "show release status or request an explicit host update",
+        scope: Scope::Remote,
+        aliases: &[],
+    },
+    CommandSpec {
         name: "/as",
         usage: "/as <persona>",
         desc: "force a persona for the next turn — daemon-wide state",
@@ -297,6 +304,7 @@ mod tests {
         "/cabinet",
         "/contest",
         "/logs",
+        "/update",
         "/help",
         // Adaptive Execution (US-202): durable-task cockpit.
         "/task",
@@ -304,7 +312,9 @@ mod tests {
         "/schedule",
     ];
 
-    const OLD_REMOTE_ALLOWED: &[&str] = &["/help", "/contest", "/connect", "/model", "/backend"];
+    const OLD_REMOTE_ALLOWED: &[&str] = &[
+        "/help", "/contest", "/connect", "/model", "/backend", "/update",
+    ];
 
     #[test]
     fn known_daemon_commands_matches_old_known_commands_exactly() {

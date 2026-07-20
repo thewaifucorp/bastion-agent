@@ -10,6 +10,12 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **Self-update control plane**: the daemon periodically checks the official
+  GitHub Release and exposes `/update` in the TUI and trusted channels. An
+  explicit `/update apply` reaches a narrowly-authenticated host helper rather
+  than granting the container Docker or checkout-write authority; the local
+  installer builds, health-checks, and rolls back failed releases.
+
 - **Procedural-memory feedback for `Pursue`**: before delegating work, Bastion
   selects up to four relevant, `CloudOk` procedural beliefs using learned
   utility/confidence and lexical fit; the runtime receives bounded guidance and

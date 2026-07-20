@@ -66,6 +66,9 @@ services:
       - ./personas:/personas:ro                   # SOUL.md files (D-02: bind-mount, no copy)
       - ./skills:/skills:ro                       # SKILL.md files (read-only)
       - ./bastion.toml:/bastion.toml:ro           # non-secret config (D-09)
+      # Host-only updater uses this narrow Unix-socket bridge. The core gets
+      # neither Docker's socket nor a writable source checkout.
+      - ./.bastion:/bastion-updater
     environment:
       - BASTION_CONFIG=/bastion.toml
       - BASTION__SESSION__DB_PATH=/bastion-data/sessions.db
@@ -86,6 +89,8 @@ services:
       - BASTION_WEBHOOK_ADDR=0.0.0.0:8080
       - APP_JWT_SECRET=${APP_JWT_SECRET}
       - BASTION_BOOTSTRAP_TOKEN=${BASTION_BOOTSTRAP_TOKEN}
+      - BASTION_UPDATER_SOCKET=/bastion-updater/updater.sock
+      - BASTION_UPDATER_TOKEN=${BASTION_UPDATER_TOKEN}
       - BASTION_OWNER_ID=${BASTION_OWNER_ID:-_local}
       - BASTION__BACKEND__CONVERSATION=${BASTION_BACKEND_CONVERSATION:-model}
       - BASTION__BACKEND__AUTH=${BASTION_BACKEND_AUTH:-}

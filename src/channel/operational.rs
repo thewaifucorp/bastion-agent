@@ -235,6 +235,7 @@ pub struct RuntimeStatusRow {
 pub struct StatusSnapshot {
     pub runtimes: Vec<RuntimeStatusRow>,
     pub ready: bool,
+    pub update: crate::update::UpdateSnapshot,
 }
 
 /// `GET /status` — booleans-only summary of every runtime Bastion knows how
@@ -268,7 +269,16 @@ pub async fn status_handler(State(state): State<StatusState>) -> impl IntoRespon
         });
     }
     let ready = state.readiness.is_ready();
-    (StatusCode::OK, Json(StatusSnapshot { runtimes, ready })).into_response()
+    let update = state.updates.read().await.clone();
+    (
+        StatusCode::OK,
+        Json(StatusSnapshot {
+            runtimes,
+            ready,
+            update,
+        }),
+    )
+        .into_response()
 }
 
 /// State `/status` needs, mounted alongside `AppState` in `webhook.rs`.
@@ -277,6 +287,7 @@ pub struct StatusState {
     pub runtime_registry: bastion_runtime::agent::backend::RuntimeRegistry,
     pub auth: crate::config::AuthConfig,
     pub readiness: Arc<ReadinessState>,
+    pub updates: crate::update::SharedUpdateState,
 }
 
 pub async fn lifecycle_reload_handler(

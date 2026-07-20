@@ -34,6 +34,10 @@ pub struct CommandResources {
     /// subscription profile as "not configured", same as before this field
     /// existed.
     pub auth: AuthConfig,
+    /// Read-only release state shared by console and channel command paths.
+    /// Applying an update is intentionally unavailable here: this process is
+    /// inside the Compose container and cannot safely replace its own host.
+    pub updates: Option<crate::update::SharedUpdateState>,
 }
 
 /// Persistent, daemon-owned selection used by `/model`. The configured default
@@ -79,6 +83,31 @@ impl bastion_runtime::agent::ports::CommandHandler for CockpitCommandHandler {
         forced_cabinet: &mut Option<Vec<String>>,
         owner: &str,
     ) -> anyhow::Result<CommandResult> {
+        if input.split_whitespace().next() == Some("/update") {
+            let action = input.split_whitespace().nth(1);
+            let reply = match action {
+                Some("apply") => {
+                    let local_owner = std::env::var("BASTION_OWNER_ID").unwrap_or_else(|_| {
+                        bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string()
+                    });
+                    if owner != local_owner {
+                        "Apenas o dono local desta instalação pode aplicar uma atualização."
+                            .to_string()
+                    } else {
+                        crate::update::request_apply().await?
+                    }
+                }
+                None | Some("status") => match &self.resources.updates {
+                    Some(updates) => crate::update::snapshot_text(updates).await,
+                    None => "Atualizações não estão configuradas neste processo.".to_string(),
+                },
+                _ => {
+                    "Uso: /update [status|apply]. `apply` pede atualização ao helper local do host."
+                        .to_string()
+                }
+            };
+            return Ok(CommandResult::Handled(reply));
+        }
         handle_command(
             input,
             provider,

@@ -31,6 +31,30 @@ Useful modes:
 ./installer.sh --dir /opt/bastion   # explicit checkout/install path
 ```
 
+## Updating a running installation
+
+Check the official GitHub Release from the host:
+
+```bash
+bastion update
+```
+
+Apply the newest release explicitly:
+
+```bash
+bastion update --apply --yes
+```
+
+The installer fetches the release tag, refuses a checkout with tracked local
+changes, rebuilds and restarts Compose, health-checks `core`, and restores the
+previous revision if the new release does not become healthy.
+
+Every installed Compose deployment also has a narrowly-scoped host updater.
+From a trusted, mapped channel or the TUI, `/update` reports release status and
+`/update apply` requests the same host-side flow. The container never receives
+the Docker socket or write access to the source checkout; this command is an
+explicit owner action, not an automatic update.
+
 ## Native Rust
 
 ```bash

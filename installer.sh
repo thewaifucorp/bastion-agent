@@ -9,6 +9,8 @@ INSTALL_DIR="$DEFAULT_INSTALL_DIR"
 NON_INTERACTIVE=0
 PREPARE_ONLY=0
 NO_START=0
+UPDATE=0
+RELEASE_TAG=""
 
 info() { printf '\033[1;36m◈\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
@@ -24,6 +26,8 @@ Usage: ./installer.sh [options]
   --non-interactive   Never prompt; provider keys must already be exported
   --prepare-only      Prepare .env without requiring or starting Docker
   --no-start          Validate and build, but do not start services
+  --update            Update an existing checkout to the latest release tag
+  --release TAG       Release tag to install with --update (for the host helper)
   -h, --help          Show this help
 
 The installer preserves an existing .env and generates missing internal secrets.
@@ -36,10 +40,14 @@ while (($#)); do
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     --prepare-only) PREPARE_ONLY=1; shift ;;
     --no-start) NO_START=1; shift ;;
+    --update) UPDATE=1; shift ;;
+    --release) [[ $# -ge 2 ]] || die "--release requires a tag"; RELEASE_TAG="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
 done
+
+[[ -z "$RELEASE_TAG" || "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]] || die "--release must be a semantic vX.Y.Z tag"
 
 need() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 
@@ -56,6 +64,7 @@ install_or_update_repo() {
 
   if [[ -f "$INSTALL_DIR/Cargo.toml" && -f "$INSTALL_DIR/docker-compose.yml" ]]; then
     info "Using existing checkout: $INSTALL_DIR"
+    if ((UPDATE)); then update_checkout; fi
     return
   fi
   if [[ -n "$local_dir" && -f "$local_dir/Cargo.toml" && -f "$local_dir/docker-compose.yml" ]]; then
@@ -75,6 +84,26 @@ install_or_update_repo() {
     mkdir -p "$(dirname "$INSTALL_DIR")"
     git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
   fi
+}
+
+update_checkout() {
+  need git
+  [[ -d "$INSTALL_DIR/.git" ]] || die "updates require a Git checkout at $INSTALL_DIR"
+  git -C "$INSTALL_DIR" diff --quiet || die "refusing to update: tracked working-tree changes exist"
+  git -C "$INSTALL_DIR" diff --cached --quiet || die "refusing to update: staged changes exist"
+  info "Fetching Bastion releases"
+  git -C "$INSTALL_DIR" fetch --tags --force origin
+  local target="${RELEASE_TAG:-}"
+  if [[ -z "$target" ]]; then
+    target="$(git -C "$INSTALL_DIR" tag --list 'v[0-9]*' --sort=-version:refname | head -n 1)"
+  fi
+  [[ -n "$target" ]] || die "no Bastion release tag was found"
+  git -C "$INSTALL_DIR" rev-parse --verify --quiet "refs/tags/$target^{commit}" >/dev/null \
+    || die "release tag $target is not available from origin"
+  UPDATE_PREVIOUS_REF="$(git -C "$INSTALL_DIR" rev-parse HEAD)"
+  UPDATE_TARGET="$target"
+  info "Updating Bastion to $target"
+  git -C "$INSTALL_DIR" checkout --detach "$target"
 }
 
 env_get() {
@@ -196,6 +225,7 @@ prepare_environment() {
   [[ -n "$(env_get APP_JWT_SECRET)" ]] || env_set APP_JWT_SECRET "$(random_secret)"
   [[ -n "$(env_get BASTION_INFER_TOKEN)" ]] || env_set BASTION_INFER_TOKEN "$(random_secret)"
   [[ -n "$(env_get BASTION_BOOTSTRAP_TOKEN)" ]] || env_set BASTION_BOOTSTRAP_TOKEN "$(random_secret)"
+  [[ -n "$(env_get BASTION_UPDATER_TOKEN)" ]] || env_set BASTION_UPDATER_TOKEN "$(random_secret)"
   env_set BASTION_UID "$(id -u)"
   env_set BASTION_GID "$(id -g)"
 
@@ -225,6 +255,7 @@ run_compose() {
   else
     info "Starting Bastion"
     (cd "$INSTALL_DIR" && docker compose up -d --force-recreate)
+    ensure_updater
     publish_host="$(env_get BASTION_PUBLISH_HOST)"
     http_port="$(env_get BASTION_HTTP_PORT)"
     client_url="$(env_get BASTION_URL)"
@@ -239,6 +270,47 @@ run_compose() {
     info "Bastion is starting at $client_url"
     info "Check readiness with: docker compose -f '$INSTALL_DIR/docker-compose.yml' ps"
   fi
+}
+
+ensure_updater() {
+  local runtime_bin socket pid_file old_pid token
+  runtime_bin="$INSTALL_DIR/.bastion/bin/bastion"
+  socket="$INSTALL_DIR/.bastion/updater.sock"
+  pid_file="$INSTALL_DIR/.bastion/updater.pid"
+  token="$(env_get BASTION_UPDATER_TOKEN)"
+  [[ -x "$runtime_bin" && -n "$token" ]] || die "host updater prerequisites are missing"
+  if [[ -f "$pid_file" ]]; then
+    old_pid="$(cat "$pid_file" 2>/dev/null || true)"
+    [[ -z "$old_pid" ]] || kill "$old_pid" 2>/dev/null || true
+  fi
+  rm -f "$socket"
+  (
+    umask 077
+    cd "$INSTALL_DIR"
+    nohup "$runtime_bin" updater serve --socket "$socket" --token "$token" \
+      >> "$INSTALL_DIR/.bastion/updater.log" 2>&1 &
+    echo $! > "$pid_file"
+  )
+  info "Enabled authenticated channel updates. Use /update apply from a trusted channel."
+}
+
+wait_for_core_health() {
+  local attempt
+  for attempt in $(seq 1 30); do
+    if (cd "$INSTALL_DIR" && docker compose exec -T core curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null 2>&1); then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+rollback_update() {
+  [[ -n "${UPDATE_PREVIOUS_REF:-}" ]] || return 1
+  warn "Updated release did not become healthy; rolling back"
+  git -C "$INSTALL_DIR" checkout --detach "$UPDATE_PREVIOUS_REF"
+  run_compose
+  wait_for_core_health || die "rollback deployment also failed health checks"
 }
 
 install_cli() {
@@ -317,6 +389,10 @@ main() {
     info "Preparation complete: $INSTALL_DIR"
   else
     run_compose
+    if ((UPDATE)) && ! wait_for_core_health; then
+      rollback_update
+      die "update to ${UPDATE_TARGET:-requested release} failed health checks and was rolled back"
+    fi
   fi
 }
 

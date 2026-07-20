@@ -1,3 +1,4 @@
+use anyhow::Context;
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use std::collections::HashMap;
 use std::process::Command as ProcessCommand;
@@ -108,6 +109,21 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Check for a published Bastion release; apply it locally with --apply --yes
+    Update {
+        /// Download/build the latest release and restart the local Compose deployment
+        #[arg(long)]
+        apply: bool,
+        /// Confirm a local deployment update without an interactive prompt
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Internal host-only service used by trusted channel update requests
+    #[command(hide = true)]
+    Updater {
+        #[command(subcommand)]
+        action: UpdaterAction,
+    },
     /// Companion state and agent-session event bridge
     Companion {
         #[command(subcommand)]
@@ -158,6 +174,17 @@ enum CompanionAction {
     },
     /// Care for the companion: feed | water | play | sleep
     Care { action: CareAction },
+}
+
+#[derive(Subcommand)]
+enum UpdaterAction {
+    /// Serve authenticated update requests over a Unix socket
+    Serve {
+        #[arg(long)]
+        socket: String,
+        #[arg(long)]
+        token: String,
+    },
 }
 
 /// Fase 3.6: typed in place of a stringly-typed `provider: String` — clap
@@ -344,6 +371,44 @@ fn connect_subscription(
     }
 }
 
+async fn self_update(apply: bool, yes: bool) -> anyhow::Result<()> {
+    let snapshot = bastion::update::check_latest().await?;
+    println!(
+        "{}",
+        bastion::update::snapshot_text(&Arc::new(RwLock::new(snapshot.clone()))).await
+    );
+    if !snapshot.available || !apply {
+        return Ok(());
+    }
+    anyhow::ensure!(yes, "refusing to update without --yes; review the release then rerun `bastion update --apply --yes`");
+    let project_dir = bastion::compose::locate_project_dir().ok_or_else(|| {
+        anyhow::anyhow!(
+            "could not locate the Bastion docker-compose project; run from the install dir or set BASTION_COMPOSE_DIR"
+        )
+    })?;
+    let installer = project_dir.join("installer.sh");
+    anyhow::ensure!(
+        installer.is_file(),
+        "missing installer.sh in {}",
+        project_dir.display()
+    );
+    let tag = snapshot
+        .release_tag
+        .ok_or_else(|| anyhow::anyhow!("release check did not return a tag"))?;
+    let status = ProcessCommand::new("bash")
+        .arg(installer)
+        .arg("--dir")
+        .arg(&project_dir)
+        .arg("--update")
+        .arg("--release")
+        .arg(tag)
+        .arg("--non-interactive")
+        .status()
+        .context("running the Bastion installer")?;
+    anyhow::ensure!(status.success(), "Bastion update exited with {status}");
+    Ok(())
+}
+
 /// Fase 2.6 `--import-host`: one-shot copy of the host's existing CLI
 /// credential files into the running `core` container. Deliberately NOT a
 /// live/bind mount — docker-compose.yml never bind-mounts `~/.claude` etc.
@@ -469,6 +534,18 @@ async fn main() -> anyhow::Result<()> {
     } = &command
     {
         return connect_subscription(provider.as_str(), *setup_token, *import_host, *yes);
+    }
+    if let Command::Update { apply, yes } = &command {
+        return self_update(*apply, *yes).await;
+    }
+    if let Command::Updater {
+        action: UpdaterAction::Serve { socket, token },
+    } = &command
+    {
+        #[cfg(unix)]
+        return bastion::update::serve_updater(std::path::Path::new(socket), token).await;
+        #[cfg(not(unix))]
+        anyhow::bail!("the host updater is only supported on Unix hosts");
     }
 
     // Load bastion.toml config (non-secret config only; secrets stay in .env)
@@ -805,6 +882,8 @@ async fn main() -> anyhow::Result<()> {
             unreachable!("companion is handled before daemon initialization")
         }
         Command::Connect { .. } => unreachable!("connect is handled before daemon initialization"),
+        Command::Update { .. } => unreachable!("update is handled before daemon initialization"),
+        Command::Updater { .. } => unreachable!("updater is handled before daemon initialization"),
         Command::Completions { .. } => {
             unreachable!("completions is handled before daemon initialization")
         }
@@ -1045,6 +1124,11 @@ async fn daemon_loop(
             .map(|v| v.expose_secret().to_string()),
     );
     let lifecycle = bastion::channel::operational::LifecycleControl::new(lifecycle_auth);
+    // Public release discovery is deliberately decoupled from agent readiness:
+    // a temporary GitHub outage must never stop a personal runtime. The shared
+    // snapshot feeds /status, /update, and the TUI command path.
+    let updates = Arc::new(RwLock::new(bastion::update::UpdateSnapshot::current()));
+    bastion::update::spawn_checker(updates.clone());
 
     // M2 (P5 despejo): `otc_store`/`composio_oauth` are no longer `AgentLoop`
     // fields — this replaces `agent.set_otc_store`/`agent.set_composio_oauth`.
@@ -1064,6 +1148,7 @@ async fn daemon_loop(
             default_model: cfg.agent.default_model.clone(),
         }),
         auth: cfg.auth.clone(),
+        updates: Some(updates.clone()),
         ..Default::default()
     };
 
@@ -1324,6 +1409,7 @@ async fn daemon_loop(
             // `[auth.*]` table inside the spawned task.
             let runtime_registry_for_webhook = runtime_registry_for_product.clone();
             let auth_for_webhook = cfg.auth.clone();
+            let updates_for_webhook = updates.clone();
             tokio::spawn(async move {
                 if let Err(e) = bastion::channel::webhook::serve_with_mesh(
                     h,
@@ -1344,6 +1430,7 @@ async fn daemon_loop(
                     lifecycle_for_webhook,
                     runtime_registry_for_webhook,
                     auth_for_webhook,
+                    updates_for_webhook,
                 )
                 .await
                 {
@@ -1975,7 +2062,12 @@ async fn daemon_loop(
                 // message, exactly matching what the console would say.
                 let is_known_command = command_token
                     .is_some_and(bastion::command_catalog::is_known);
-                let res = if let Some(cmd) = command_token.filter(|c| {
+                let res = if req.untrusted && matches!(command_token, Some("/update")) {
+                    // A public channel/email can carry an attacker-controlled
+                    // literal `/update apply`. It may ask for normal chat, but
+                    // never receives the deployment-mutation command path.
+                    Ok("/update is unavailable from untrusted channel content.".to_string())
+                } else if let Some(cmd) = command_token.filter(|c| {
                     is_known_command && !bastion::command_catalog::is_remote_allowed(c)
                 }) {
                     Ok(format!("{cmd} is console-only — not allowed remotely."))
@@ -2254,6 +2346,15 @@ mod cli_tests {
     fn explicit_subcommands_remain_available() {
         let cli = Cli::try_parse_from(["bastion", "daemon"]).unwrap();
         assert!(matches!(cli.command, Some(Command::Daemon)));
+
+        let cli = Cli::try_parse_from(["bastion", "update", "--apply", "--yes"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Update {
+                apply: true,
+                yes: true
+            })
+        ));
 
         let cli = Cli::try_parse_from([
             "bastion",

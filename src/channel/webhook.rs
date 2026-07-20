@@ -182,6 +182,9 @@ struct AppState {
     /// Fase 2.9: same `[auth.*]` table `AuthProfileRegistry`/`backend_command`
     /// use — `/status` probes it live (booleans only, never account detail).
     auth: crate::config::AuthConfig,
+    /// Cached public-release status. It is informational only; no HTTP or
+    /// channel request can apply an update from inside the container.
+    updates: crate::update::SharedUpdateState,
 }
 
 impl axum::extract::FromRef<AppState> for crate::channel::operational::StatusState {
@@ -190,6 +193,7 @@ impl axum::extract::FromRef<AppState> for crate::channel::operational::StatusSta
             runtime_registry: state.runtime_registry.clone(),
             auth: state.auth.clone(),
             readiness: state.readiness.clone(),
+            updates: state.updates.clone(),
         }
     }
 }
@@ -1161,6 +1165,9 @@ pub async fn serve(
     // `/status` reports zero runtimes rather than lying about what's wired.
     let runtime_registry = bastion_runtime::agent::backend::RuntimeRegistry::new();
     let auth = crate::config::AuthConfig::default();
+    let updates = Arc::new(tokio::sync::RwLock::new(
+        crate::update::UpdateSnapshot::current(),
+    ));
     serve_with_mesh(
         agent,
         addr,
@@ -1180,6 +1187,7 @@ pub async fn serve(
         lifecycle,
         runtime_registry,
         auth,
+        updates,
     )
     .await
 }
@@ -1225,6 +1233,7 @@ pub async fn serve_with_mesh(
     // Fase 2.9: backs `GET /status` — see `AppState.runtime_registry` doc.
     runtime_registry: bastion_runtime::agent::backend::RuntimeRegistry,
     auth: crate::config::AuthConfig,
+    updates: crate::update::SharedUpdateState,
 ) -> anyhow::Result<()> {
     let state = AppState {
         agent,
@@ -1243,6 +1252,7 @@ pub async fn serve_with_mesh(
         lifecycle,
         runtime_registry,
         auth,
+        updates,
     };
     let mut app = Router::new()
         .route("/webhook", post(handle))
@@ -1365,6 +1375,9 @@ mod tests {
             lifecycle,
             runtime_registry: bastion_runtime::agent::backend::RuntimeRegistry::new(),
             auth: crate::config::AuthConfig::default(),
+            updates: Arc::new(tokio::sync::RwLock::new(
+                crate::update::UpdateSnapshot::current(),
+            )),
         };
         let router = Router::new()
             .route("/webhook", post(handle))
@@ -1421,6 +1434,9 @@ mod tests {
             lifecycle,
             runtime_registry: bastion_runtime::agent::backend::RuntimeRegistry::new(),
             auth: crate::config::AuthConfig::default(),
+            updates: Arc::new(tokio::sync::RwLock::new(
+                crate::update::UpdateSnapshot::current(),
+            )),
         };
         Router::new()
             .route(
@@ -1835,6 +1851,9 @@ mod tests {
             lifecycle,
             runtime_registry: bastion_runtime::agent::backend::RuntimeRegistry::new(),
             auth: crate::config::AuthConfig::default(),
+            updates: Arc::new(tokio::sync::RwLock::new(
+                crate::update::UpdateSnapshot::current(),
+            )),
         };
         Router::new()
             .route("/webhook", post(handle))
@@ -1879,6 +1898,9 @@ mod tests {
             lifecycle,
             runtime_registry: bastion_runtime::agent::backend::RuntimeRegistry::new(),
             auth: crate::config::AuthConfig::default(),
+            updates: Arc::new(tokio::sync::RwLock::new(
+                crate::update::UpdateSnapshot::current(),
+            )),
         };
         Router::new()
             .route("/auth/composio/callback", post(composio_callback_handler))
