@@ -116,6 +116,7 @@ you ──► channel / CLI / mobile
 | **Privacy-aware egress** | Data leaving the runtime is a first-class decision, not an incidental side effect of a tool call. |
 | **Cross-life reprioritization** | Goals, personas, proactive nudges, and Cabinet deliberation help surface conflicts before one part of life quietly consumes the rest. |
 | **Approval-gated improvement** | Reusable patterns can be distilled into skill candidates, but the system does not silently auto-apply them. |
+| **Adaptive Execution** | Every request runs as **Respond**, **Act**, or **Pursue**—only durable objectives persist a resumable, owner-scoped task you can inspect, steer, and cancel. See the [guide](docs/en/adaptive-execution.md). |
 | **Portable agent state** | Export/import the agent’s identity, memories, goals, personas, and configuration with the built-in CLI. |
 | **Local-first deployment shape** | The provided Compose stack isolates local Python sidecars from internet egress while the core handles only the connections it needs. |
 | **MCP-native composition** | Connect MCP services, or compile the optional `bastion mcp-stdio` surface to let another local agent drive Bastion. |
@@ -183,6 +184,7 @@ one, map its sender to a canonical owner and read the security model.
 | [Start here](docs/en/getting-started.md) | [Comece aqui](docs/pt-br/iniciando.md) |
 | [Configuration](docs/en/configuration.md) | [Configuração](docs/pt-br/configuracao.md) |
 | [Architecture](docs/en/architecture.md) | [Arquitetura](docs/pt-br/arquitetura.md) |
+| [Adaptive Execution](docs/en/adaptive-execution.md) | — |
 | [Channels](docs/en/channels.md) | [Canais](docs/pt-br/canais.md) |
 | [Terminal companion](docs/en/companion.md) | [Companion de terminal](docs/pt-br/companion.md) |
 | [Security model](docs/en/security.md) | [Modelo de segurança](docs/pt-br/seguranca.md) |
