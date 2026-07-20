@@ -15,6 +15,7 @@ use bastion_providers::registry::resolve_provider;
 use bastion_runtime::agent::handle;
 use bastion_runtime::agent::loop_::AgentLoop;
 use bastion_runtime::session::SessionManager;
+use bastion_runtime::task::{SqliteTaskStore, TaskStore};
 
 /// Inicializa o OTel TracerProvider.
 ///
@@ -496,6 +497,14 @@ async fn main() -> anyhow::Result<()> {
     let session = SessionManager::new(&db_path);
     session.init_schema().await?;
 
+    // Adaptive Execution (US-201): durable store for Pursue tasks, sharing the
+    // one session DB. Pending tasks enqueued here are drained by the executor.
+    let task_store: Arc<dyn TaskStore> = {
+        let store = SqliteTaskStore::new(db_path.clone());
+        store.init_schema().await?;
+        Arc::new(store)
+    };
+
     // D-02: auto-resume most recent session, or create new one
     let session_id = match session.load_most_recent_id().await? {
         Some(id) => {
@@ -650,6 +659,14 @@ async fn main() -> anyhow::Result<()> {
     agent.capability_registry.register(Arc::new(
         bastion::companion_capability::CompanionEventCapability::new(),
     ))?;
+    // US-204: governed browser (read-only HTTP backend; interaction/screenshot
+    // via CDP is backlog). needs_approval=true, so every web reach crosses the
+    // Core approval gate; page content is returned marked untrusted.
+    agent
+        .capability_registry
+        .register(Arc::new(bastion::adaptive::BrowserCapability::http(
+            std::env::temp_dir().join("bastion-browser"),
+        )))?;
 
     // Ciclo 2.4 (`docs/revamp/C2-backend-profile-design.md` §2): build the
     // RuntimeRegistry from whatever AgentRuntime adapters are actually
@@ -808,6 +825,7 @@ async fn main() -> anyhow::Result<()> {
                 registry_for_product,
                 secret_resolver,
                 runtime_registry_for_product,
+                task_store,
             )
             .await?;
         }
@@ -991,6 +1009,8 @@ async fn daemon_loop(
     // original — `/status` (webhook.rs) reports per-runtime
     // `cli_present`/`logged_in` from this handle.
     runtime_registry_for_product: bastion_runtime::agent::backend::RuntimeRegistry,
+    // US-201: durable Pursue-task store, shared with the cockpit/executor.
+    task_store: Arc<dyn TaskStore>,
 ) -> anyhow::Result<()> {
     use bastion::agent::command::{CommandResources, CommandResult};
     use tokio::io::{AsyncBufReadExt, BufReader};
@@ -1543,6 +1563,71 @@ async fn daemon_loop(
         });
     }
 
+    // US-205: durable personal scheduler. Fires arbitrary authorized intents
+    // (one-shot/recurring) through the SAME mode selection an interactive
+    // message gets — Pursue enqueues + drives a task, Respond/Act run a turn
+    // via the proactive queue. Own SQLite table on the session DB; survives
+    // restart.
+    let schedule_store = Arc::new(bastion::adaptive::SqliteScheduleStore::new(
+        cfg.session.db_path.clone(),
+    ));
+    if let Err(e) = schedule_store.init_schema().await {
+        tracing::error!(event = "schedule_store_init_failed", error = %e);
+    }
+    {
+        use bastion::adaptive;
+        let schedule_store = schedule_store.clone();
+        let task_store_for_sched = task_store.clone();
+        let registry_for_sched = runtime_registry_for_product.clone();
+        let pending_tx_for_sched = agent.pending_tx.clone();
+        tokio::spawn(adaptive::run_scheduler(
+            schedule_store,
+            std::time::Duration::from_secs(30),
+            move |spec: adaptive::ScheduleSpec| {
+                let store = task_store_for_sched.clone();
+                let registry = registry_for_sched.clone();
+                let tx = pending_tx_for_sched.clone();
+                async move {
+                    let decision = adaptive::select_mode(&spec.intent);
+                    if decision.mode == bastion_runtime::task::ExecutionMode::Pursue {
+                        match adaptive::enqueue_pursue(
+                            &store,
+                            &spec.owner,
+                            &spec.intent,
+                            decision.reason,
+                        )
+                        .await
+                        {
+                            Ok(id) => {
+                                let cycle = adaptive::coding_cycle(&store, &registry, &spec.owner);
+                                let owner = spec.owner.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = cycle.run(&owner, &id, None).await {
+                                        tracing::error!(
+                                            event = "scheduled_pursue_cycle_error",
+                                            error = %e
+                                        );
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                tracing::error!(event = "scheduled_enqueue_error", error = %e)
+                            }
+                        }
+                    } else {
+                        let item = bastion_runtime::agent::loop_::PendingItem::for_owner(
+                            spec.owner.as_str(),
+                            spec.intent.as_str(),
+                        );
+                        if let Err(e) = tx.send(item).await {
+                            tracing::error!(event = "scheduled_dispatch_error", error = %e);
+                        }
+                    }
+                }
+            },
+        ));
+    }
+
     // LEARN-02/LEARN-05: spawn the offline Reflector. Budget/interval/model/dedup-cadence
     // come from bastion.toml [reflector] (defaults if absent). Never reachable from a
     // user-facing turn (ADR D-4) — this is a separate tokio::spawn, same idiom as
@@ -1672,6 +1757,37 @@ async fn daemon_loop(
                             }
                             continue;
                         }
+                        // US-202: task cockpit — needs the store, not the
+                        // CommandHandler port, so special-cased like /backend.
+                        if first_token == "/task" {
+                            let task_arg = trimmed.split_once(' ').map(|x| x.1);
+                            match bastion::agent::task_command::handle(
+                                &task_store,
+                                task_arg,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                            )
+                            .await
+                            {
+                                Ok(msg) => println!("{msg}"),
+                                Err(e) => println!("Erro no comando: {e}"),
+                            }
+                            continue;
+                        }
+                        // US-205: schedule cockpit — needs the schedule store.
+                        if first_token == "/schedule" {
+                            let sched_arg = trimmed.split_once(' ').map(|x| x.1);
+                            match bastion::agent::schedule_command::handle(
+                                &schedule_store,
+                                sched_arg,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                            )
+                            .await
+                            {
+                                Ok(msg) => println!("{msg}"),
+                                Err(e) => println!("Erro no comando: {e}"),
+                            }
+                            continue;
+                        }
                         match agent
                             .handle_command(
                                 trimmed,
@@ -1710,6 +1826,77 @@ async fn daemon_loop(
                         }
                     }
                     Some(s) => {
+                        // US-201: pick the smallest capable mode (deterministic,
+                        // no extra LLM call). Respond/Act run the turn as before;
+                        // Pursue also enqueues a durable task the executor drains.
+                        let decision = bastion::adaptive::select_mode(&s);
+                        // US-208: per-mode telemetry — attributes where a turn's
+                        // cost/latency goes. Respond/Act pay nothing durable
+                        // (no task, no aux LLM call); only Pursue persists.
+                        tracing::info!(
+                            target: "bastion::mode",
+                            event = "mode_selected",
+                            mode = ?decision.mode,
+                            source = ?decision.source,
+                            reason = decision.reason,
+                        );
+                        if decision.mode == bastion_runtime::task::ExecutionMode::Pursue {
+                            match bastion::adaptive::enqueue_pursue(
+                                &task_store,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                                &s,
+                                decision.reason,
+                            )
+                            .await
+                            {
+                                Ok(id) => {
+                                    println!(
+                                        "↳ pursuing as task {id} (why: {}). Say \"só responda\" for a one-off.",
+                                        decision.reason
+                                    );
+                                    // US-203/206: drain the task in the
+                                    // background so the conversation stays
+                                    // responsive. A decomposable objective fans
+                                    // out into independent child tasks
+                                    // (delegation); otherwise a single coding
+                                    // cycle delegates to a runtime.
+                                    let store = task_store.clone();
+                                    let registry = runtime_registry_for_product.clone();
+                                    let objective = s.clone();
+                                    let owner =
+                                        bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string();
+                                    tokio::spawn(async move {
+                                        match bastion::adaptive::decompose(&objective) {
+                                            Some(children) => {
+                                                match store.load_case(&owner, &id).await {
+                                                    Ok(Some(parent)) => {
+                                                        if let Err(e) = bastion::adaptive::run_delegated(
+                                                            store, registry, parent, children,
+                                                        )
+                                                        .await
+                                                        {
+                                                            tracing::error!(event = "pursue_delegate_error", task = %id, error = %e);
+                                                        }
+                                                    }
+                                                    _ => tracing::error!(event = "pursue_delegate_load_error", task = %id),
+                                                }
+                                            }
+                                            None => {
+                                                let cycle = bastion::adaptive::coding_cycle(
+                                                    &store, &registry, &owner,
+                                                );
+                                                if let Err(e) = cycle.run(&owner, &id, None).await {
+                                                    tracing::error!(event = "pursue_cycle_error", task = %id, error = %e);
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                                Err(e) => {
+                                    tracing::error!(event = "pursue_enqueue_error", error = %e)
+                                }
+                            }
+                        }
                         match agent.run_turn(&s).await {
                             Ok(response) => {
                                 println!("{}", response);
@@ -1803,6 +1990,28 @@ async fn daemon_loop(
                         // handle_command's own Err handling right below. Policy denials
                         // from an actual TURN (the `else` branch further down) are
                         // untouched and keep propagating typed errors/status codes.
+                        Err(e) => Ok(format!("Erro no comando: {e}")),
+                    }
+                } else if matches!(command_token, Some("/task")) {
+                    // US-202: owner-scoped task cockpit over channels — the
+                    // channel-resolved req.owner only ever sees its own tasks.
+                    let task_arg = trimmed.split_once(' ').map(|x| x.1);
+                    match bastion::agent::task_command::handle(&task_store, task_arg, &req.owner)
+                        .await
+                    {
+                        Ok(msg) => Ok(msg),
+                        Err(e) => Ok(format!("Erro no comando: {e}")),
+                    }
+                } else if matches!(command_token, Some("/schedule")) {
+                    let sched_arg = trimmed.split_once(' ').map(|x| x.1);
+                    match bastion::agent::schedule_command::handle(
+                        &schedule_store,
+                        sched_arg,
+                        &req.owner,
+                    )
+                    .await
+                    {
+                        Ok(msg) => Ok(msg),
                         Err(e) => Ok(format!("Erro no comando: {e}")),
                     }
                 } else if command_token.is_some() {

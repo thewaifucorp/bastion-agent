@@ -1,6 +1,8 @@
 pub mod backend_command;
 pub mod command;
+pub mod schedule_command;
 pub mod skills;
+pub mod task_command;
 
 // M3: the M2 re-export shim that used to live here is gone — every consumer
 // now names its real crate directly (`bastion_runtime::agent::*`,
