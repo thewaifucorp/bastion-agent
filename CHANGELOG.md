@@ -8,6 +8,20 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+### Added
+
+- **Procedural-memory feedback for `Pursue`**: before delegating work, Bastion
+  selects up to four relevant, `CloudOk` procedural beliefs using learned
+  utility/confidence and lexical fit; the runtime receives bounded guidance and
+  each attempt stores the exact belief references it used.
+
+### Changed
+
+- Terminal, verified `Pursue` attempts now reinforce or penalize only their
+  referenced procedural beliefs. Attribution is persisted once per durable task
+  (including delegated child tasks), so restart/resume cannot duplicate credit.
+  `LocalOnly` beliefs remain outside delegated-runtime prompts.
+
 ## [0.2.0] — 2026-07-20
 
 ### Added

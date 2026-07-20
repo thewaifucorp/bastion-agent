@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use super::{procedural_belief_refs, procedural_prompt};
 use async_trait::async_trait;
 use bastion_agent_runtime::{
     AuthProfileRef, DenyScope, EnvPolicy, OtelContext, PermissionDecision, PermissionProfile,
@@ -146,7 +147,6 @@ impl TaskExecutor for RuntimeTaskExecutor {
         // surfaced later (start()/submit() failing) rather than here — this
         // mirrors `run_runtime_backed_turn`'s own `let _ = create_dir_all`.
         let _ = tokio::fs::create_dir_all(&workspace_root).await;
-
         let spec = SessionSpec {
             owner: self.owner.clone(),
             workspace: WorkspacePolicy {
@@ -176,7 +176,7 @@ impl TaskExecutor for RuntimeTaskExecutor {
 
         let task_id = session
             .submit(TaskInput {
-                prompt: case.frame.objective.clone(),
+                prompt: procedural_prompt(case),
                 attachments: Vec::new(),
                 expected: TaskExpectation::CodeChange,
             })
@@ -337,7 +337,7 @@ impl CodingChooser {
                 "delegate coding objective for task {} to runtime '{}' (attempt {attempt_count})",
                 case.id, self.runtime_id
             ),
-            belief_refs: Vec::new(),
+            belief_refs: procedural_belief_refs(case),
         }
     }
 }
@@ -436,6 +436,25 @@ pub fn coding_cycle(
         Arc::new(RuntimeOutcomeVerifier),
         Arc::new(TracingObserver),
     )
+}
+
+/// Drive a coding task and feed its final verified attempt back into the
+/// procedural-memory loop. No outcome is attributed while a task is paused or
+/// awaiting approval.
+pub async fn run_coding_pursue(
+    store: &Arc<dyn TaskStore>,
+    registry: &RuntimeRegistry,
+    memory: &bastion_memory::SharedMemory,
+    owner: &str,
+    task: &bastion_runtime::task::TaskCaseId,
+) -> anyhow::Result<bastion_runtime::task::TaskStatus> {
+    let status = coding_cycle(store, registry, owner)
+        .run(owner, task, None)
+        .await?;
+    if status.is_terminal() {
+        super::attribute_terminal(memory, store, owner, task).await?;
+    }
+    Ok(status)
 }
 
 #[cfg(test)]

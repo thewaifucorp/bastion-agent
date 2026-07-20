@@ -16,14 +16,15 @@
 
 use std::sync::Arc;
 
+use bastion_memory::SharedMemory;
 use bastion_runtime::agent::backend::RuntimeRegistry;
 use bastion_runtime::task::{
-    ChildSummary, CorrelationIds, ExecutionMode, Frame, Intent, IntentOrigin, OpaqueState,
-    Orchestrator, StopReason, TaskCase, TaskCaseId, TaskStatus, TaskStore, UsageAccum,
+    ChildSummary, CorrelationIds, ExecutionMode, Frame, Intent, IntentOrigin, Orchestrator,
+    StopReason, TaskCase, TaskCaseId, TaskStatus, TaskStore, UsageAccum,
 };
 use tokio::sync::Semaphore;
 
-use super::exec::coding_cycle;
+use super::exec::run_coding_pursue;
 use super::schedule::now_nanos;
 
 /// Default max children run at once when the parent sets no parallelism bound.
@@ -97,7 +98,9 @@ fn child_case(parent: &TaskCase, objective: &str, index: usize) -> TaskCase {
         usage: UsageAccum::default(),
         parent: Some(parent.id.clone()),
         correlation: CorrelationIds::default(),
-        business_state: OpaqueState::default(),
+        // Carry the parent-selected procedural context into each durable
+        // child so the executed attempt records the exact belief provenance.
+        business_state: parent.business_state.clone(),
         created_at: now_nanos(),
         updated_at: now_nanos(),
         revision: 1,
@@ -114,6 +117,7 @@ fn child_case(parent: &TaskCase, objective: &str, index: usize) -> TaskCase {
 pub async fn run_delegated(
     store: Arc<dyn TaskStore>,
     registry: RuntimeRegistry,
+    memory: SharedMemory,
     parent: TaskCase,
     children_objectives: Vec<String>,
 ) -> anyhow::Result<ChildSummary> {
@@ -139,12 +143,16 @@ pub async fn run_delegated(
     let mut handles = Vec::with_capacity(child_ids.len());
     for child_id in child_ids {
         let permit_sem = sem.clone();
-        let cycle = coding_cycle(&store, &registry, &owner);
+        let store_c = store.clone();
+        let registry_c = registry.clone();
+        let memory_c = memory.clone();
         let owner_c = owner.clone();
         handles.push(tokio::spawn(async move {
             // Bound concurrency: only `max_parallel` children run at once.
             let _permit = permit_sem.acquire_owned().await;
-            if let Err(e) = cycle.run(&owner_c, &child_id, None).await {
+            if let Err(e) =
+                run_coding_pursue(&store_c, &registry_c, &memory_c, &owner_c, &child_id).await
+            {
                 tracing::error!(
                     event = "delegated_child_cycle_error",
                     child = %child_id,
@@ -184,7 +192,8 @@ pub async fn run_delegated(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bastion_runtime::task::Bounds;
+    use bastion_runtime::task::{Bounds, OpaqueState};
+    use serde_json::json;
 
     #[test]
     fn small_objective_is_not_decomposed() {
@@ -210,7 +219,7 @@ mod tests {
 
     #[test]
     fn child_case_links_to_parent() {
-        let parent = TaskCase {
+        let mut parent = TaskCase {
             id: TaskCaseId("p".into()),
             owner: "alice".into(),
             mode: ExecutionMode::Pursue,
@@ -239,10 +248,12 @@ mod tests {
             updated_at: 0,
             revision: 1,
         };
+        parent.business_state = OpaqueState(json!({ "procedural_belief_refs": ["7"] }));
         let child = child_case(&parent, "do a thing", 0);
         assert_eq!(child.parent, Some(TaskCaseId("p".into())));
         assert_eq!(child.owner, "alice");
         assert_eq!(child.status, TaskStatus::Pending);
         assert_eq!(child.frame.objective, "do a thing");
+        assert_eq!(child.business_state, parent.business_state);
     }
 }

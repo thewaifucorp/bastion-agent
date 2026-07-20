@@ -15,6 +15,7 @@ pub mod enqueue;
 pub mod exec;
 pub mod mode;
 pub mod observer;
+pub mod procedural;
 pub mod schedule;
 
 pub use browser::{
@@ -22,9 +23,15 @@ pub use browser::{
 };
 pub use delegate::{decompose, run_delegated};
 pub use enqueue::enqueue_pursue;
-pub use exec::{coding_cycle, CodingChooser, RuntimeOutcomeVerifier, RuntimeTaskExecutor};
+pub use exec::{
+    coding_cycle, run_coding_pursue, CodingChooser, RuntimeOutcomeVerifier, RuntimeTaskExecutor,
+};
 pub use mode::{select_mode, ModeDecision, ModeSource};
 pub use observer::TracingObserver;
+pub use procedural::{
+    attribute_terminal, belief_refs as procedural_belief_refs, prompt as procedural_prompt,
+    state_for_pursue,
+};
 pub use schedule::{
     compute_next_fire, plan_fire, run_scheduler, FirePlan, MissedPolicy, ScheduleKind,
     ScheduleSpec, SqliteScheduleStore,

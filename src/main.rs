@@ -825,6 +825,7 @@ async fn main() -> anyhow::Result<()> {
                 registry_for_product,
                 secret_resolver,
                 runtime_registry_for_product,
+                memory.clone(),
                 task_store,
             )
             .await?;
@@ -1010,6 +1011,8 @@ async fn daemon_loop(
     // `cli_present`/`logged_in` from this handle.
     runtime_registry_for_product: bastion_runtime::agent::backend::RuntimeRegistry,
     // US-201: durable Pursue-task store, shared with the cockpit/executor.
+    // Shared procedural memory used to enrich and attribute durable Pursue tasks.
+    memory: bastion_memory::SharedMemory,
     task_store: Arc<dyn TaskStore>,
 ) -> anyhow::Result<()> {
     use bastion::agent::command::{CommandResources, CommandResult};
@@ -1579,6 +1582,7 @@ async fn daemon_loop(
         let schedule_store = schedule_store.clone();
         let task_store_for_sched = task_store.clone();
         let registry_for_sched = runtime_registry_for_product.clone();
+        let memory_for_sched = memory.clone();
         let pending_tx_for_sched = agent.pending_tx.clone();
         tokio::spawn(adaptive::run_scheduler(
             schedule_store,
@@ -1586,6 +1590,7 @@ async fn daemon_loop(
             move |spec: adaptive::ScheduleSpec| {
                 let store = task_store_for_sched.clone();
                 let registry = registry_for_sched.clone();
+                let memory = memory_for_sched.clone();
                 let tx = pending_tx_for_sched.clone();
                 async move {
                     let decision = adaptive::select_mode(&spec.intent);
@@ -1593,20 +1598,21 @@ async fn daemon_loop(
                         match adaptive::enqueue_pursue(
                             &store,
                             &spec.owner,
+                            &memory,
                             &spec.intent,
                             decision.reason,
                         )
                         .await
                         {
                             Ok(id) => {
-                                let cycle = adaptive::coding_cycle(&store, &registry, &spec.owner);
                                 let owner = spec.owner.clone();
                                 tokio::spawn(async move {
-                                    if let Err(e) = cycle.run(&owner, &id, None).await {
-                                        tracing::error!(
-                                            event = "scheduled_pursue_cycle_error",
-                                            error = %e
-                                        );
+                                    if let Err(e) = adaptive::run_coding_pursue(
+                                        &store, &registry, &memory, &owner, &id,
+                                    )
+                                    .await
+                                    {
+                                        tracing::error!(event = "scheduled_pursue_cycle_error", error = %e);
                                     }
                                 });
                             }
@@ -1844,6 +1850,7 @@ async fn daemon_loop(
                             match bastion::adaptive::enqueue_pursue(
                                 &task_store,
                                 bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                                &memory,
                                 &s,
                                 decision.reason,
                             )
@@ -1863,6 +1870,7 @@ async fn daemon_loop(
                                     let store = task_store.clone();
                                     let registry = runtime_registry_for_product.clone();
                                     let objective = s.clone();
+                                    let memory = memory.clone();
                                     let owner =
                                         bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string();
                                     tokio::spawn(async move {
@@ -1871,7 +1879,7 @@ async fn daemon_loop(
                                                 match store.load_case(&owner, &id).await {
                                                     Ok(Some(parent)) => {
                                                         if let Err(e) = bastion::adaptive::run_delegated(
-                                                            store, registry, parent, children,
+                                                            store, registry, memory, parent, children,
                                                         )
                                                         .await
                                                         {
@@ -1882,10 +1890,9 @@ async fn daemon_loop(
                                                 }
                                             }
                                             None => {
-                                                let cycle = bastion::adaptive::coding_cycle(
-                                                    &store, &registry, &owner,
-                                                );
-                                                if let Err(e) = cycle.run(&owner, &id, None).await {
+                                                if let Err(e) = bastion::adaptive::run_coding_pursue(
+                                                    &store, &registry, &memory, &owner, &id,
+                                                ).await {
                                                     tracing::error!(event = "pursue_cycle_error", task = %id, error = %e);
                                                 }
                                             }
@@ -2078,6 +2085,7 @@ async fn daemon_loop(
                         match bastion::adaptive::enqueue_pursue(
                             &task_store,
                             &req.owner,
+                            &memory,
                             &req.text,
                             decision.reason,
                         )
@@ -2092,6 +2100,7 @@ async fn daemon_loop(
                                 let store = task_store.clone();
                                 let registry = runtime_registry_for_product.clone();
                                 let objective = req.text.clone();
+                                let memory = memory.clone();
                                 let owner = req.owner.clone();
                                 let task_id = id.clone();
                                 tokio::spawn(async move {
@@ -2101,7 +2110,7 @@ async fn daemon_loop(
                                                 Ok(Some(parent)) => {
                                                     if let Err(e) =
                                                         bastion::adaptive::run_delegated(
-                                                            store, registry, parent, children,
+                                                            store, registry, memory, parent, children,
                                                         )
                                                         .await
                                                     {
@@ -2112,12 +2121,9 @@ async fn daemon_loop(
                                             }
                                         }
                                         None => {
-                                            let cycle = bastion::adaptive::coding_cycle(
-                                                &store, &registry, &owner,
-                                            );
-                                            if let Err(e) =
-                                                cycle.run(&owner, &task_id, None).await
-                                            {
+                                            if let Err(e) = bastion::adaptive::run_coding_pursue(
+                                                &store, &registry, &memory, &owner, &task_id,
+                                            ).await {
                                                 tracing::error!(event = "pursue_cycle_error", task = %task_id, error = %e);
                                             }
                                         }

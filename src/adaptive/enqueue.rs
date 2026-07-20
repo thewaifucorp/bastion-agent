@@ -7,6 +7,7 @@
 //! `Respond` or `Act` request never reaches this path, so simple messages
 //! never pay for a durable lifecycle (Gate A).
 
+use bastion_memory::SharedMemory;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -27,6 +28,7 @@ fn now_nanos() -> i64 {
 pub async fn enqueue_pursue(
     store: &Arc<dyn TaskStore>,
     owner: &str,
+    memory: &SharedMemory,
     request: &str,
     reason: &str,
 ) -> anyhow::Result<TaskCaseId> {
@@ -55,7 +57,7 @@ pub async fn enqueue_pursue(
         usage: UsageAccum::default(),
         parent: None,
         correlation: CorrelationIds::default(),
-        business_state: OpaqueState::default(),
+        business_state: OpaqueState(super::state_for_pursue(memory, owner, request).await),
         created_at: 0,
         updated_at: 0,
         revision: 1,
@@ -76,6 +78,7 @@ pub async fn enqueue_pursue(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bastion_memory::{sqlite::SqliteMemory, Memory};
     use bastion_runtime::task::SqliteTaskStore;
     use tempfile::NamedTempFile;
 
@@ -85,11 +88,13 @@ mod tests {
         let concrete = SqliteTaskStore::new(f.path().to_str().unwrap());
         concrete.init_schema().await.unwrap();
         let store: Arc<dyn TaskStore> = Arc::new(concrete);
-
-        let id = enqueue_pursue(&store, "alice", "build me a weather app", "cue")
+        let memory: SharedMemory = Arc::new(tokio::sync::RwLock::new(Box::new(SqliteMemory::new(
+            f.path().to_str().unwrap(),
+        ))
+            as Box<dyn Memory>));
+        let id = enqueue_pursue(&store, "alice", &memory, "build me a weather app", "cue")
             .await
             .expect("enqueue");
-
         let loaded = store
             .load_case("alice", &id)
             .await
@@ -98,7 +103,6 @@ mod tests {
         assert_eq!(loaded.status, TaskStatus::Pending);
         assert_eq!(loaded.mode, ExecutionMode::Pursue);
         assert_eq!(loaded.frame.objective, "build me a weather app");
-        // owner isolation still holds through the enqueue path.
         assert!(store.load_case("bob", &id).await.unwrap().is_none());
     }
 }
