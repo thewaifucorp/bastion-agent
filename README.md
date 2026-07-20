@@ -169,6 +169,26 @@ cargo run -- daemon
 `bastion chat --url https://your-host` remains available for an explicit remote
 connection; `bastion daemon` remains the operator-facing foreground command.
 
+### Task mode: durable work you can steer
+
+For a request that needs more than one bounded turn, Bastion can select
+**Pursue**: a durable, owner-scoped task that survives restart. Inspect and
+control it from the TUI without losing its attempts, evidence, or verification
+history:
+
+```text
+/task                       # list your open tasks
+/task inspect <id>          # inspect attempts, evidence, and verdicts
+/task pause|resume <id>     # stop or continue work safely
+/task steer <id> <guidance> # adjust an in-flight objective
+/task cancel <id>           # end it with an auditable stop reason
+```
+
+The mode selector keeps ordinary requests lightweight: **Respond** answers,
+**Act** performs one bounded effect, and only **Pursue** creates a resumable
+task. Schedules and inbound channels use the same selection path. Read the
+[Adaptive Execution guide](docs/en/adaptive-execution.md) for the full model.
+
 The TUI includes a responsive Tamagotchi-like companion. Run `/pet game on` to
 opt into cosmetic progression and wellbeing reminders, or select a declarative
 pet pack supplied by an extension. See the [companion guide](docs/en/companion.md).
@@ -184,7 +204,7 @@ one, map its sender to a canonical owner and read the security model.
 | [Start here](docs/en/getting-started.md) | [Comece aqui](docs/pt-br/iniciando.md) |
 | [Configuration](docs/en/configuration.md) | [Configuração](docs/pt-br/configuracao.md) |
 | [Architecture](docs/en/architecture.md) | [Arquitetura](docs/pt-br/arquitetura.md) |
-| [Adaptive Execution](docs/en/adaptive-execution.md) | — |
+| [Adaptive Execution](docs/en/adaptive-execution.md) | [Execução adaptativa](docs/pt-br/execucao-adaptativa.md) |
 | [Channels](docs/en/channels.md) | [Canais](docs/pt-br/canais.md) |
 | [Terminal companion](docs/en/companion.md) | [Companion de terminal](docs/pt-br/companion.md) |
 | [Security model](docs/en/security.md) | [Modelo de segurança](docs/pt-br/seguranca.md) |

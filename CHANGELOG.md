@@ -8,6 +8,26 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-07-20
+
+### Added
+
+- Adaptive Execution: requests are selected as `Respond`, `Act`, or `Pursue`.
+  Only `Pursue` creates a durable, owner-scoped `TaskCase`, with attempts,
+  evidence, verification, budgets, and a recomputed next decision.
+- `/task` cockpit to list, inspect, pause, resume, steer, and cancel durable
+  tasks; owner isolation applies to every operation.
+- Durable personal `/schedule` commands, the governed browser capability,
+  delegated external-agent runtimes, and concurrent child-task orchestration
+  for `Pursue` objectives.
+- Mode selection for console input, schedules, and inbound channels, together
+  with per-mode observability and cost attribution.
+- English and Brazilian Portuguese Adaptive Execution guides.
+
+### Changed
+
+- Updated the Bastion Core revision to the Adaptive Execution substrate.
+
 ## [0.1.3] — 2026-07-17
 
 ### Added
@@ -173,7 +193,8 @@ Depends on [bastion-core](https://github.com/thewaifucorp/bastion-core) for
 the runtime substrate (agent loop, capabilities, memory, cognition,
 personas, mesh, providers, extension protocol).
 
-[Unreleased]: https://github.com/thewaifucorp/bastion-agent/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/thewaifucorp/bastion-agent/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/thewaifucorp/bastion-agent/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/thewaifucorp/bastion-agent/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/thewaifucorp/bastion-agent/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/thewaifucorp/bastion-agent/compare/v0.1.0...v0.1.1

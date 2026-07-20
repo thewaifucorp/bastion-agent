@@ -29,9 +29,8 @@ it did.
   into a mode before the turn runs. `Respond` runs a normal turn unchanged;
   `Pursue` persists a `Pending` `TaskCase` and surfaces a one-line notice.
 - ✅ **Scheduler activation:** fired schedules also route through mode selection.
-- 🧪 **Inbound channels:** messages arriving over channels (Telegram, email,
-  etc.) do **not** yet route through automatic mode selection — they run the
-  normal turn path. Mode routing for inbound channels is a documented follow-up.
+- ✅ **Inbound channels:** messages arriving over channels (Telegram, email,
+  etc.) route through the same mode selection before their turn runs.
 - ✅ **Override:** the classification is a suggestion. The one-line notice
   includes how to override the chosen mode for that request.
 
@@ -92,7 +91,6 @@ console input.
 
 - Offline outcome evaluation by a separate judge service.
 - Promotion of learned procedures into shared skills/rules.
-- Automatic mode selection on inbound channels (see above).
 
 These are intentionally out of scope here; the agent does not promise coverage
 its harness does not have.
