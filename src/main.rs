@@ -2051,13 +2051,104 @@ async fn daemon_loop(
                         Err(e) => Ok(format!("Erro no comando: {e}")),
                     }
                 } else {
+                    // US-201: close the inbound gap — channel turns now go through
+                    // the same deterministic mode selection the console and
+                    // scheduler use (no extra LLM call). Trust is the extra
+                    // invariant here: an UNTRUSTED inbound (email, public
+                    // Discord/Slack) must never spin up a durable Pursue task or
+                    // delegate to a runtime — that is exactly the "authority is not
+                    // context" boundary. Untrusted content is classified for
+                    // telemetry only, then runs the normal quarantine-aware turn;
+                    // only a TRUSTED inbound may enqueue a Pursue and drain it.
+                    let decision = bastion::adaptive::select_mode(&req.text);
+                    tracing::info!(
+                        target: "bastion::mode",
+                        event = "mode_selected",
+                        surface = "inbound",
+                        owner = %req.owner,
+                        untrusted = req.untrusted,
+                        mode = ?decision.mode,
+                        source = ?decision.source,
+                        reason = decision.reason,
+                    );
+                    let pursuing = if decision.mode
+                        == bastion_runtime::task::ExecutionMode::Pursue
+                        && !req.untrusted
+                    {
+                        match bastion::adaptive::enqueue_pursue(
+                            &task_store,
+                            &req.owner,
+                            &req.text,
+                            decision.reason,
+                        )
+                        .await
+                        {
+                            Ok(id) => {
+                                // US-203/206: same background driver as the stdin
+                                // arm — a decomposable objective fans out into
+                                // child tasks (delegation), otherwise a single
+                                // coding cycle delegates to a runtime. The channel
+                                // reply stays responsive.
+                                let store = task_store.clone();
+                                let registry = runtime_registry_for_product.clone();
+                                let objective = req.text.clone();
+                                let owner = req.owner.clone();
+                                let task_id = id.clone();
+                                tokio::spawn(async move {
+                                    match bastion::adaptive::decompose(&objective) {
+                                        Some(children) => {
+                                            match store.load_case(&owner, &task_id).await {
+                                                Ok(Some(parent)) => {
+                                                    if let Err(e) =
+                                                        bastion::adaptive::run_delegated(
+                                                            store, registry, parent, children,
+                                                        )
+                                                        .await
+                                                    {
+                                                        tracing::error!(event = "pursue_delegate_error", task = %task_id, error = %e);
+                                                    }
+                                                }
+                                                _ => tracing::error!(event = "pursue_delegate_load_error", task = %task_id),
+                                            }
+                                        }
+                                        None => {
+                                            let cycle = bastion::adaptive::coding_cycle(
+                                                &store, &registry, &owner,
+                                            );
+                                            if let Err(e) =
+                                                cycle.run(&owner, &task_id, None).await
+                                            {
+                                                tracing::error!(event = "pursue_cycle_error", task = %task_id, error = %e);
+                                            }
+                                        }
+                                    }
+                                });
+                                Some(id)
+                            }
+                            Err(e) => {
+                                tracing::error!(event = "pursue_enqueue_error", owner = %req.owner, error = %e);
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     // SEC-05: threads the channel-resolved trust classification
                     // (email always untrusted; public-channel Discord/Slack
                     // untrusted; DMs and every other pre-existing channel
                     // trusted) into the quarantine-aware turn entry point.
-                    agent
+                    let turn = agent
                         .run_turn_for_with_trust(&req.text, &req.owner, req.untrusted)
-                        .await
+                        .await;
+                    match (pursuing, turn) {
+                        // Mirror the console's honest one-line notice so a channel
+                        // user knows the objective became a durable task.
+                        (Some(id), Ok(answer)) => Ok(format!(
+                            "↳ pursuing as task {id} (why: {}). Reply \"só responda\" for a one-off.\n{answer}",
+                            decision.reason
+                        )),
+                        (_, other) => other,
+                    }
                 };
                 if let Err(ref e) = res {
                     tracing::warn!(
