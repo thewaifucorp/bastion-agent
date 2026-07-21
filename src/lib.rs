@@ -14,6 +14,7 @@ pub mod loadout;
 pub mod mcp;
 pub mod observability;
 pub mod product_import;
+pub mod proposals;
 pub mod secret;
 pub mod tui;
 pub mod update;

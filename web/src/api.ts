@@ -132,6 +132,37 @@ export const command = (text: string) => chat.turn(text).then((r) => r.reply);
 export const request2 = <T,>(token: string, path: string) =>
   request<T>(token, path);
 
+// ── personas + staged proposals (owner token; A3) ────────────────────────
+
+export interface Proposal {
+  id: string;
+  owner_id: string;
+  origin: string;
+  payload: { kind: "persona_edit"; slug: string; content: string };
+  status: "pending" | "approved" | "rejected";
+  created_at: number;
+  resolved_at: number | null;
+}
+
+export const personas = {
+  list: () =>
+    request<{ items: string[] }>(tokens.owner, "/personas"),
+  read: (slug: string) =>
+    request<{ slug: string; content: string }>(
+      tokens.owner,
+      `/personas/${encodeURIComponent(slug)}`,
+    ),
+};
+
+export const proposalsApi = {
+  list: () => request<{ items: Proposal[] }>(tokens.owner, "/proposals"),
+  create: (slug: string, content: string) =>
+    request<Proposal>(tokens.owner, "/proposals", {
+      method: "POST",
+      body: JSON.stringify({ kind: "persona_edit", slug, content }),
+    }),
+};
+
 // ── /status (unauthenticated, booleans-only) ────────────────────────────
 
 export interface RuntimeStatusRow {

@@ -9,6 +9,7 @@ import Tasks from "./views/Tasks";
 import Schedules from "./views/Schedules";
 import CommandView from "./views/CommandView";
 import Connection from "./views/Connection";
+import Personas from "./views/Personas";
 import About from "./views/About";
 
 export interface LedgerEntry {
@@ -37,6 +38,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { key: "chat", label: "Chat" },
       { key: "tasks", label: "Tasks" },
       { key: "schedules", label: "Schedules" },
+      { key: "personas", label: "Personas" },
     ],
   },
   {
@@ -44,6 +46,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     items: [
       { key: "models", label: "Models" },
       { key: "backends", label: "Backends" },
+      { key: "connect", label: "Connect" },
       { key: "logs", label: "Logs" },
       { key: "update", label: "Update" },
     ],
@@ -180,6 +183,17 @@ export default function App() {
           {route === "chat" && <Chat />}
           {route === "tasks" && <Tasks />}
           {route === "schedules" && <Schedules />}
+          {route === "personas" && <Personas />}
+          {route === "connect" && (
+            <CommandView
+              title="Connect"
+              sub="secure provider setup steps and live subscription status"
+              listCmd="/connect"
+              placeholder="provider (e.g. anthropic, openai, codex)"
+              buildCmd={(v) => `/connect ${v}`}
+              actionLabel="show setup"
+            />
+          )}
           {route === "models" && (
             <CommandView
               title="Models"

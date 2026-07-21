@@ -13,6 +13,8 @@ export default defineConfig({
       "/events": "http://127.0.0.1:8123",
       "/webhook": "http://127.0.0.1:8123",
       "/loadout": "http://127.0.0.1:8123",
+      "/personas": "http://127.0.0.1:8123",
+      "/proposals": "http://127.0.0.1:8123",
       "/status": "http://127.0.0.1:8123",
       "/healthz": "http://127.0.0.1:8123",
       "/readyz": "http://127.0.0.1:8123",

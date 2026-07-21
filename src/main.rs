@@ -590,6 +590,11 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(bastion::control_plane::credential::SqliteCredentialStore::new(db_path.clone()));
     control_plane_credential_store.init_schema().await?;
 
+    // Observability A3: staged configuration proposals (web proposes,
+    // console `/proposal` approves) — same fail-closed init tier.
+    let proposal_store = Arc::new(bastion::proposals::SqliteProposalStore::new(db_path.clone()));
+    proposal_store.init_schema().await?;
+
     // US External Control Plane and SDK, Phase 4: same fail-closed tier —
     // `POST /v1/webhook-subscriptions` and every mutation route's event
     // emission depend on these two tables existing.
@@ -942,6 +947,7 @@ async fn main() -> anyhow::Result<()> {
                 control_plane_credential_store,
                 control_plane_webhook_subscription_store,
                 control_plane_webhook_delivery_store,
+                proposal_store,
                 events_tx,
             )
             .await?;
@@ -1162,6 +1168,10 @@ async fn daemon_loop(
     control_plane_webhook_delivery_store: Arc<
         bastion::control_plane::webhook_delivery::SqliteWebhookDeliveryStore,
     >,
+    // Observability A3: staged proposals — backs both the web POST
+    // /proposals route (built into the loadout router below) and the
+    // console `/proposal` cockpit.
+    proposal_store: Arc<bastion::proposals::SqliteProposalStore>,
     // Observability: SSE broadcast channel, created in `main()` so the
     // `ObservedResponder` decorator (built there, before this call) shares
     // the exact stream `/events` serves — see `bastion::observability`.
@@ -1573,6 +1583,8 @@ async fn daemon_loop(
                 ),
                 owner_map.clone(),
                 jwt_secret.clone(),
+                proposal_store.clone(),
+                events_tx.clone(),
             ));
             // US External Control Plane and SDK: `/v1/*` routes, built over
             // their own `ControlPlaneState` and merged into the webhook app
@@ -2066,6 +2078,22 @@ async fn daemon_loop(
                             match bastion::agent::credential_command::handle(
                                 &control_plane_credential_store,
                                 cred_arg,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                            )
+                            .await
+                            {
+                                Ok(msg) => println!("{msg}"),
+                                Err(e) => println!("Erro no comando: {e}"),
+                            }
+                            continue;
+                        }
+                        // Observability A3: staged-proposal cockpit — console
+                        // only; the web can only ever stage, never apply.
+                        if first_token == "/proposal" {
+                            let prop_arg = trimmed.split_once(' ').map(|x| x.1);
+                            match bastion::agent::proposal_command::handle(
+                                &proposal_store,
+                                prop_arg,
                                 bastion_runtime::agent::loop_::DEFAULT_OWNER,
                             )
                             .await
