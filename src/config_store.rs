@@ -168,8 +168,14 @@ impl ConfigStore {
             origin = %origin,
         );
         if let Some(tx) = &self.events_tx {
+            // Both field names on purpose: the repo's SSE convention is
+            // `"event"` (see `webhook.rs` / `observability.rs` frames), but
+            // this frame originally shipped as `"type"` and the S3 web app
+            // already checks both — emitting both keeps every consumer
+            // working while new ones can standardize on `"event"`.
             let _ = tx.send(
                 serde_json::json!({
+                    "event": "config.applied",
                     "type": "config.applied",
                     "key": key,
                     "origin": origin,
@@ -393,6 +399,9 @@ mod tests {
         put(&s, KEY_MODEL_SELECTED, &model_value_json("m1"), "console").await;
 
         let event: serde_json::Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        // Both field names carry the frame kind — repo convention is
+        // `"event"`, `"type"` is kept for the original consumers.
+        assert_eq!(event["event"], "config.applied");
         assert_eq!(event["type"], "config.applied");
         assert_eq!(event["key"], KEY_MODEL_SELECTED);
         assert_eq!(event["origin"], "console");
