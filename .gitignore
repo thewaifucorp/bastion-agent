@@ -260,6 +260,7 @@ skills/sonoscli/
 !mobile/lib/**
 
 # TypeScript / Node
+node_modules/
 bastion/mobile-connect/node_modules/
 
 # Olllama data

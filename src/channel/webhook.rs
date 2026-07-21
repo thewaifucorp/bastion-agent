@@ -1181,6 +1181,7 @@ pub async fn serve(
         None,
         "bastion".to_string(),
         None,
+        None, // control_plane_routes — this self-contained entry point mounts none
         None,
         None,
         readiness,
@@ -1216,6 +1217,13 @@ pub async fn serve_with_mesh(
     // Used by the MCP server to expose its Streamable HTTP service at the
     // configured mount path (e.g. `/mcp`).
     mcp_routes: Option<axum::Router>,
+    // Control Plane `/v1/*` routes (US — External Control Plane and SDK,
+    // Phase 2), pre-built by `control_plane::routes::router` over its own
+    // `ControlPlaneState` — merged in exactly like `mcp_routes` above so this
+    // function's `AppState` and its 4 test-helper literals never need a
+    // `task_store`/`credential_store` field. `None` only if a caller opts
+    // out of mounting it; `daemon_loop` always passes `Some`.
+    control_plane_routes: Option<axum::Router>,
     // WhatsApp Cloud API config (CHAN-01). None = WhatsApp routes are mounted but
     // reject with 404/403 rather than panicking (daemon startup wiring lands in
     // Plan 10-09).
@@ -1294,6 +1302,9 @@ pub async fn serve_with_mesh(
         .with_state(state);
     if let Some(mcp) = mcp_routes {
         app = app.merge(mcp);
+    }
+    if let Some(control_plane) = control_plane_routes {
+        app = app.merge(control_plane);
     }
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;

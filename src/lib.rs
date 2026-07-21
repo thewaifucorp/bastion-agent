@@ -8,6 +8,7 @@ pub mod command_catalog;
 pub mod companion_capability;
 pub mod compose;
 pub mod config;
+pub mod control_plane;
 pub mod extension;
 pub mod mcp;
 pub mod product_import;

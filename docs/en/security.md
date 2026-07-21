@@ -20,6 +20,14 @@ Bastion is built to make trust, authority, and data egress explicit. It is not a
 5. Review every third-party skill or extension before installing it. Treat it as code, not as a harmless prompt.
 6. Keep model-provider and telemetry choices aligned with the privacy requirements of the conversation data.
 
+## External Control Plane API (planned)
+
+A separate threat model covers the planned external `/v1/tasks*` Control
+Plane API and its scoped integration credentials — see
+[Control Plane security model](control-plane-security.md). No route from
+that surface is live yet; the document exists to be reviewed ahead of
+implementation.
+
 ## Incident response
 
 If a secret may have leaked, revoke it at the provider, replace it in the deployment secret store, restart the affected service, and inspect logs without copying sensitive content into an issue. For a potential product vulnerability, follow the private reporting route in [CONTRIBUTING.md](../../CONTRIBUTING.md).

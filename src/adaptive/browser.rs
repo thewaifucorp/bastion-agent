@@ -249,7 +249,12 @@ impl BrowserBackend for HttpFetchBackend {
 /// internal one. (DNS-rebinding between this check and the socket connect is
 /// the residual gap; the approval gate — `needs_approval=true` — is the
 /// second line of defence.)
-async fn validate_public_url(url: &str) -> anyhow::Result<()> {
+// US External Control Plane and SDK, Phase 4: reused by
+// `control_plane::webhook_subscription` to validate a caller-registered
+// webhook `target_url` at subscription-creation time — the same "public
+// http(s) only, no loopback/private/link-local/reserved" guard, not a
+// second, drifted reimplementation.
+pub(crate) async fn validate_public_url(url: &str) -> anyhow::Result<()> {
     let parsed = reqwest::Url::parse(url).map_err(|e| anyhow::anyhow!("invalid url: {e}"))?;
     match parsed.scheme() {
         "http" | "https" => {}

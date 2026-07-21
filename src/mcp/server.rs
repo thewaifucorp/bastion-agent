@@ -95,6 +95,18 @@ fn authenticate_token(
 /// Bastion MCP server — dispatches to CapabilityRegistry, Memory, PersonaRegistry, GoalEngine.
 pub struct BastionMcpServer {
     registry: Arc<CapabilityRegistry>,
+    /// US External Control Plane and SDK, Phase 5: a SEPARATE registry
+    /// holding only the 5 Control Plane tools
+    /// (`create_task`/`get_task`/`list_tasks`/`steer_task`/`cancel_task`,
+    /// see `control_plane::mcp_tools`) — deliberately NOT merged into
+    /// `registry` above, which Bastion's own internal tool-calling loop
+    /// (`agent/loop_.rs`) also dispatches through. See
+    /// `control_plane::mcp_tools`'s module doc for why: these tools must be
+    /// reachable by an external MCP caller but NOT by a running Pursue
+    /// task's own LLM reasoning. `list_tools`/`call_tool` below check both
+    /// registries; every other method (`list_resources`/`read_resource`) is
+    /// unaffected.
+    control_plane_registry: Arc<CapabilityRegistry>,
     memory: SharedMemory,
     personas: Arc<PersonaRegistry>,
     goals: GoalEngine,
@@ -106,6 +118,7 @@ impl BastionMcpServer {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         registry: Arc<CapabilityRegistry>,
+        control_plane_registry: Arc<CapabilityRegistry>,
         memory: SharedMemory,
         personas: Arc<PersonaRegistry>,
         goals: GoalEngine,
@@ -114,6 +127,7 @@ impl BastionMcpServer {
     ) -> Self {
         Self {
             registry,
+            control_plane_registry,
             memory,
             personas,
             goals,
@@ -127,6 +141,7 @@ impl Clone for BastionMcpServer {
     fn clone(&self) -> Self {
         Self {
             registry: self.registry.clone(),
+            control_plane_registry: self.control_plane_registry.clone(),
             memory: self.memory.clone(),
             personas: self.personas.clone(),
             goals: self.goals.clone(),
@@ -154,13 +169,15 @@ impl ServerHandler for BastionMcpServer {
         let meta = request.and_then(|r| r.meta);
         let token_permissions = self.token_permissions.clone();
         let registry = self.registry.clone();
+        let control_plane_registry = self.control_plane_registry.clone();
 
         async move {
             authenticate_token(&token_permissions, meta.as_ref())?;
 
-            let tools: Vec<Tool> = registry
+            let mut tools: Vec<Tool> = registry
                 .list_tool_defs()
                 .into_iter()
+                .chain(control_plane_registry.list_tool_defs())
                 .map(|def| {
                     let name = def["name"].as_str().unwrap_or("unknown").to_string();
                     let description = def["description"].as_str().unwrap_or("").to_string();
@@ -171,6 +188,11 @@ impl ServerHandler for BastionMcpServer {
                     Tool::new(name, description, Arc::new(schema_obj))
                 })
                 .collect();
+            // COST-01/D-14b: `list_tool_defs()` sorts WITHIN each registry,
+            // but chaining two already-sorted lists doesn't sort the combined
+            // one — re-sort here so the merged listing is still byte-stable
+            // turn-over-turn regardless of which registry a tool lives in.
+            tools.sort_by(|a, b| a.name.cmp(&b.name));
             Ok(ListToolsResult::with_all_items(tools))
         }
     }
@@ -185,6 +207,7 @@ impl ServerHandler for BastionMcpServer {
         let args = request.arguments.unwrap_or_default();
 
         let registry = self.registry.clone();
+        let control_plane_registry = self.control_plane_registry.clone();
         let token_permissions = self.token_permissions.clone();
 
         async move {
@@ -205,7 +228,17 @@ impl ServerHandler for BastionMcpServer {
                 privacy_tier: Some(perms.privacy_tier),
             };
 
-            match registry.invoke(&name, Value::Object(args), &ctx).await {
+            // Phase 5: the 5 Control Plane tools live in a SEPARATE registry
+            // (see the `control_plane_registry` field doc comment) — dispatch
+            // to it when the name is one of its own, otherwise fall through
+            // to the shared registry exactly as before.
+            let target = if control_plane_registry.list_names().contains(&name.as_ref()) {
+                &control_plane_registry
+            } else {
+                &registry
+            };
+
+            match target.invoke(&name, Value::Object(args), &ctx).await {
                 // Plan 11-07 (SEC-04): `.data` is the same JSON-stringified content
                 // MCP clients have always received — spotlighting's LLM-facing
                 // untrusted-result framing (agent/loop_.rs's dispatch_tool_loop) is
@@ -327,8 +360,10 @@ impl ServerHandler for BastionMcpServer {
 /// Creates a `BastionMcpServer` from components, wraps it in the rmcp
 /// `Router` → `StreamableHttpService` chain, and nests it under `mount_path`
 /// on an otherwise-empty axum `Router` ready to be merged into the main app.
+#[allow(clippy::too_many_arguments)]
 pub fn build_mcp_axum_router(
     registry: Arc<CapabilityRegistry>,
+    control_plane_registry: Arc<CapabilityRegistry>,
     memory: SharedMemory,
     personas: Arc<PersonaRegistry>,
     goals: GoalEngine,
@@ -336,7 +371,15 @@ pub fn build_mcp_axum_router(
     local_owner: String,
     mount_path: &str,
 ) -> Router {
-    let server = BastionMcpServer::new(registry, memory, personas, goals, tokens, local_owner);
+    let server = BastionMcpServer::new(
+        registry,
+        control_plane_registry,
+        memory,
+        personas,
+        goals,
+        tokens,
+        local_owner,
+    );
     let session_manager = Arc::new(LocalSessionManager::default());
 
     let streamable: StreamableHttpService<McpRouter<BastionMcpServer>, LocalSessionManager> =

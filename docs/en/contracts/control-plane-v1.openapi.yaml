@@ -1,0 +1,612 @@
+openapi: 3.1.0
+info:
+  title: Bastion Control Plane API
+  version: 1.0.0-draft
+  description: >
+    Frozen contract fixture for the External Control Plane and SDK feature.
+    This document is the source of truth transcribed from
+    `src/control_plane/dto.rs`; `tests/control_plane_fixtures.rs` checks the
+    two stay in sync. Published live at `GET /v1/openapi.yaml`
+    (`src/control_plane/routes.rs`).
+
+    Phase 5 status (final phase): every route in this document is live,
+    including `POST /webhook-subscriptions` and signed, retried outbound
+    delivery (`src/control_plane/webhook_delivery.rs`) — see
+    `docs/en/control-plane-security.md` for the full threat model: how the
+    `:action` suffix actually routes (`axum`/`matchit` can't capture a
+    partial path segment), why `external_ref` lives in `business_state`, the
+    SSRF guard's exact guarantee (validated once, at subscription creation),
+    and which of the 5 event types this deployment can actually emit
+    (`task.created`/`task.status_changed`/`task.terminal` — NOT
+    `attempt.completed`/`task.escalated`, which need execution-loop wiring
+    no phase has touched). This document's routes are ALSO reachable as 5
+    MCP tools (`create_task`/`get_task`/`list_tasks`/`steer_task`/
+    `cancel_task`, `src/control_plane/mcp_tools.rs`) via the same
+    `core_ops.rs` business logic — see the security doc's "New in Phase 5"
+    section. `sdk/typescript/` is the one client library shipped (no Python
+    SDK); `paperclip-adapter/` is a standalone proof adapter demonstrating
+    an external orchestrator driving this exact HTTP contract.
+  contact:
+    name: Bastion (thewaifucorp/bastion-agent)
+
+servers:
+  - url: https://{host}/v1
+    variables:
+      host:
+        default: 127.0.0.1:8080
+
+security:
+  - bastionToken: []
+
+paths:
+  /tasks:
+    post:
+      operationId: createTask
+      summary: Create (or idempotently return) a durable Pursue task.
+      security:
+        - bastionToken: [tasks:create]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+          description: >
+            Repeating this call with the same owner + idempotency key must
+            not create duplicate execution (acceptance criterion).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+      responses:
+        '201':
+          description: Task created (or the existing task for a repeated idempotency key).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResource'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ScopeDenied'
+        default:
+          $ref: '#/components/responses/Error'
+    get:
+      operationId: listTasks
+      summary: List tasks visible to the authenticated credential's owner (and project, if scoped).
+      security:
+        - bastionToken: [tasks:read]
+      parameters:
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/TaskStatus'
+      responses:
+        '200':
+          description: A page of tasks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ScopeDenied'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /tasks/{id}:
+    get:
+      operationId: getTask
+      summary: Fetch one task's safe summary.
+      security:
+        - bastionToken: [tasks:read]
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: The task.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResource'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ScopeDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /tasks/{id}/attempts:
+    get:
+      operationId: listTaskAttempts
+      summary: Safe evidence/verdict timeline for one task.
+      security:
+        - bastionToken: [tasks:read]
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A page of attempt summaries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttemptListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ScopeDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /tasks/{id}:pause:
+    post:
+      operationId: pauseTask
+      summary: Pause a task via expected revision.
+      security:
+        - bastionToken: [tasks:control]
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevisionGuardedRequest'
+      responses:
+        '200':
+          description: The task after transition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResource'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ScopeDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/RevisionConflict'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /tasks/{id}:resume:
+    post:
+      operationId: resumeTask
+      summary: Resume a paused task via expected revision.
+      security:
+        - bastionToken: [tasks:control]
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevisionGuardedRequest'
+      responses:
+        '200':
+          description: The task after transition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResource'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ScopeDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/RevisionConflict'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /tasks/{id}:steer:
+    post:
+      operationId: steerTask
+      summary: Add human/orchestrator guidance to an in-flight task.
+      security:
+        - bastionToken: [tasks:control]
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/RevisionGuardedRequest'
+                - type: object
+                  required: [guidance]
+                  properties:
+                    guidance:
+                      type: string
+      responses:
+        '200':
+          description: The task after the steer note is recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResource'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ScopeDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/RevisionConflict'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /tasks/{id}:cancel:
+    post:
+      operationId: cancelTask
+      summary: Cancel a task via expected revision, with an auditable stop reason.
+      security:
+        - bastionToken: [tasks:control]
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevisionGuardedRequest'
+      responses:
+        '200':
+          description: The task after transition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResource'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ScopeDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/RevisionConflict'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /webhook-subscriptions:
+    post:
+      operationId: createWebhookSubscription
+      summary: Register a signed event target.
+      security:
+        - bastionToken: [webhooks:manage]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookSubscriptionRequest'
+      responses:
+        '201':
+          description: Subscription created. The HMAC signing secret is returned exactly once in this response only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscriptionResource'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ScopeDenied'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /openapi.yaml:
+    get:
+      operationId: getOpenApiSpec
+      summary: This document, published live (src/control_plane/routes.rs).
+      security: []
+      responses:
+        '200':
+          description: The OpenAPI 3.1 contract, as YAML.
+          content:
+            application/yaml:
+              schema:
+                type: string
+
+# OpenAPI 3.1 native "webhooks" root field — describes the payload Bastion
+# sends TO a subscriber's target_url (registered via POST
+# /webhook-subscriptions), the mirror image of "paths" (which describes what
+# callers send TO Bastion). Phase 1 status: outbound delivery itself does not
+# exist anywhere in this codebase yet (see control-plane-security.md) — this
+# section freezes the payload shape only, matching src/control_plane/dto.rs's
+# TaskEventEnvelope, so a later phase's delivery code and any client's
+# webhook receiver are both built against the same frozen contract.
+webhooks:
+  taskEvent:
+    post:
+      operationId: taskEventDelivered
+      summary: >
+        Delivered by Bastion to a subscriber's target_url whenever a
+        subscribed task event fires. At-least-once delivery, HMAC-signed
+        (signing header/algorithm TBD by the phase that implements delivery)
+        — receivers must dedupe by event_id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskEventEnvelope'
+      responses:
+        '200':
+          description: Receiver acknowledged the event.
+        '2XX':
+          description: Any 2xx is treated as accepted; anything else is retried with exponential backoff.
+
+components:
+  securitySchemes:
+    bastionToken:
+      type: apiKey
+      in: header
+      name: x-bastion-token
+      description: >
+        Static, scoped integration credential (src/control_plane/credential.rs),
+        format `bcp_<opaque>`. NOT `Authorization: Bearer` — this repo's
+        auth-header convention is `x-bastion-token` everywhere (the webhook
+        channel, the MCP server, and now here), resolved in
+        docs/en/control-plane-security.md's "which header" decision.
+        Not OAuth. Scopes: tasks:read, tasks:create, tasks:control, webhooks:manage.
+
+  parameters:
+    TaskId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Opaque task id — never sequential, never guessable-safe by itself (authorization is still enforced per-request).
+
+  schemas:
+    TaskMode:
+      type: string
+      enum: [respond, act, pursue]
+      description: Mirrors bastion_runtime::task::ExecutionMode. Only "pursue" is ever caller-creatable via this API.
+
+    TaskStatus:
+      type: string
+      enum: [pending, running, awaiting_approval, paused, completed, escalated, cancelled, failed]
+      description: Mirrors bastion_runtime::task::TaskStatus 1:1.
+
+    StopReason:
+      type: object
+      description: Safe external view of bastion_runtime::task::StopReason.
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [completed, budget_exceeded, cancelled, awaiting_approval, impossible, escalated]
+        dimension:
+          type: string
+          description: Present only when kind = budget_exceeded.
+        reason:
+          type: string
+          description: Present only when kind = impossible or escalated.
+
+    BudgetSummary:
+      type: object
+      required: [llm_calls, steps, total_tokens, cost_coverage, wall_clock_ms]
+      properties:
+        llm_calls: { type: integer, format: int32 }
+        steps: { type: integer, format: int32 }
+        total_tokens: { type: integer, format: int64 }
+        cost_usd: { type: [number, "null"] }
+        cost_coverage: { type: string, enum: [reported, estimated, unknown] }
+        wall_clock_ms: { type: integer, format: int64 }
+        max_cost_usd: { type: [number, "null"] }
+        max_steps: { type: [integer, "null"], format: int32 }
+
+    AttemptVerification:
+      type: string
+      enum: [unverified, failed, partial, succeeded]
+
+    AttemptSummary:
+      type: object
+      required: [id, started_at, llm_calls, total_tokens]
+      properties:
+        id: { type: string }
+        started_at: { type: integer, format: int64 }
+        ended_at: { type: [integer, "null"], format: int64 }
+        verified:
+          # OpenAPI 3.1 / JSON Schema 2020-12: a nullable $ref is expressed as
+          # oneOf[ref, null] — the sibling "nullable: true" keyword from 3.0
+          # is not part of 2020-12 and a strict validator would ignore it.
+          oneOf:
+            - $ref: '#/components/schemas/AttemptVerification'
+            - type: "null"
+        llm_calls: { type: integer, format: int32 }
+        total_tokens: { type: integer, format: int64 }
+        cost_usd: { type: [number, "null"] }
+
+    TaskResource:
+      type: object
+      required: [id, owner_id, mode, objective, status, created_at, updated_at, revision, budget_summary, attempts]
+      properties:
+        id: { type: string }
+        owner_id: { type: string }
+        external_ref: { type: [string, "null"] }
+        mode:
+          $ref: '#/components/schemas/TaskMode'
+        objective: { type: string }
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        stop_reason:
+          oneOf:
+            - $ref: '#/components/schemas/StopReason'
+            - type: "null"
+        created_at: { type: integer, format: int64 }
+        updated_at: { type: integer, format: int64 }
+        revision: { type: integer, format: int64 }
+        budget_summary:
+          $ref: '#/components/schemas/BudgetSummary'
+        attempts:
+          type: array
+          items:
+            $ref: '#/components/schemas/AttemptSummary'
+
+    CreateTaskBounds:
+      type: object
+      properties:
+        max_steps: { type: [integer, "null"], format: int32 }
+        max_cost_usd: { type: [number, "null"] }
+
+    CreateTaskRequest:
+      type: object
+      required: [objective]
+      properties:
+        objective: { type: string }
+        external_ref: { type: [string, "null"] }
+        acceptance:
+          type: array
+          items: { type: string }
+        bounds:
+          oneOf:
+            - $ref: '#/components/schemas/CreateTaskBounds'
+            - type: "null"
+
+    TaskListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskResource'
+        next_cursor: { type: [string, "null"] }
+
+    AttemptListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AttemptSummary'
+        next_cursor: { type: [string, "null"] }
+
+    RevisionGuardedRequest:
+      type: object
+      required: [expected_revision]
+      properties:
+        expected_revision:
+          type: integer
+          format: int64
+          description: Optimistic-concurrency guard — mirrors TaskCase.revision. A stale value yields 409.
+
+    WebhookSubscriptionRequest:
+      type: object
+      required: [target_url]
+      properties:
+        target_url:
+          type: string
+          format: uri
+          description: Validated against SSRF (private/loopback ranges) by the handler in a later phase — not enforced by this schema alone.
+        event_types:
+          type: array
+          items:
+            type: string
+            enum: [task.created, task.status_changed, attempt.completed, task.escalated, task.terminal]
+
+    WebhookSubscriptionResource:
+      type: object
+      required: [id, owner_id, target_url, event_types, created_at]
+      properties:
+        id: { type: string }
+        owner_id: { type: string }
+        target_url: { type: string }
+        event_types:
+          type: array
+          items: { type: string }
+        created_at: { type: integer, format: int64 }
+        secret:
+          type: string
+          description: >
+            The HMAC signing secret, present ONLY in the response to the
+            POST call that created this subscription. Absent (key omitted
+            entirely, not null) in any other response reusing this schema
+            (e.g. a future list-subscriptions endpoint). There is no way to
+            retrieve a lost secret — re-create the subscription.
+
+    ErrorEnvelope:
+      type: object
+      required: [code, message, request_id]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        request_id: { type: string }
+
+    TaskEventEnvelope:
+      type: object
+      description: >
+        One outbound event, matching the spec's "Events" section: event_id,
+        schema version, owner-scoped task id, monotonic task revision,
+        timestamp, and a safe event-type-specific payload.
+      required: [event_id, event_type, schema_version, task_id, revision, occurred_at, payload]
+      properties:
+        event_id: { type: string }
+        event_type:
+          type: string
+          enum: [task.created, task.status_changed, attempt.completed, task.escalated, task.terminal]
+        schema_version: { type: integer, format: int32 }
+        task_id: { type: string }
+        revision:
+          type: integer
+          format: int64
+          description: TaskCase.revision at the moment this event was raised — lets a receiver detect/discard stale or reordered deliveries.
+        occurred_at: { type: integer, format: int64 }
+        payload:
+          description: Event-type-specific safe summary. Per-type payload shapes are a later phase's decision — this envelope only freezes the fields every event shares.
+          type: object
+
+  responses:
+    Unauthorized:
+      description: Missing or unrecognized credential.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    ScopeDenied:
+      description: Credential authenticated but lacks the required scope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: No task/resource with that id is visible to this credential's owner.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    RevisionConflict:
+      description: expected_revision did not match the task's current revision (optimistic-concurrency conflict).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Error:
+      description: Unclassified error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'

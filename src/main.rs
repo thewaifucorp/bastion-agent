@@ -582,6 +582,30 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(store)
     };
 
+    // US External Control Plane and SDK, Phase 2: same fail-closed criticality
+    // tier as `task_store` above — the `/v1/*` routes' entire auth story rests
+    // on this store, so a schema-init failure here refuses to start rather
+    // than silently serving with a broken credential table.
+    let control_plane_credential_store =
+        Arc::new(bastion::control_plane::credential::SqliteCredentialStore::new(
+            db_path.clone(),
+        ));
+    control_plane_credential_store.init_schema().await?;
+
+    // US External Control Plane and SDK, Phase 4: same fail-closed tier —
+    // `POST /v1/webhook-subscriptions` and every mutation route's event
+    // emission depend on these two tables existing.
+    let control_plane_webhook_subscription_store = Arc::new(
+        bastion::control_plane::webhook_subscription::SqliteWebhookSubscriptionStore::new(
+            db_path.clone(),
+        ),
+    );
+    control_plane_webhook_subscription_store.init_schema().await?;
+    let control_plane_webhook_delivery_store = Arc::new(
+        bastion::control_plane::webhook_delivery::SqliteWebhookDeliveryStore::new(db_path.clone()),
+    );
+    control_plane_webhook_delivery_store.init_schema().await?;
+
     // D-02: auto-resume most recent session, or create new one
     let session_id = match session.load_most_recent_id().await? {
         Some(id) => {
@@ -906,6 +930,9 @@ async fn main() -> anyhow::Result<()> {
                 runtime_registry_for_product,
                 memory.clone(),
                 task_store,
+                control_plane_credential_store,
+                control_plane_webhook_subscription_store,
+                control_plane_webhook_delivery_store,
             )
             .await?;
         }
@@ -917,8 +944,20 @@ async fn main() -> anyhow::Result<()> {
             let local_owner = std::env::var("BASTION_OWNER_ID")
                 .unwrap_or_else(|_| bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string());
             let personas = Arc::new(registry_for_product.clone());
+            // US External Control Plane and SDK, Phase 5: the 5 MCP tools
+            // (create_task/get_task/list_tasks/steer_task/cancel_task) live
+            // in their own registry, never `agent.capability_registry` — see
+            // `control_plane::mcp_tools`'s module doc for why.
+            let control_plane_mcp_registry = Arc::new(bastion::control_plane::mcp_tools::build_registry(
+                bastion::control_plane::core_ops::CoreOpsState {
+                    task_store: task_store.clone(),
+                    webhook_subscription_store: control_plane_webhook_subscription_store.clone(),
+                    webhook_delivery_store: control_plane_webhook_delivery_store.clone(),
+                },
+            ));
             let mcp_server = bastion::mcp::server::BastionMcpServer::new(
                 Arc::new(agent.capability_registry.clone()),
+                control_plane_mcp_registry,
                 memory.clone(),
                 personas,
                 goals_for_product.clone(),
@@ -1093,6 +1132,22 @@ async fn daemon_loop(
     // Shared procedural memory used to enrich and attribute durable Pursue tasks.
     memory: bastion_memory::SharedMemory,
     task_store: Arc<dyn TaskStore>,
+    // US External Control Plane and SDK, Phase 2: backs the `/v1/*` read
+    // routes' auth (`resolve_credential_or_401`) — same criticality tier as
+    // `task_store` above (constructed fail-closed in `main()`, see its
+    // `init_schema` call site), threaded through so `daemon_loop` can build
+    // `control_plane::routes::ControlPlaneState` for `serve_with_mesh`.
+    control_plane_credential_store: Arc<bastion::control_plane::credential::SqliteCredentialStore>,
+    // US External Control Plane and SDK, Phase 4: backs
+    // `POST /v1/webhook-subscriptions` and its SSRF gate.
+    control_plane_webhook_subscription_store:
+        Arc<bastion::control_plane::webhook_subscription::SqliteWebhookSubscriptionStore>,
+    // Phase 4: the durable retry queue `run_delivery_loop` (spawned inside
+    // this function, below) sweeps. Threaded from `main()` alongside the
+    // other two Control Plane stores rather than constructed here so all
+    // three share the identical fail-closed-at-boot criticality tier.
+    control_plane_webhook_delivery_store:
+        Arc<bastion::control_plane::webhook_delivery::SqliteWebhookDeliveryStore>,
 ) -> anyhow::Result<()> {
     use bastion::agent::command::{CommandResources, CommandResult};
     use tokio::io::{AsyncBufReadExt, BufReader};
@@ -1323,8 +1378,18 @@ async fn daemon_loop(
                     "mcp_server.enabled=true but [mcp_server.tokens] is empty — no client can authenticate"
                 );
                 }
+                // Phase 5: same dedicated registry as the McpStdio arm above
+                // — see `control_plane::mcp_tools`'s module doc.
+                let control_plane_mcp_registry = Arc::new(bastion::control_plane::mcp_tools::build_registry(
+                    bastion::control_plane::core_ops::CoreOpsState {
+                        task_store: task_store.clone(),
+                        webhook_subscription_store: control_plane_webhook_subscription_store.clone(),
+                        webhook_delivery_store: control_plane_webhook_delivery_store.clone(),
+                    },
+                ));
                 let router = bastion::mcp::server::build_mcp_axum_router(
                     cap_registry,
+                    control_plane_mcp_registry,
                     mem,
                     personas,
                     goals,
@@ -1410,6 +1475,28 @@ async fn daemon_loop(
             let runtime_registry_for_webhook = runtime_registry_for_product.clone();
             let auth_for_webhook = cfg.auth.clone();
             let updates_for_webhook = updates.clone();
+            // US External Control Plane and SDK: `/v1/*` routes, built over
+            // their own `ControlPlaneState` and merged into the webhook app
+            // exactly like `mcp_routes` above.
+            let control_plane_routes = Some(bastion::control_plane::routes::router(
+                bastion::control_plane::routes::ControlPlaneState {
+                    task_store: task_store.clone(),
+                    credential_store: control_plane_credential_store.clone(),
+                    webhook_subscription_store: control_plane_webhook_subscription_store.clone(),
+                    webhook_delivery_store: control_plane_webhook_delivery_store.clone(),
+                },
+            ));
+            // Phase 4: background sweep of the durable delivery queue —
+            // mirrors how `adaptive::schedule::run_scheduler` is spawned
+            // below (search this file for `run_scheduler`). 5s tick: fast
+            // enough that a subscriber recovering from an outage sees its
+            // backlog drain promptly, cheap enough (one SELECT when the
+            // queue is empty, the common case) to run indefinitely.
+            let control_plane_delivery_store_for_loop = control_plane_webhook_delivery_store.clone();
+            tokio::spawn(bastion::control_plane::webhook_delivery::run_delivery_loop(
+                control_plane_delivery_store_for_loop,
+                std::time::Duration::from_secs(5),
+            ));
             tokio::spawn(async move {
                 if let Err(e) = bastion::channel::webhook::serve_with_mesh(
                     h,
@@ -1424,6 +1511,7 @@ async fn daemon_loop(
                     agent_identity,
                     agent_name,
                     mcp_routes,
+                    control_plane_routes,
                     whatsapp_config,
                     composio_oauth.clone(),
                     readiness_for_webhook,
