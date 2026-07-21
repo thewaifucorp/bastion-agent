@@ -136,7 +136,12 @@ fn deterministic_task_id(owner: &str, idempotency_key: &str) -> TaskCaseId {
 /// Build a `TaskEventEnvelope` and hand it to `enqueue_event_for_subscribers`
 /// — a fast, local DB write, never the outbound HTTP call itself (that only
 /// ever happens later, out-of-band, in `webhook_delivery::run_delivery_loop`).
-async fn emit_event(
+///
+/// `pub(crate)` (not private) since the observability frontend:
+/// `observability::LifecycleObserver` emits the spec's remaining two event
+/// types (`attempt.completed`, `task.escalated`) from the adaptive execution
+/// loop — the same envelope/queue, one implementation.
+pub(crate) async fn emit_event(
     state: &CoreOpsState,
     owner: &str,
     event_type: &str,

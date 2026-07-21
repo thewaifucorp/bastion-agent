@@ -120,6 +120,7 @@ pub async fn run_delegated(
     memory: SharedMemory,
     parent: TaskCase,
     children_objectives: Vec<String>,
+    observer: Arc<dyn bastion_runtime::hooks::Observer>,
 ) -> anyhow::Result<ChildSummary> {
     let orch = Orchestrator::new(store.clone());
     let owner = parent.owner.clone();
@@ -147,11 +148,19 @@ pub async fn run_delegated(
         let registry_c = registry.clone();
         let memory_c = memory.clone();
         let owner_c = owner.clone();
+        let observer_c = observer.clone();
         handles.push(tokio::spawn(async move {
             // Bound concurrency: only `max_parallel` children run at once.
             let _permit = permit_sem.acquire_owned().await;
-            if let Err(e) =
-                run_coding_pursue(&store_c, &registry_c, &memory_c, &owner_c, &child_id).await
+            if let Err(e) = run_coding_pursue(
+                &store_c,
+                &registry_c,
+                &memory_c,
+                &owner_c,
+                &child_id,
+                &observer_c,
+            )
+            .await
             {
                 tracing::error!(
                     event = "delegated_child_cycle_error",
@@ -182,8 +191,25 @@ pub async fn run_delegated(
                 )
             };
             store
-                .transition_status(&owner, &parent.id, next, Some(reason), current.revision)
+                .transition_status(
+                    &owner,
+                    &parent.id,
+                    next,
+                    Some(reason.clone()),
+                    current.revision,
+                )
                 .await?;
+            // The parent's terminal transition happens HERE (direct store
+            // call, outside any AdaptiveCycle), so nothing else would emit
+            // its lifecycle event — mirror what the cycle emits for its own
+            // terminal transitions.
+            let event = bastion_runtime::task::TaskLifecycleEvent::Terminal {
+                owner: owner.clone(),
+                task: parent.id.clone(),
+                status: next,
+                stop_reason: reason,
+            };
+            observer.record(event.event_name(), event.metadata()).await;
         }
     }
     Ok(summary)

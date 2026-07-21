@@ -34,7 +34,6 @@ use bastion_runtime::task::{
     TaskStore, UsageAccum, Verdict, VerdictProvenance, VerificationStatus, Verifier,
 };
 
-use super::observer::TracingObserver;
 
 /// Fallback runtime id used when `execute` is handed an action whose kind
 /// isn't `ActionKind::Runtime` (a host wiring that routed a `Capability`/
@@ -419,12 +418,15 @@ impl Verifier for RuntimeOutcomeVerifier {
 /// Assemble the coding `AdaptiveCycle` for `owner`: the deterministic
 /// `CodingChooser` + runtime-backed `RuntimeTaskExecutor` + deterministic
 /// `RuntimeOutcomeVerifier`, over the shared `TaskStore`, emitting lifecycle
-/// events to tracing. This is what the daemon spawns to drain an enqueued
-/// `Pursue` task (US-203). `registry` is cloned into the executor.
+/// events to `observer` (the daemon passes `observability::LifecycleObserver`
+/// — SSE + Control Plane queue + tracing; tests pass `TracingObserver`).
+/// This is what the daemon spawns to drain an enqueued `Pursue` task
+/// (US-203). `registry` is cloned into the executor.
 pub fn coding_cycle(
     store: &Arc<dyn TaskStore>,
     registry: &RuntimeRegistry,
     owner: &str,
+    observer: Arc<dyn bastion_runtime::hooks::Observer>,
 ) -> AdaptiveCycle {
     AdaptiveCycle::new(
         store.clone(),
@@ -434,7 +436,7 @@ pub fn coding_cycle(
             owner.to_string(),
         )),
         Arc::new(RuntimeOutcomeVerifier),
-        Arc::new(TracingObserver),
+        observer,
     )
 }
 
@@ -447,8 +449,9 @@ pub async fn run_coding_pursue(
     memory: &bastion_memory::SharedMemory,
     owner: &str,
     task: &bastion_runtime::task::TaskCaseId,
+    observer: &Arc<dyn bastion_runtime::hooks::Observer>,
 ) -> anyhow::Result<bastion_runtime::task::TaskStatus> {
-    let status = coding_cycle(store, registry, owner)
+    let status = coding_cycle(store, registry, owner, observer.clone())
         .run(owner, task, None)
         .await?;
     if status.is_terminal() {

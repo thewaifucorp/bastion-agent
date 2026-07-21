@@ -1167,6 +1167,20 @@ async fn daemon_loop(
 ) -> anyhow::Result<()> {
     use bastion::agent::command::{CommandResources, CommandResult};
     use tokio::io::{AsyncBufReadExt, BufReader};
+
+    // Observability frontend: the one lifecycle observer every adaptive
+    // cycle/delegation in this daemon emits through — SSE (`/events`) +
+    // Control Plane delivery queue (attempt.completed / task.escalated) +
+    // the tracing line TracingObserver used to own.
+    let lifecycle_observer: Arc<dyn bastion_runtime::hooks::Observer> =
+        bastion::observability::LifecycleObserver::new(
+            events_tx.clone(),
+            bastion::control_plane::core_ops::CoreOpsState {
+                task_store: task_store.clone(),
+                webhook_subscription_store: control_plane_webhook_subscription_store.clone(),
+                webhook_delivery_store: control_plane_webhook_delivery_store.clone(),
+            },
+        );
     use tokio::signal::unix::{signal, SignalKind};
 
     // PROACT-05: take pending_rx out of the agent so we own it in the select! loop.
@@ -1779,6 +1793,7 @@ async fn daemon_loop(
         let registry_for_sched = runtime_registry_for_product.clone();
         let memory_for_sched = memory.clone();
         let pending_tx_for_sched = agent.pending_tx.clone();
+        let observer_for_sched = lifecycle_observer.clone();
         tokio::spawn(adaptive::run_scheduler(
             schedule_store,
             std::time::Duration::from_secs(30),
@@ -1787,6 +1802,7 @@ async fn daemon_loop(
                 let registry = registry_for_sched.clone();
                 let memory = memory_for_sched.clone();
                 let tx = pending_tx_for_sched.clone();
+                let observer = observer_for_sched.clone();
                 async move {
                     let decision = adaptive::select_mode(&spec.intent);
                     if decision.mode == bastion_runtime::task::ExecutionMode::Pursue {
@@ -1803,7 +1819,7 @@ async fn daemon_loop(
                                 let owner = spec.owner.clone();
                                 tokio::spawn(async move {
                                     if let Err(e) = adaptive::run_coding_pursue(
-                                        &store, &registry, &memory, &owner, &id,
+                                        &store, &registry, &memory, &owner, &id, &observer,
                                     )
                                     .await
                                     {
@@ -2084,6 +2100,7 @@ async fn daemon_loop(
                                     let registry = runtime_registry_for_product.clone();
                                     let objective = s.clone();
                                     let memory = memory.clone();
+                                    let observer = lifecycle_observer.clone();
                                     let owner =
                                         bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string();
                                     tokio::spawn(async move {
@@ -2092,7 +2109,8 @@ async fn daemon_loop(
                                                 match store.load_case(&owner, &id).await {
                                                     Ok(Some(parent)) => {
                                                         if let Err(e) = bastion::adaptive::run_delegated(
-                                                            store, registry, memory, parent, children,
+                                                            store, registry, memory, parent,
+                                                            children, observer,
                                                         )
                                                         .await
                                                         {
@@ -2105,6 +2123,7 @@ async fn daemon_loop(
                                             None => {
                                                 if let Err(e) = bastion::adaptive::run_coding_pursue(
                                                     &store, &registry, &memory, &owner, &id,
+                                                    &observer,
                                                 ).await {
                                                     tracing::error!(event = "pursue_cycle_error", task = %id, error = %e);
                                                 }
@@ -2321,6 +2340,7 @@ async fn daemon_loop(
                                 let memory = memory.clone();
                                 let owner = req.owner.clone();
                                 let task_id = id.clone();
+                                let observer = lifecycle_observer.clone();
                                 tokio::spawn(async move {
                                     match bastion::adaptive::decompose(&objective) {
                                         Some(children) => {
@@ -2328,7 +2348,8 @@ async fn daemon_loop(
                                                 Ok(Some(parent)) => {
                                                     if let Err(e) =
                                                         bastion::adaptive::run_delegated(
-                                                            store, registry, memory, parent, children,
+                                                            store, registry, memory, parent,
+                                                            children, observer,
                                                         )
                                                         .await
                                                     {
@@ -2341,6 +2362,7 @@ async fn daemon_loop(
                                         None => {
                                             if let Err(e) = bastion::adaptive::run_coding_pursue(
                                                 &store, &registry, &memory, &owner, &task_id,
+                                                &observer,
                                             ).await {
                                                 tracing::error!(event = "pursue_cycle_error", task = %task_id, error = %e);
                                             }

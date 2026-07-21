@@ -73,12 +73,7 @@ impl Responder for ObservedResponder {
 
         match &result {
             Ok(outcome) => {
-                self.emit(turn_completed(
-                    &owner,
-                    &session_id,
-                    &outcome.attribution,
-                    latency_ms,
-                ));
+                self.emit(turn_completed(&owner, &session_id, &outcome.attribution, latency_ms));
             }
             Err(_) => {
                 // The error itself stays on the tracing/log path (WR-09: no
@@ -95,7 +90,103 @@ impl Responder for ObservedResponder {
     }
 }
 
-fn turn_started(owner: &str, session_id: &str, forced_cabinet: Option<&[String]>) -> serde_json::Value {
+/// [`Observer`] for the adaptive execution loop (`AdaptiveCycle`,
+/// `run_delegated`): fans every `TaskLifecycleEvent` out to the SSE feed the
+/// dashboard/TUI watch, keeps `TracingObserver`'s log line, and enqueues the
+/// spec's two remaining Control Plane event types — `attempt.completed` (from
+/// `task.verified`: an attempt completes at its verification) and
+/// `task.escalated` (from a `task.terminal` whose status is `Escalated`) —
+/// into the same durable delivery queue `core_ops` uses. Closes the
+/// "attempt.completed/task.escalated are not emitted" known gap
+/// (docs/en/control-plane-security.md).
+///
+/// Fire-and-forget per the `Observer` contract: any failure here is logged
+/// and dropped, never surfaced into the cycle.
+pub struct LifecycleObserver {
+    events_tx: broadcast::Sender<String>,
+    core_ops: crate::control_plane::core_ops::CoreOpsState,
+}
+
+impl LifecycleObserver {
+    pub fn new(
+        events_tx: broadcast::Sender<String>,
+        core_ops: crate::control_plane::core_ops::CoreOpsState,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            events_tx,
+            core_ops,
+        })
+    }
+
+    /// Current revision of `task`, for the event envelope's ordering field.
+    async fn revision_of(&self, owner: &str, task: &str) -> Option<u64> {
+        let id = bastion_runtime::task::TaskCaseId(task.to_string());
+        match self.core_ops.task_store.load_case(owner, &id).await {
+            Ok(Some(case)) => Some(case.revision),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(event = "lifecycle_observer_load_failed", task, error = %e);
+                None
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl bastion_runtime::hooks::Observer for LifecycleObserver {
+    async fn record(&self, event: &str, metadata: serde_json::Value) {
+        // Preserve TracingObserver's structured log line (same target).
+        tracing::info!(target: "bastion::task", event, metadata = %metadata);
+
+        // SSE: the whole lifecycle vocabulary, verbatim — the dashboard's
+        // ledger renders any `event` field.
+        let mut sse = metadata.clone();
+        if let serde_json::Value::Object(ref mut map) = sse {
+            map.insert("event".to_string(), serde_json::json!(event));
+        }
+        let _ = self.events_tx.send(sse.to_string());
+
+        // Control Plane queue: only the spec-named mappings.
+        let (owner, task) = match (
+            metadata.get("owner").and_then(serde_json::Value::as_str),
+            metadata.get("task").and_then(serde_json::Value::as_str),
+        ) {
+            (Some(o), Some(t)) => (o.to_string(), t.to_string()),
+            _ => return,
+        };
+        let status = metadata.get("status").and_then(serde_json::Value::as_str);
+        let mapped = match event {
+            "task.verified" => Some("attempt.completed"),
+            "task.terminal" if status == Some("Escalated") => Some("task.escalated"),
+            _ => None,
+        };
+        let Some(event_type) = mapped else { return };
+        let Some(revision) = self.revision_of(&owner, &task).await else {
+            tracing::warn!(
+                event = "lifecycle_observer_event_dropped",
+                event_type,
+                task,
+                "task not loadable for envelope revision — event not enqueued"
+            );
+            return;
+        };
+        crate::control_plane::core_ops::emit_event(
+            &self.core_ops,
+            &owner,
+            event_type,
+            &task,
+            revision,
+            metadata,
+        )
+        .await;
+    }
+}
+
+fn turn_started(
+    owner: &str,
+    session_id: &str,
+    forced_cabinet: Option<&[String]>,
+) -> serde_json::Value {
     let mut event = serde_json::json!({
         "event": "turn.started",
         "owner": owner,
@@ -165,12 +256,7 @@ mod tests {
         assert_eq!(single["personas"], serde_json::json!(["ada"]));
         assert!(single.get("mode").is_none());
 
-        let multi = turn_completed(
-            "alice",
-            "s1",
-            &["ada".to_string(), "grace".to_string()],
-            42,
-        );
+        let multi = turn_completed("alice", "s1", &["ada".to_string(), "grace".to_string()], 42);
         assert_eq!(multi["mode"], "cabinet");
     }
 
