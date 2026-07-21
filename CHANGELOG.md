@@ -10,6 +10,49 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **LLM routing by call-site class (A4.5 S4)**: route model choice by
+  deterministic call-site class — `chat_turn`, `pursue_task`, `cabinet`,
+  `reflection`, `compaction` — never semantic classification.
+  - `src/routing.rs`: `RouteClass` + `RoutingTable` — effective rule per
+    class is the config-store `routing.rules` override else the new
+    optional `[routing]` bastion.toml table else nothing. Honest v1: a
+    class is `supported` only when the agent can reach a knob on the
+    pinned core rev — `chat_turn` (hot `SharedProvider` swap, the `/model`
+    mechanism) and `reflection` (Reflector model resolved at startup, so
+    next-restart). `pursue_task`/`cabinet`/`compaction` have no
+    agent-reachable model knob yet (external-runtime `SessionSpec` has no
+    model field; Cabinet and compaction run on the loop's own provider
+    inside core) — rules for them are validated, persisted and reported
+    `supported: false`, with the required core seam documented in code.
+  - `GET /routing` (owner-token): all five classes, always — effective
+    model, source (`override`/`toml`/null), `supported`.
+  - New proposal kind `routing_config { rules }` (web proposes, console
+    approves): class names validated against the enum, model ids must be
+    non-empty but are never gated on the catalog (custom ids route by
+    prefix, like `/model`). Approve persists the whole map as the
+    `routing.rules` override (origin `web`) and applies the supported
+    knobs — `chat_turn` hot-swaps live with the same connectivity guard as
+    `model_config`; `reflection` lands on the next restart.
+  - Startup reads the table: a `chat_turn` rule outranks `default_model`
+    when constructing the loop provider; a `reflection` rule outranks
+    `[reflector].model`. Both degrade with a warning (never abort boot)
+    when the rule's provider is disconnected.
+  - Web: a "Routing" matrix inside the Models view — one row per class
+    with a model dropdown from the catalog, a clear button, source/draft
+    chips; unsupported classes rendered disabled with the honest tooltip.
+    Stages `routing_config`; pending proposals show the console-approve
+    instruction; re-fetches on `config.applied`.
+
+### Changed
+
+- `config.applied` SSE frames now carry BOTH `"event"` and `"type"` fields
+  (repo convention is `"event"`; `"type"` kept for existing consumers —
+  the web app already checked both).
+- `GET /providers` items now include `display_name` and `env_key`
+  (null for local/subscription rows) from the daemon's own provider
+  whitelist; the web app's mirrored `PROVIDER_META` table is deleted and
+  the views consume the new fields.
+
 - **Provider manager web UI (A4 S3)**: the web app grows real Providers and
   Models views on top of the S2 endpoints — both stage-only, mirroring the
   Personas pattern (web proposes, console approves).
