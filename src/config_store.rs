@@ -22,10 +22,10 @@
 //! holds the exact JSON shape the legacy files held (`{"model": "..."}` and
 //! the `BackendSelection` object), so migration is a verbatim import.
 //!
-//! Seam for S2: proposal apply (`proposals::apply` / the console `/proposal`
-//! cockpit) does not write through this store yet — when proposal kinds grow
-//! beyond persona edits into model/backend/channel config, their apply step
-//! should call [`ConfigStore::apply`] with origin `"web"`.
+//! A4 S2 filled the proposal seam: approved `model_config` / `secret_set`
+//! proposals (`proposals::apply`) now write through [`ConfigStore::apply`]
+//! with origin `"web"` — keys [`KEY_MODEL_SELECTED`], [`KEY_MODEL_FALLBACKS`],
+//! and the boolean `secret.set:<ENV_KEY>` audit marker (never a secret value).
 
 use std::path::Path;
 
@@ -41,6 +41,13 @@ pub const KEY_MODEL_SELECTED: &str = "model.selected";
 /// Runtime-selected conversation backend (`/backend`). Value shape: the
 /// `crate::config::BackendSelection` JSON object.
 pub const KEY_BACKEND_SELECTED: &str = "backend.selected";
+
+/// A4 S2: runtime-overridden fallback-model ladder (approved `model_config`
+/// proposals). Value shape: `{"models": ["id", ...]}` — an empty list means
+/// "override cleared, use bastion.toml". NOTE: the running `AgentLoop`
+/// receives its ladder at construction (main.rs), so this override is read
+/// at STARTUP only — persisting it takes effect on the next restart.
+pub const KEY_MODEL_FALLBACKS: &str = "model.fallbacks";
 
 const SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS config_overrides (
@@ -300,6 +307,27 @@ pub fn backend_selection_from_value_json(raw: &str) -> Option<crate::config::Bac
     serde_json::from_str(raw).ok()
 }
 
+/// Serialize a fallback-model ladder into the `model.fallbacks` value shape.
+pub fn fallback_models_value_json(models: &[String]) -> String {
+    serde_json::json!({ "models": models }).to_string()
+}
+
+/// Parse a `model.fallbacks` value. An empty list (the cleared sentinel) and
+/// malformed JSON both come back as `None` — callers fall back to
+/// bastion.toml, mirroring [`model_from_value_json`]'s contract.
+pub fn fallback_models_from_value_json(raw: &str) -> Option<Vec<String>> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let models: Vec<String> = value
+        .get("models")?
+        .as_array()?
+        .iter()
+        .filter_map(|m| m.as_str())
+        .map(str::to_string)
+        .filter(|m| !m.trim().is_empty())
+        .collect();
+    (!models.is_empty()).then_some(models)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,6 +477,26 @@ mod tests {
         assert_eq!(model_from_value_json(&model_value_json("")), None);
         assert_eq!(model_from_value_json(r#"{"model":"   "}"#), None);
         assert_eq!(model_from_value_json("not json"), None);
+    }
+
+    #[test]
+    fn fallback_models_value_json_roundtrip_and_cleared_sentinel() {
+        let models = vec!["gpt-5-mini".to_string(), "llama3.2".to_string()];
+        assert_eq!(
+            fallback_models_from_value_json(&fallback_models_value_json(&models)),
+            Some(models)
+        );
+        // Cleared/blank/malformed all mean "no override".
+        assert_eq!(
+            fallback_models_from_value_json(&fallback_models_value_json(&[])),
+            None
+        );
+        assert_eq!(
+            fallback_models_from_value_json(r#"{"models":["", "  "]}"#),
+            None
+        );
+        assert_eq!(fallback_models_from_value_json(r#"{"models":"nope"}"#), None);
+        assert_eq!(fallback_models_from_value_json("not json"), None);
     }
 
     #[test]
