@@ -269,6 +269,11 @@ async fn providers_handler(
         };
         items.push(serde_json::json!({
             "id": p.id,
+            // S4 cleanup: name + env key come from the daemon's own
+            // whitelist (`model_catalog::API_KEY_PROVIDERS`) — the web app
+            // consumes these instead of mirroring the table.
+            "display_name": p.display_name,
+            "env_key": p.env_key,
             "kind": "api_key",
             "connected": source.is_some(),
             "source": source,
@@ -281,6 +286,9 @@ async fn providers_handler(
         .any(|m| bastion_providers::registry::resolve_provider_kind(m) == "ollama");
     items.push(serde_json::json!({
         "id": "ollama",
+        "display_name": model_catalog::OLLAMA_DISPLAY_NAME,
+        // Local provider: no key, no env var — honest null.
+        "env_key": serde_json::Value::Null,
         "kind": "local",
         "connected": ollama_configured,
         "source": serde_json::Value::Null,
@@ -304,6 +312,10 @@ async fn providers_handler(
             .is_ok();
         items.push(serde_json::json!({
             "id": profile_id,
+            // Auth profiles are operator-named — the id IS the name (the
+            // web app displayed exactly that before this field existed).
+            "display_name": profile_id,
+            "env_key": serde_json::Value::Null,
             "kind": "subscription_cli",
             "connected": connected,
             "source": connected.then_some("auth_profile"),
@@ -712,12 +724,18 @@ mod tests {
         assert_eq!(gemini["connected"], true);
         assert_eq!(gemini["source"], "env");
         assert!(gemini["models_count"].as_u64().unwrap() > 0);
+        // S4 cleanup: name + env key come from the daemon's whitelist —
+        // the web app renders these fields instead of a mirrored table.
+        assert_eq!(gemini["display_name"], "Google Gemini");
+        assert_eq!(gemini["env_key"], "GEMINI_API_KEY");
 
         let ollama = items.iter().find(|i| i["id"] == "ollama").unwrap();
         assert_eq!(ollama["kind"], "local");
         // default_model "test-model" routes to ollama → configured.
         assert_eq!(ollama["connected"], true);
         assert_eq!(ollama["source"], serde_json::Value::Null);
+        assert_eq!(ollama["display_name"], "Ollama");
+        assert_eq!(ollama["env_key"], serde_json::Value::Null);
 
         for item in items {
             assert!(item["connected"].is_boolean());

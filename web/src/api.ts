@@ -193,6 +193,12 @@ export const proposalsApi = {
 
 export interface ProviderItem {
   id: string;
+  /** Human name from the daemon's own provider whitelist (S4: replaces the
+   * frontend mirror this view used to keep). */
+  display_name: string;
+  /** Env key the provider's constructor reads; null for local (ollama) and
+   * subscription CLI rows. */
+  env_key: string | null;
   kind: "api_key" | "subscription_cli" | "local";
   connected: boolean;
   source: "env" | "secrets_dir" | "auth_profile" | null;

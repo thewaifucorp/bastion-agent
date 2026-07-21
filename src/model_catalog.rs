@@ -35,11 +35,15 @@ pub struct ModelEntry {
 }
 
 /// One API-key provider: its stable id (also its `resolve_provider_kind`
-/// name) and the env key its bastion-core provider constructor reads.
+/// name), the env key its bastion-core provider constructor reads, and the
+/// human name `GET /providers` reports (S4 cleanup: previously a frontend
+/// mirror in `web/src/views/Providers.tsx` — the daemon's whitelist is now
+/// the single source).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApiKeyProvider {
     pub id: &'static str,
     pub env_key: &'static str,
+    pub display_name: &'static str,
 }
 
 /// The API-key providers the registry can route to, in display order. The
@@ -51,24 +55,32 @@ pub const API_KEY_PROVIDERS: &[ApiKeyProvider] = &[
     ApiKeyProvider {
         id: "anthropic",
         env_key: "ANTHROPIC_API_KEY",
+        display_name: "Anthropic",
     },
     ApiKeyProvider {
         id: "openai",
         env_key: "OPENAI_API_KEY",
+        display_name: "OpenAI",
     },
     ApiKeyProvider {
         id: "gemini",
         env_key: "GEMINI_API_KEY",
+        display_name: "Google Gemini",
     },
     ApiKeyProvider {
         id: "groq",
         env_key: "GROQ_API_KEY",
+        display_name: "Groq",
     },
     ApiKeyProvider {
         id: "openrouter",
         env_key: "OPENROUTER_API_KEY",
+        display_name: "OpenRouter",
     },
 ];
+
+/// Human name of the local (keyless) provider — `GET /providers`' ollama row.
+pub const OLLAMA_DISPLAY_NAME: &str = "Ollama";
 
 /// Provider kinds in the order `GET /models` groups them.
 pub const PROVIDER_KIND_ORDER: &[&str] =

@@ -16,16 +16,9 @@ import AuditStrip from "./AuditStrip";
 // secrets dir. If the daemon restarts before approval the value expires
 // and must be re-submitted.
 
-// Frontend mirror of the daemon's provider table (src/model_catalog.rs) —
-// GET /providers reports ids only, so names and env keys live here too.
-const PROVIDER_META: Record<string, { name: string; envKey?: string }> = {
-  anthropic: { name: "Anthropic", envKey: "ANTHROPIC_API_KEY" },
-  openai: { name: "OpenAI", envKey: "OPENAI_API_KEY" },
-  gemini: { name: "Google Gemini", envKey: "GEMINI_API_KEY" },
-  groq: { name: "Groq", envKey: "GROQ_API_KEY" },
-  openrouter: { name: "OpenRouter", envKey: "OPENROUTER_API_KEY" },
-  ollama: { name: "Ollama" },
-};
+// S4 cleanup: names and env keys come from GET /providers itself
+// (`display_name` / `env_key` — the daemon's src/model_catalog.rs whitelist
+// is the single source), so the old frontend mirror table is gone.
 
 const KIND_LABEL: Record<ProviderItem["kind"], string> = {
   api_key: "API key",
@@ -38,10 +31,6 @@ const SOURCE_LABEL: Record<string, string> = {
   secrets_dir: "secrets dir",
   auth_profile: "auth profile",
 };
-
-function providerName(id: string): string {
-  return PROVIDER_META[id]?.name ?? id;
-}
 
 export default function Providers({ configTick }: { configTick: number }) {
   const [items, setItems] = useState<ProviderItem[] | null>(null);
@@ -82,7 +71,7 @@ export default function Providers({ configTick }: { configTick: number }) {
 
   async function stageKey(e: FormEvent, provider: ProviderItem) {
     e.preventDefault();
-    const envKey = PROVIDER_META[provider.id]?.envKey;
+    const envKey = provider.env_key;
     const value = (drafts[provider.id] ?? "").trim();
     if (!envKey || !value || busyId) return;
     // drop the secret from state BEFORE the request — it lives only in the
@@ -163,14 +152,19 @@ export default function Providers({ configTick }: { configTick: number }) {
                   desc="staged API keys appear here with their status — values are never shown"
                 />
               ) : (
-                proposals.map((p) => (
+                proposals.map((p) => {
+                  const providerId =
+                    p.payload.kind === "secret_set"
+                      ? p.payload.provider_id
+                      : null;
+                  const name = providerId
+                    ? (items.find((i) => i.id === providerId)?.display_name ??
+                      providerId)
+                    : p.payload.kind;
+                  return (
                   <Row
                     key={p.id}
-                    title={`${
-                      p.payload.kind === "secret_set"
-                        ? providerName(p.payload.provider_id)
-                        : p.payload.kind
-                    } — ${p.id}`}
+                    title={`${name} — ${p.id}`}
                     desc={`${p.origin} · ${new Date(p.created_at / 1e6).toLocaleString()}${
                       p.status === "pending"
                         ? ` · approve on console: /proposal approve ${p.id}`
@@ -189,7 +183,8 @@ export default function Providers({ configTick }: { configTick: number }) {
                       {p.status}
                     </span>
                   </Row>
-                ))
+                  );
+                })
               )}
             </Section>
 
@@ -216,7 +211,6 @@ function ProviderCard({
   onSubmit: (e: FormEvent) => void;
   busy: boolean;
 }) {
-  const meta = PROVIDER_META[provider.id];
   const status =
     provider.kind === "local"
       ? provider.connected
@@ -229,7 +223,7 @@ function ProviderCard({
   return (
     <div className="pcard">
       <div className="phead">
-        <span className="pname">{providerName(provider.id)}</span>
+        <span className="pname">{provider.display_name}</span>
         <span className="chip">{KIND_LABEL[provider.kind]}</span>
       </div>
       <div className="pmeta">
@@ -259,9 +253,9 @@ function ProviderCard({
               type="password"
               value={draft}
               onChange={(e) => onDraft(e.target.value)}
-              placeholder={meta?.envKey ?? "API key"}
+              placeholder={provider.env_key ?? "API key"}
               autoComplete="off"
-              aria-label={`${providerName(provider.id)} API key`}
+              aria-label={`${provider.display_name} API key`}
             />
             <button
               type="submit"
