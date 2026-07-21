@@ -665,9 +665,16 @@ async fn main() -> anyhow::Result<()> {
     // `PersonaRegistry` handle; keep a clone from BEFORE the move, same pattern
     // as `goals_for_product`/`mcp_for_product` above.
     let registry_for_product = registry.clone();
-    let responder: Arc<dyn bastion_runtime::agent::ports::Responder> = Arc::new(
-        bastion_personas::persona::responder::PersonaResponder::new(registry),
-    );
+    // Observability: the SSE broadcast channel is created HERE (not in
+    // daemon_loop's webhook section anymore) so `ObservedResponder` can emit
+    // turn/persona/cabinet events on the same stream `/events` serves. For
+    // non-daemon commands nothing ever subscribes and every send is a no-op.
+    let (events_tx, _) = tokio::sync::broadcast::channel::<String>(128);
+    let responder: Arc<dyn bastion_runtime::agent::ports::Responder> =
+        Arc::new(bastion::observability::ObservedResponder::new(
+            Arc::new(bastion_personas::persona::responder::PersonaResponder::new(registry)),
+            events_tx.clone(),
+        ));
 
     // Init shared memory
     let memory: bastion_memory::SharedMemory = Arc::new(RwLock::new(Box::new(SqliteMemory::new(
@@ -933,6 +940,7 @@ async fn main() -> anyhow::Result<()> {
                 control_plane_credential_store,
                 control_plane_webhook_subscription_store,
                 control_plane_webhook_delivery_store,
+                events_tx,
             )
             .await?;
         }
@@ -1152,6 +1160,10 @@ async fn daemon_loop(
     control_plane_webhook_delivery_store: Arc<
         bastion::control_plane::webhook_delivery::SqliteWebhookDeliveryStore,
     >,
+    // Observability: SSE broadcast channel, created in `main()` so the
+    // `ObservedResponder` decorator (built there, before this call) shares
+    // the exact stream `/events` serves — see `bastion::observability`.
+    events_tx: tokio::sync::broadcast::Sender<String>,
 ) -> anyhow::Result<()> {
     use bastion::agent::command::{CommandResources, CommandResult};
     use tokio::io::{AsyncBufReadExt, BufReader};
@@ -1263,8 +1275,9 @@ async fn daemon_loop(
             }
             let h = agent_handle.clone();
             let owner_map = webhook_owner_map;
-            // Phase 6: mesh connectivity — load peers from config, create broadcast channel for SSE.
-            let (events_tx, _) = tokio::sync::broadcast::channel::<String>(128);
+            // Phase 6: mesh connectivity — load peers from config. The SSE
+            // broadcast channel now arrives as the `events_tx` parameter
+            // (created in `main()` so `ObservedResponder` shares it).
             let peer_map_initial = bastion::config::load_mesh_peers(cfg);
             let mesh_peer_map = Arc::new(RwLock::new(peer_map_initial));
             // WR-01/CR-04: APP_JWT_SECRET must be set — no insecure fallback. This is the
