@@ -10,6 +10,8 @@ import Schedules from "./views/Schedules";
 import CommandView from "./views/CommandView";
 import Connection from "./views/Connection";
 import Personas from "./views/Personas";
+import Providers from "./views/Providers";
+import Models from "./views/Models";
 import About from "./views/About";
 
 export interface LedgerEntry {
@@ -46,7 +48,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     items: [
       { key: "models", label: "Models" },
       { key: "backends", label: "Backends" },
-      { key: "connect", label: "Connect" },
+      { key: "providers", label: "Providers" },
       { key: "logs", label: "Logs" },
       { key: "update", label: "Update" },
     ],
@@ -63,6 +65,7 @@ const ALL_KEYS = NAV.flatMap((s) => s.items.map((i) => i.key));
 
 function routeFromHash(): string {
   const h = window.location.hash.replace(/^#\/?/, "");
+  if (h === "connect") return "providers"; // legacy deep link
   return ALL_KEYS.includes(h) ? h : tokens.owner || tokens.cp ? "overview" : "connection";
 }
 
@@ -72,6 +75,9 @@ export default function App() {
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [personas, setPersonas] = useState<Map<string, number>>(new Map());
   const [runningTasks, setRunningTasks] = useState<Set<string>>(new Set());
+  // bumped on config.change_requested / config.applied so the Providers and
+  // Models views re-fetch what the daemon now reports
+  const [configTick, setConfigTick] = useState(0);
   const [streamGen, setStreamGen] = useState(0);
   const stopRef = useRef<(() => void) | null>(null);
 
@@ -98,6 +104,12 @@ export default function App() {
           for (const p of ev.personas!) next.set(p, Date.now());
           return next;
         });
+      }
+      // config plumbing: proposal staged (`event`) or override applied
+      // (`type` — the config store frames it that way) refreshes A4 views
+      const kind = typeof ev.event === "string" ? ev.event : ev.type;
+      if (kind === "config.change_requested" || kind === "config.applied") {
+        setConfigTick((t) => t + 1);
       }
       // attention plumbing: sidebar badge follows task lifecycle events
       if (ev.task && typeof ev.task === "string") {
@@ -184,26 +196,8 @@ export default function App() {
           {route === "tasks" && <Tasks />}
           {route === "schedules" && <Schedules />}
           {route === "personas" && <Personas />}
-          {route === "connect" && (
-            <CommandView
-              title="Connect"
-              sub="secure provider setup steps and live subscription status"
-              listCmd="/connect"
-              placeholder="provider (e.g. anthropic, openai, codex)"
-              buildCmd={(v) => `/connect ${v}`}
-              actionLabel="show setup"
-            />
-          )}
-          {route === "models" && (
-            <CommandView
-              title="Models"
-              sub="LLM provider and model selection — /model"
-              listCmd="/model"
-              placeholder="model name (e.g. claude-sonnet-5)"
-              buildCmd={(v) => `/model ${v}`}
-              actionLabel="switch model"
-            />
-          )}
+          {route === "providers" && <Providers configTick={configTick} />}
+          {route === "models" && <Models configTick={configTick} />}
           {route === "backends" && (
             <CommandView
               title="Backends"

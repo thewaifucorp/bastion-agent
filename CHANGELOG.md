@@ -10,6 +10,29 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **Provider manager web UI (A4 S3)**: the web app grows real Providers and
+  Models views on top of the S2 endpoints — both stage-only, mirroring the
+  Personas pattern (web proposes, console approves).
+  - **Providers** (replaces the Connect command wrapper; `#/connect` deep
+    links redirect): one card per `GET /providers` item — kind chip (API
+    key / Subscription / Local), connection state with source label, catalog
+    model count. Disconnected API-key providers get an inline "add key" flow
+    that stages a `secret_set` proposal: password input, value dropped from
+    component state before the POST resolves, never echoed anywhere;
+    the card then shows the pending proposal id with the console-approve
+    instruction and the restart-expiry caveat. Subscription CLIs point at
+    console `/connect`.
+  - **Models** (replaces the `/model` command wrapper): the merged catalog
+    grouped by provider, the effective default badged, the fallback ladder
+    numbered with add/remove/reorder (client-capped at 16). Edits build a
+    draft; staging sends only the changed halves as a `model_config`
+    proposal. Pending model proposals list with the approve instruction.
+  - **Audit strip** (shared component on both views): recent
+    `GET /config/overrides` rows (key, origin, relative time) — the single
+    audited write path made visible.
+  - Both views re-fetch on the `config.change_requested` and
+    `config.applied` SSE frames, so an approval on the console updates the
+    page live. Backends stays a command wrapper by design.
 - **Provider manager core (A4 S2)**: the daemon now knows its own model
   catalog and provider status.
   - `src/model_catalog.rs`: a curated static table of current model ids per
