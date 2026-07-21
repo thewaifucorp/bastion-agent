@@ -141,7 +141,8 @@ export type ProposalPayload =
       default_model: string | null;
       fallback_models: string[] | null;
     }
-  | { kind: "secret_set"; provider_id: string; env_key: string };
+  | { kind: "secret_set"; provider_id: string; env_key: string }
+  | { kind: "routing_config"; rules: Record<string, string> };
 
 export interface Proposal {
   id: string;
@@ -187,6 +188,14 @@ export const proposalsApi = {
       method: "POST",
       body: JSON.stringify({ kind: "secret_set", provider_id, env_key, value }),
     }),
+  /** Stage per-call-site-class routing rules (A4.5). The map REPLACES the
+   * whole routing override on approve; an empty map clears it (classes fall
+   * back to bastion.toml's [routing]). */
+  createRoutingConfig: (rules: Record<string, string>) =>
+    request<Proposal>(tokens.owner, "/proposals", {
+      method: "POST",
+      body: JSON.stringify({ kind: "routing_config", rules }),
+    }),
 };
 
 // ── providers + model catalog + config audit (owner token; A4 S2) ────────
@@ -230,6 +239,20 @@ export const providersApi = {
 
 export const modelsApi = {
   get: () => request<ModelsResponse>(tokens.owner, "/models"),
+};
+
+/** One row of GET /routing — a call-site class and its effective rule.
+ * `supported: false` = the rule is persisted but the daemon has no
+ * agent-reachable knob for that class yet (requires core support). */
+export interface RoutingItem {
+  class: string;
+  model: string | null;
+  source: "override" | "toml" | null;
+  supported: boolean;
+}
+
+export const routingApi = {
+  get: () => request<{ items: RoutingItem[] }>(tokens.owner, "/routing"),
 };
 
 export const configApi = {

@@ -82,6 +82,23 @@ textarea {
   width: 100%;
   color: var(--ice);
 }
+/* selects follow inputs but stay compact — they sit inline in Row action
+   slots (Routing matrix), never full-width */
+select {
+  background: var(--black);
+  border: 1px solid var(--line);
+  padding: 4px 8px;
+  color: var(--ice);
+  max-width: 320px;
+}
+select:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+select:focus-visible {
+  outline: 2px solid var(--line2);
+  outline-offset: 1px;
+}
 input::placeholder,
 textarea::placeholder {
   color: var(--dim);

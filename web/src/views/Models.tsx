@@ -8,6 +8,7 @@ import {
 } from "../api";
 import { Empty, Row, Section, useToast } from "../ui";
 import AuditStrip from "./AuditStrip";
+import RoutingSection from "./Routing";
 
 // Models: the merged catalog grouped by provider, plus the EFFECTIVE
 // default and fallback ladder. Selecting a different default or editing
@@ -204,6 +205,8 @@ export default function Models({ configTick }: { configTick: number }) {
                 </Row>
               )}
             </Section>
+
+            <RoutingSection catalog={data} tick={configTick} />
 
             {groups.map((g) => (
               <Section
