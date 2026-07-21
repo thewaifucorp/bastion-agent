@@ -174,6 +174,8 @@
     vertical-align: top;
     overflow-wrap: anywhere;
   }
+  /* id/passos/custo nunca quebram no meio do valor */
+  td:first-child, td:nth-child(4), td:nth-child(5) { white-space: nowrap; }
   tr.task { cursor: pointer; }
   tr.task:hover td { background: var(--panel); }
   tr.task.open td { background: var(--panel-2); }
@@ -210,7 +212,7 @@
   #ledger { font-size: 12px; }
   .entry { display: flex; gap: 10px; padding: 3px 0; }
   .entry time { color: var(--muted); flex: none; }
-  .entry .kind { flex: none; width: 12ch; }
+  .entry .kind { flex: none; width: 21ch; }
   .entry .kind.turn-started   { color: var(--steel); }
   .entry .kind.cabinet        { color: var(--lantern); }
   .entry .kind.turn-completed { color: var(--ok); }
@@ -473,11 +475,17 @@ function scheduleTaskRefresh() {
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(refreshTasks, 800);
 }
+let lastTasksJson = "";
 async function refreshTasks() {
   if (!store.cp) return;
   let data;
   try { data = await v1("/v1/tasks"); }
   catch (e) { toast("tarefas: " + e.message, true); return; }
+  // Não reconstruir o DOM se nada mudou — um rebuild a cada poll destrói
+  // a seleção e engole o clique que estava no meio do caminho.
+  const json = JSON.stringify(data.items || []);
+  if (json === lastTasksJson) return;
+  lastTasksJson = json;
   const tbody = $("tasks");
   tbody.innerHTML = "";
   if (!data.items || data.items.length === 0) {
