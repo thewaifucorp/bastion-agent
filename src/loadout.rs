@@ -26,6 +26,7 @@ use tokio::sync::broadcast;
 
 use crate::channel::webhook::resolve_owner_or_401;
 use crate::channel::OwnerMap;
+use crate::config_store::ConfigStore;
 use crate::proposals::{self, ProposalPayload, SqliteProposalStore};
 use std::sync::Arc;
 
@@ -63,6 +64,9 @@ struct LoadoutState {
     jwt_secret: String,
     /// A3: staged configuration proposals (web proposes, console approves).
     proposal_store: Arc<SqliteProposalStore>,
+    /// A4-U S1: unified runtime config overrides — `GET /config/overrides`
+    /// reports the effective overlay (latest row per key) with provenance.
+    config_store: ConfigStore,
     events_tx: broadcast::Sender<String>,
 }
 
@@ -129,6 +133,40 @@ async fn proposals_list_handler(
     }
 }
 
+/// A4-U S1: the effective runtime config overlay — one row per key, the
+/// latest audited apply wins. `value` is the parsed `value_json` (the same
+/// JSON shape the legacy selection files held); `origin`/`applied_at` are
+/// the provenance the audit table records.
+async fn config_overrides_handler(
+    State(state): State<LoadoutState>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    if let Err(resp) = auth(&state, &headers, "config_overrides_unauthorized") {
+        return *resp;
+    }
+    match state.config_store.all_latest().await {
+        Ok(items) => {
+            let items: Vec<serde_json::Value> = items
+                .into_iter()
+                .map(|o| {
+                    serde_json::json!({
+                        "key": o.key,
+                        "value": serde_json::from_str::<serde_json::Value>(&o.value_json)
+                            .unwrap_or(serde_json::Value::Null),
+                        "origin": o.origin,
+                        "applied_at": o.applied_at,
+                    })
+                })
+                .collect();
+            Json(serde_json::json!({ "items": items })).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(event = "config_overrides_list_failed", error = %e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "config store error").into_response()
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct CreateProposalRequest {
     kind: String,
@@ -188,6 +226,7 @@ pub fn router(
     owner_map: OwnerMap,
     jwt_secret: String,
     proposal_store: Arc<SqliteProposalStore>,
+    config_store: ConfigStore,
     events_tx: broadcast::Sender<String>,
 ) -> Router {
     Router::new()
@@ -198,11 +237,13 @@ pub fn router(
             "/proposals",
             get(proposals_list_handler).post(proposals_create_handler),
         )
+        .route("/config/overrides", get(config_overrides_handler))
         .with_state(LoadoutState {
             snapshot: Arc::new(snapshot),
             owner_map: Arc::new(owner_map),
             jwt_secret,
             proposal_store,
+            config_store,
             events_tx,
         })
 }
@@ -241,7 +282,7 @@ fn now_nanos() -> i64 {
 mod tests {
     use super::*;
 
-    fn sample_router(owner_map: OwnerMap) -> (tempfile::NamedTempFile, Router) {
+    async fn sample_router(owner_map: OwnerMap) -> (tempfile::NamedTempFile, Router) {
         let snap = snapshot(
             vec!["ada".into()],
             vec!["create_task".into()],
@@ -256,16 +297,25 @@ mod tests {
         let store = Arc::new(SqliteProposalStore::new(
             f.path().to_str().unwrap().to_owned(),
         ));
+        let config_store = ConfigStore::new(f.path().to_str().unwrap().to_owned());
+        config_store.init_schema().await.unwrap();
         let (events_tx, _) = broadcast::channel(8);
         (
             f,
-            router(snap, owner_map, "test-secret".into(), store, events_tx),
+            router(
+                snap,
+                owner_map,
+                "test-secret".into(),
+                store,
+                config_store,
+                events_tx,
+            ),
         )
     }
 
     #[tokio::test]
     async fn loadout_requires_owner_token() {
-        let (_f, app) = sample_router(OwnerMap::default());
+        let (_f, app) = sample_router(OwnerMap::default()).await;
         let req = axum::http::Request::builder()
             .uri("/loadout")
             .body(axum::body::Body::empty())
@@ -275,9 +325,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn config_overrides_requires_owner_token_and_lists_for_a_valid_one() {
+        let owner_map = OwnerMap::from_pairs(&[("tok-alice", "alice")]);
+        let (_f, app) = sample_router(owner_map).await;
+
+        let unauthorized = axum::http::Request::builder()
+            .uri("/config/overrides")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = tower::ServiceExt::oneshot(app.clone(), unauthorized).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+
+        let authorized = axum::http::Request::builder()
+            .uri("/config/overrides")
+            .header("x-bastion-token", "tok-alice")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = tower::ServiceExt::oneshot(app, authorized).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["items"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
     async fn loadout_answers_composition_for_a_valid_token() {
         let owner_map = OwnerMap::from_pairs(&[("tok-alice", "alice")]);
-        let (_f, app) = sample_router(owner_map);
+        let (_f, app) = sample_router(owner_map).await;
         let req = axum::http::Request::builder()
             .uri("/loadout")
             .header("x-bastion-token", "tok-alice")

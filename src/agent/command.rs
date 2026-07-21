@@ -2,9 +2,9 @@ use bastion_memory::SharedMemory;
 use bastion_personas::persona::PersonaRegistry;
 use bastion_providers::registry::resolve_provider;
 use bastion_providers::SharedProvider;
-use std::path::PathBuf;
 
 use crate::config::{AuthConfig, AuthProfileEntry};
+use crate::config_store::{model_value_json, ConfigStore, KEY_MODEL_SELECTED};
 
 /// P5 despejo (M2): product-level resources a command dispatch needs beyond
 /// what the kernel loop itself tracks — the shared OTC pairing store
@@ -42,9 +42,14 @@ pub struct CommandResources {
 
 /// Persistent, daemon-owned selection used by `/model`. The configured default
 /// remains separate so `/model reset` can always return to it.
+///
+/// A4-U S1: persistence goes through the unified [`ConfigStore`]
+/// (`config_overrides` audit table, key `model.selected`) instead of the
+/// legacy `.bastion/model-selection.json` file — one write path with audit
+/// and `config.applied` SSE propagation, shared with `/backend`.
 #[derive(Clone)]
 pub struct ModelSelection {
-    pub path: PathBuf,
+    pub store: ConfigStore,
     pub default_model: String,
 }
 
@@ -144,10 +149,15 @@ async fn switch_model(
     model: &str,
     provider: &SharedProvider,
     model_selection: Option<&ModelSelection>,
+    owner: &str,
 ) -> anyhow::Result<String> {
     let new_provider = resolve_provider(model)?;
     if let Some(selection) = model_selection {
-        crate::config::save_model_selection(&selection.path, model)?;
+        let value = model_value_json(model);
+        selection
+            .store
+            .apply(KEY_MODEL_SELECTED, &value, "console", Some(owner))
+            .await?;
     }
     // Acquire WRITE lock between turns — blocks until any active stream releases READ lock.
     *provider.write().await = new_provider;
@@ -344,7 +354,14 @@ pub async fn handle_command(
                         "Model reset is unavailable because this daemon has no persistent session storage."
                     ))?;
                     let new_provider = resolve_provider(&selection.default_model)?;
-                    crate::config::clear_model_selection(&selection.path)?;
+                    // Append-only store: "clearing" the override is itself an
+                    // audited apply of the empty sentinel the startup loader
+                    // treats as "no override" (never a DELETE).
+                    let cleared = model_value_json("");
+                    selection
+                        .store
+                        .apply(KEY_MODEL_SELECTED, &cleared, "console", Some(owner))
+                        .await?;
                     // Acquire WRITE lock between turns — blocks until any active stream releases READ lock.
                     *provider.write().await = new_provider;
                     tracing::info!(event = "provider_reset", model = %selection.default_model);
@@ -354,7 +371,7 @@ pub async fn handle_command(
                     )))
                 }
                 Some(model) => Ok(CommandResult::Handled(
-                    switch_model(model, provider, model_selection).await?,
+                    switch_model(model, provider, model_selection, owner).await?,
                 )),
             }
         }

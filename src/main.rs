@@ -597,6 +597,27 @@ async fn main() -> anyhow::Result<()> {
     ));
     proposal_store.init_schema().await?;
 
+    // A4-U S1: unified config-override store — the single write path for
+    // runtime config mutations (`model.selected` / `backend.selected`), with
+    // append-only audit. Same fail-closed init tier and same DB file as the
+    // proposal store above. Legacy `.bastion/*-selection.json` files are
+    // imported once (origin `migration`) and renamed `*.imported` so the
+    // retired writers can never race the store again.
+    let config_store = bastion::config_store::ConfigStore::new(db_path.clone());
+    config_store.init_schema().await?;
+    config_store
+        .migrate_legacy_file(
+            bastion::config_store::KEY_MODEL_SELECTED,
+            &bastion::config::model_selection_path(&cfg),
+        )
+        .await?;
+    config_store
+        .migrate_legacy_file(
+            bastion::config_store::KEY_BACKEND_SELECTED,
+            &bastion::config::backend_selection_path(&cfg),
+        )
+        .await?;
+
     // US External Control Plane and SDK, Phase 4: same fail-closed tier —
     // `POST /v1/webhook-subscriptions` and every mutation route's event
     // emission depend on these two tables existing.
@@ -655,9 +676,14 @@ async fn main() -> anyhow::Result<()> {
     let mcp_for_product = mcp_client.clone();
 
     // The reviewable TOML default can be overridden by a local `/model` choice
-    // saved beside the persistent session database. This makes an interactive
+    // persisted in the unified config store (A4-U — previously the
+    // `model-selection.json` file, migrated above). This makes an interactive
     // provider switch survive a daemon restart without rewriting bastion.toml.
-    let default_model = bastion::config::load_model_selection(&cfg)
+    let default_model = config_store
+        .latest(bastion::config_store::KEY_MODEL_SELECTED)
+        .await?
+        .as_deref()
+        .and_then(bastion::config_store::model_from_value_json)
         .unwrap_or_else(|| cfg.agent.default_model.clone());
     let provider: bastion_providers::SharedProvider =
         Arc::new(RwLock::new(resolve_provider(&default_model)?));
@@ -677,6 +703,10 @@ async fn main() -> anyhow::Result<()> {
     // turn/persona/cabinet events on the same stream `/events` serves. For
     // non-daemon commands nothing ever subscribes and every send is a no-op.
     let (events_tx, _) = tokio::sync::broadcast::channel::<String>(128);
+    // A4-U S1: from here on every successful `ConfigStore::apply` broadcasts
+    // a `config.applied` event on the same stream `/events` serves (startup
+    // migration/reads above ran before any subscriber could exist).
+    let config_store = config_store.with_events(events_tx.clone());
     let responder: Arc<dyn bastion_runtime::agent::ports::Responder> =
         Arc::new(bastion::observability::ObservedResponder::new(
             Arc::new(bastion_personas::persona::responder::PersonaResponder::new(
@@ -797,14 +827,19 @@ async fn main() -> anyhow::Result<()> {
 
     let mut backend_profile = bastion::config::backend_profile_from_config(&cfg.backend);
     // Fase 2.2: an interactive `/backend use <id>` choice persisted by a
-    // PRIOR run (`.bastion/backend-selection.json`, beside the session DB)
-    // overlays bastion.toml/env at every subsequent startup — user choice
-    // wins over the installer's env-var default, exactly like
-    // `load_model_selection` already does for `/model`. Reuses
-    // `backend_profile_from_config` (not a bespoke mapping here) so the
-    // "model"/"runtime:<id>" grammar and the empty-auth-string-to-None fix
-    // stay single-sourced.
-    if let Some(selection) = bastion::config::load_backend_selection(&cfg) {
+    // PRIOR run (the unified config store's `backend.selected` key — A4-U,
+    // previously `.bastion/backend-selection.json`, migrated above) overlays
+    // bastion.toml/env at every subsequent startup — user choice wins over
+    // the installer's env-var default, exactly like the `model.selected`
+    // read already does for `/model`. Reuses `backend_profile_from_config`
+    // (not a bespoke mapping here) so the "model"/"runtime:<id>" grammar and
+    // the empty-auth-string-to-None fix stay single-sourced.
+    if let Some(selection) = config_store
+        .latest(bastion::config_store::KEY_BACKEND_SELECTED)
+        .await?
+        .as_deref()
+        .and_then(bastion::config_store::backend_selection_from_value_json)
+    {
         backend_profile =
             bastion::config::backend_profile_from_config(&bastion::config::BackendConfig {
                 conversation: Some(selection.conversation.clone()),
@@ -950,6 +985,7 @@ async fn main() -> anyhow::Result<()> {
                 control_plane_webhook_subscription_store,
                 control_plane_webhook_delivery_store,
                 proposal_store,
+                config_store,
                 events_tx,
             )
             .await?;
@@ -1174,6 +1210,11 @@ async fn daemon_loop(
     // /proposals route (built into the loadout router below) and the
     // console `/proposal` cockpit.
     proposal_store: Arc<bastion::proposals::SqliteProposalStore>,
+    // A4-U S1: the unified config-override store `/model` and `/backend`
+    // write through (audit + `config.applied` SSE) and
+    // `GET /config/overrides` reads from. Already carries the `events_tx`
+    // sender (attached in `main()`), so every apply here propagates live.
+    config_store: bastion::config_store::ConfigStore,
     // Observability: SSE broadcast channel, created in `main()` so the
     // `ObservedResponder` decorator (built there, before this call) shares
     // the exact stream `/events` serves — see `bastion::observability`.
@@ -1242,19 +1283,17 @@ async fn daemon_loop(
     // original `self.registry` field's always-present behavior.
     let mut command_resources = CommandResources {
         registry: registry_for_product.clone(),
+        // A4-U S1: `/model` persists through the unified config store (key
+        // `model.selected`) instead of the legacy model-selection.json —
+        // same store both `/backend` dispatch arms below write through.
         model_selection: Some(bastion::agent::command::ModelSelection {
-            path: bastion::config::model_selection_path(cfg),
+            store: config_store.clone(),
             default_model: cfg.agent.default_model.clone(),
         }),
         auth: cfg.auth.clone(),
         updates: Some(updates.clone()),
         ..Default::default()
     };
-
-    // Fase 2.3/2.4: `.bastion/backend-selection.json` — the persistence path
-    // both dispatch arms below pass into `backend_command::handle` (mirrors
-    // `command_resources.model_selection.path` for `/model`).
-    let backend_selection_path = bastion::config::backend_selection_path(cfg);
 
     // CR-07: create AgentHandle + inbound receiver BEFORE the select! loop.
     // Channels (Telegram, webhook) hold clones of `handle` and send messages into `inbound_rx`.
@@ -1578,6 +1617,7 @@ async fn daemon_loop(
                 owner_map.clone(),
                 jwt_secret.clone(),
                 proposal_store.clone(),
+                config_store.clone(),
                 events_tx.clone(),
             ));
             // US External Control Plane and SDK: `/v1/*` routes, built over
@@ -2037,8 +2077,9 @@ async fn daemon_loop(
                             match bastion::agent::backend_command::handle(
                                 agent,
                                 backend_arg,
-                                &backend_selection_path,
+                                &config_store,
                                 &cfg.auth,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
                             )
                             .await
                             {
@@ -2312,8 +2353,9 @@ async fn daemon_loop(
                     match bastion::agent::backend_command::handle(
                         agent,
                         backend_arg,
-                        &backend_selection_path,
+                        &config_store,
                         &cfg.auth,
+                        &req.owner,
                     )
                     .await
                     {

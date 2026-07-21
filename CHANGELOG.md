@@ -10,6 +10,21 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **Unified config store (A4-U S1)**: runtime config overrides (`/model`,
+  `/backend`) now funnel through one audited write path — an append-only
+  `config_overrides` SQLite table (key, JSON value, origin
+  `console|web|channel|migration`, actor, timestamp) in the session DB. The
+  current value of a key is its latest row; every prior row is retained as
+  audit history. Each successful apply broadcasts a `config.applied` event
+  on `/events`, so every surface hears about changes live. `bastion.toml`
+  stays the declarative base; store overrides overlay it at startup exactly
+  like the retired `.bastion/model-selection.json` /
+  `backend-selection.json` files did — existing files are imported once
+  (origin `migration`) and renamed `*.imported`.
+- `GET /config/overrides`: the effective override overlay (latest row per
+  key, with origin and applied-at provenance), owner-token authenticated
+  like `/loadout` and `/proposals`.
+
 - **Control Plane**: an embedded, external-facing HTTP API (`/v1/tasks*`) that
   lets an outside orchestrator (e.g. Paperclip) create, list, and drive
   Bastion's durable `Pursue` tasks — pause/resume/cancel/steer — without

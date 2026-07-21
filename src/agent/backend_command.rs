@@ -26,9 +26,9 @@
 use bastion_agent_runtime::AuthProfileRef;
 use bastion_runtime::agent::backend::{BackendProfile, ConversationBackend};
 use bastion_runtime::agent::loop_::AgentLoop;
-use std::path::Path;
 
 use crate::config::{AuthConfig, AuthProfileEntry, BackendSelection};
+use crate::config_store::{ConfigStore, KEY_BACKEND_SELECTED};
 
 /// Runtime id -> the `[auth.<profile>]` id in bastion.toml it must resolve
 /// against for a runtime-backed turn to actually authenticate. Keep in sync
@@ -68,22 +68,36 @@ async fn login_status_line(auth_cfg: &AuthConfig, profile: &str) -> String {
     }
 }
 
-fn persist(path: &Path, selection: &BackendSelection) -> anyhow::Result<()> {
-    crate::config::save_backend_selection(path, selection)
+/// A4-U S1: persistence goes through the unified `ConfigStore` (key
+/// `backend.selected`, same JSON shape the legacy
+/// `.bastion/backend-selection.json` held) — one audited write path shared
+/// with `/model`, with `config.applied` SSE propagation.
+async fn persist(
+    store: &ConfigStore,
+    selection: &BackendSelection,
+    actor: &str,
+) -> anyhow::Result<()> {
+    let value_json = serde_json::to_string(selection)
+        .map_err(|e| anyhow::anyhow!("could not serialize backend selection: {e}"))?;
+    store
+        .apply(KEY_BACKEND_SELECTED, &value_json, "console", Some(actor))
+        .await
         .map_err(|e| anyhow::anyhow!("could not persist backend selection: {e}"))
 }
 
 /// `/backend` / `/backends` command entry point.
 ///
-/// `persist_path` is `.bastion/backend-selection.json`
-/// (`config::backend_selection_path`); `auth_cfg` is the loaded `[auth.*]`
-/// table, used for the live login-status probes in the listing and for
-/// validating a chosen runtime's mapped profile is actually configured.
+/// `config_store` is the unified override store (A4-U) the selection is
+/// persisted through; `auth_cfg` is the loaded `[auth.*]` table, used for
+/// the live login-status probes in the listing and for validating a chosen
+/// runtime's mapped profile is actually configured; `owner` is recorded as
+/// the audit actor.
 pub async fn handle(
     agent: &mut AgentLoop,
     arg: Option<&str>,
-    persist_path: &Path,
+    config_store: &ConfigStore,
     auth_cfg: &AuthConfig,
+    owner: &str,
 ) -> anyhow::Result<String> {
     let arg = arg.map(str::trim).filter(|s| !s.is_empty());
 
@@ -97,7 +111,7 @@ pub async fn handle(
             if target.is_empty() {
                 list_backends(agent, auth_cfg).await
             } else {
-                use_backend(agent, target, persist_path, auth_cfg).await
+                use_backend(agent, target, config_store, auth_cfg, owner).await
             }
         }
     }
@@ -146,8 +160,9 @@ async fn list_backends(agent: &AgentLoop, auth_cfg: &AuthConfig) -> anyhow::Resu
 async fn use_backend(
     agent: &mut AgentLoop,
     spec: &str,
-    persist_path: &Path,
+    config_store: &ConfigStore,
     auth_cfg: &AuthConfig,
+    owner: &str,
 ) -> anyhow::Result<String> {
     if spec == "model" {
         // Deviation from the plan's "restaura auth do cfg" wording: this
@@ -162,13 +177,15 @@ async fn use_backend(
         agent.backend_profile.conversation = ConversationBackend::Model;
         agent.backend_profile.coverage_note = None;
         persist(
-            persist_path,
+            config_store,
             &BackendSelection {
                 conversation: "model".to_string(),
                 auth: agent.backend_profile.auth.as_ref().map(|a| a.0.clone()),
                 task_runtime: agent.backend_profile.task_runtime.clone(),
             },
-        )?;
+            owner,
+        )
+        .await?;
         return Ok("Backend de conversa definido para: model (Bastion tool loop).".to_string());
     }
 
@@ -201,13 +218,15 @@ async fn use_backend(
     agent.backend_profile.auth = Some(AuthProfileRef(profile.to_string()));
 
     persist(
-        persist_path,
+        config_store,
         &BackendSelection {
             conversation: format!("runtime:{id}"),
             auth: Some(profile.to_string()),
             task_runtime: agent.backend_profile.task_runtime.clone(),
         },
-    )?;
+        owner,
+    )
+    .await?;
 
     let login = login_status_line(auth_cfg, profile).await;
     Ok(format!(
