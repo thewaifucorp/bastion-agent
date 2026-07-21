@@ -10,6 +10,38 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **Provider manager core (A4 S2)**: the daemon now knows its own model
+  catalog and provider status.
+  - `src/model_catalog.rs`: a curated static table of current model ids per
+    provider kind (anthropic/openai/gemini/groq/openrouter/ollama),
+    classified by the SAME prefix rules the provider registry routes with,
+    merged with whatever bastion.toml / config-store overrides actually name
+    so custom ids always appear.
+  - `GET /models` (owner-token): the merged catalog grouped by provider
+    kind, plus the EFFECTIVE `default_model`/`fallback_models`
+    (config-store override else bastion.toml).
+  - `GET /providers` (owner-token): per-provider connection status —
+    booleans only, never key material. API-key providers report `source:
+    "env" | "secrets_dir" | null` via the same secret resolvers the daemon
+    boots with; `[auth.*]` subscription CLIs are live-probed by exit code
+    (like `/status`); ollama reports `kind: "local"` with `connected` =
+    "some effective model routes to it" (no network probe from a GET).
+- **New proposal kinds (web proposes, console approves)**:
+  - `model_config { default_model?, fallback_models? }` — apply writes
+    through the unified config store (origin `web`, actor = approving
+    owner); the default model hot-swaps the live provider exactly like
+    `/model`; the fallback ladder is persisted under the new
+    `model.fallbacks` key and loaded at the next startup (the running
+    loop's ladder is construction-time — hot swap is a bastion-core seam).
+  - `secret_set { provider_id, env_key }` — provider API keys by
+    REFERENCE. The value is never written to the proposal table: the web
+    POST pens it in memory keyed by proposal id; console approve writes
+    `BASTION_SECRETS_DIR/<ENV_KEY>` (0600) and drops it. If the daemon
+    restarted in between, approve fails with "re-submit from the web".
+    Env keys are validated against `^[A-Z][A-Z0-9_]{2,63}$` AND the known
+    provider env-key whitelist; the audit trail records only
+    `secret.set:<ENV_KEY> = {"set": true}`.
+
 - **Unified config store (A4-U S1)**: runtime config overrides (`/model`,
   `/backend`) now funnel through one audited write path — an append-only
   `config_overrides` SQLite table (key, JSON value, origin

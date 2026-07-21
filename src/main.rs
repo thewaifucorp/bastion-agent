@@ -687,6 +687,17 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| cfg.agent.default_model.clone());
     let provider: bastion_providers::SharedProvider =
         Arc::new(RwLock::new(resolve_provider(&default_model)?));
+    // A4 S2: the fallback ladder gets the same overlay treatment as
+    // `default_model` above — an approved `model_config` proposal persists
+    // `model.fallbacks` in the config store, and it is read HERE (the ladder
+    // is passed to `AgentLoop::new` at construction, so a persisted change
+    // takes effect on the next restart — see `proposals::apply`).
+    let fallback_models = config_store
+        .latest(bastion::config_store::KEY_MODEL_FALLBACKS)
+        .await?
+        .as_deref()
+        .and_then(bastion::config_store::fallback_models_from_value_json)
+        .unwrap_or_else(|| cfg.agent.fallback_models.clone());
 
     let daily_budget = cfg.agent.daily_budget_usd;
 
@@ -783,7 +794,9 @@ async fn main() -> anyhow::Result<()> {
         responder,
         memory.clone(),
         Some(std::sync::Arc::new(goals)),
-        cfg.agent.fallback_models.clone(),
+        // Effective ladder: config-store `model.fallbacks` override else
+        // bastion.toml (computed above, beside `default_model`).
+        fallback_models,
         std::sync::Arc::new(bastion_runtime::capability::SqliteApprovalGate::new(
             &db_path,
         )),
@@ -986,6 +999,7 @@ async fn main() -> anyhow::Result<()> {
                 control_plane_webhook_delivery_store,
                 proposal_store,
                 config_store,
+                provider.clone(),
                 events_tx,
             )
             .await?;
@@ -1215,6 +1229,10 @@ async fn daemon_loop(
     // `GET /config/overrides` reads from. Already carries the `events_tx`
     // sender (attached in `main()`), so every apply here propagates live.
     config_store: bastion::config_store::ConfigStore,
+    // A4 S2: the SAME live provider handle the loop runs on (`main()` keeps
+    // a clone) — an approved `model_config` proposal hot-swaps it exactly
+    // like `/model` does.
+    provider: bastion_providers::SharedProvider,
     // Observability: SSE broadcast channel, created in `main()` so the
     // `ObservedResponder` decorator (built there, before this call) shares
     // the exact stream `/events` serves — see `bastion::observability`.
@@ -1222,6 +1240,24 @@ async fn daemon_loop(
 ) -> anyhow::Result<()> {
     use bastion::agent::command::{CommandResources, CommandResult};
     use tokio::io::{AsyncBufReadExt, BufReader};
+
+    // A4 S2: staged `secret_set` values live ONLY in this in-memory pen
+    // between the web POST and the console approve (see
+    // `proposals::PendingSecretValues`) — shared by the loadout router
+    // (which fills it) and the `/proposal` cockpit (which drains it).
+    let pending_secret_values = bastion::proposals::PendingSecretValues::default();
+    // Resources an approved proposal's apply step may need. `actor` is
+    // stamped per-approve by the cockpit with the approving owner.
+    let proposal_apply_resources = bastion::proposals::ApplyResources {
+        config_store: Some(config_store.clone()),
+        provider: Some(provider.clone()),
+        pending_secrets: pending_secret_values.clone(),
+        secrets_dir: std::env::var("BASTION_SECRETS_DIR")
+            .ok()
+            .filter(|d| !d.trim().is_empty())
+            .map(std::path::PathBuf::from),
+        actor: None,
+    };
 
     // Observability frontend: the one lifecycle observer every adaptive
     // cycle/delegation in this daemon emits through — SSE (`/events`) +
@@ -1618,6 +1654,15 @@ async fn daemon_loop(
                 jwt_secret.clone(),
                 proposal_store.clone(),
                 config_store.clone(),
+                // A4 S2: bastion.toml model config — the base `GET /models`
+                // overlays with the config store's effective overrides.
+                bastion::loadout::ModelDefaults {
+                    default_model: cfg.agent.default_model.clone(),
+                    fallback_models: cfg.agent.fallback_models.clone(),
+                },
+                // A4 S2: `[auth.*]` for `GET /providers`' subscription rows.
+                cfg.auth.clone(),
+                pending_secret_values.clone(),
                 events_tx.clone(),
             ));
             // US External Control Plane and SDK: `/v1/*` routes, built over
@@ -2130,6 +2175,7 @@ async fn daemon_loop(
                                 &proposal_store,
                                 prop_arg,
                                 bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                                &proposal_apply_resources,
                             )
                             .await
                             {
