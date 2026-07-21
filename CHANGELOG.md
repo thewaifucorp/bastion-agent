@@ -8,6 +8,24 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+### Added
+
+- **Control Plane**: an embedded, external-facing HTTP API (`/v1/tasks*`) that
+  lets an outside orchestrator (e.g. Paperclip) create, list, and drive
+  Bastion's durable `Pursue` tasks — pause/resume/cancel/steer — without
+  adopting Bastion's internal Rust types. Authenticated by its own scoped
+  bearer credentials (`tasks:read`, `tasks:create`, `tasks:control`,
+  `webhooks:manage`), independent from the existing webhook channel's token
+  model. Signed, retried outbound webhook delivery notifies subscribers of
+  task events, and the frozen `/v1/openapi.yaml` contract is drift-tested
+  against its DTOs.
+- The same task-store logic is now also reachable as 5 MCP tools
+  (`create_task`/`get_task`/`list_tasks`/`steer_task`/`cancel_task`), exposed
+  through a registry dedicated to external MCP callers, and demonstrated
+  end-to-end by a standalone `paperclip-adapter/` proof.
+- A TypeScript SDK (`sdk/typescript/`) for the Control Plane API.
+- Threat model doc: [`docs/en/control-plane-security.md`](docs/en/control-plane-security.md).
+
 ## [0.2.1] — 2026-07-20
 
 ### Added
