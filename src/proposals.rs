@@ -34,9 +34,10 @@ use serde::{Deserialize, Serialize};
 use tokio::task::spawn_blocking;
 
 use crate::config_store::{
-    fallback_models_value_json, model_value_json, ConfigStore, KEY_MODEL_FALLBACKS,
-    KEY_MODEL_SELECTED,
+    fallback_models_value_json, model_value_json, routing_rules_value_json, ConfigStore,
+    KEY_MODEL_FALLBACKS, KEY_MODEL_SELECTED, KEY_ROUTING_RULES,
 };
+use crate::routing::RouteClass;
 
 pub const MAX_CONTENT_BYTES: usize = 256 * 1024;
 
@@ -75,6 +76,15 @@ pub enum ProposalPayload {
         provider_id: String,
         env_key: String,
     },
+    /// A4.5: per-call-site-class model routing rules. The map REPLACES the
+    /// current `routing.rules` override entirely (classes absent fall back
+    /// to bastion.toml's `[routing]`; an empty map clears the override).
+    /// Class names must parse as `crate::routing::RouteClass`; model ids
+    /// must be non-empty but are NOT gated on the catalog — custom/niche
+    /// ids are legal, exactly like `/model`. Supported classes get their
+    /// knob applied at approve (see [`apply`]); unsupported ones are
+    /// persisted only, reported `supported: false` by `GET /routing`.
+    RoutingConfig { rules: HashMap<String, String> },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -406,7 +416,123 @@ pub async fn apply(
             provider_id,
             env_key,
         } => apply_secret_set(proposal_id, provider_id, env_key, res).await,
+        ProposalPayload::RoutingConfig { rules } => apply_routing_config(rules, res).await,
     }
+}
+
+/// A4.5: persist the routing-rules override and apply every SUPPORTED
+/// class's knob (module docs in `crate::routing` list reachability):
+///
+/// - `chat_turn` — hot-swaps the live `SharedProvider` exactly like
+///   `/model` (same connectivity guard as `apply_model_config`; a
+///   disconnected provider bails BEFORE anything is persisted).
+/// - `reflection` — the Reflector's provider is resolved once at daemon
+///   start (main.rs reads the routing table there), so the rule is
+///   persisted and takes effect on the next restart.
+/// - `pursue_task` / `cabinet` / `compaction` — no agent-reachable knob on
+///   the pinned core rev: persisted only, honestly reported.
+///
+/// Clearing (empty map, or a map without `chat_turn`) does NOT hot-swap the
+/// provider back — the startup routing read restores the base model on the
+/// next restart (the live provider keeps whatever `/model`/routing last
+/// swapped in, same as clearing `model.selected` today).
+async fn apply_routing_config(
+    rules: &HashMap<String, String>,
+    res: &ApplyResources,
+) -> anyhow::Result<String> {
+    let store = res.config_store.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("no config store in this apply context — routing_config cannot be applied")
+    })?;
+    // Re-validate at apply even though create already did (defense in depth
+    // — a row written by any other path must meet the same bar).
+    for (class, model) in rules {
+        if RouteClass::parse(class).is_none() {
+            anyhow::bail!(
+                "unknown routing class '{class}' — classes are: {}",
+                RouteClass::ALL.map(|c| c.as_str()).join(", ")
+            );
+        }
+        if model.trim().is_empty() {
+            anyhow::bail!("routing model for class '{class}' must not be empty");
+        }
+    }
+
+    // chat_turn knob prep BEFORE the persist: same fail-closed order as
+    // `apply_model_config` — a rule that cannot construct its provider is
+    // refused whole, never half-persisted.
+    let chat_model = rules
+        .get(RouteClass::ChatTurn.as_str())
+        .map(|m| m.trim().to_string());
+    let mut new_chat_provider = match chat_model.as_deref() {
+        Some(model) => {
+            let kind = bastion_providers::registry::resolve_provider_kind(model);
+            if let Some(env_key) = crate::model_catalog::env_key_for_provider(kind) {
+                let present = std::env::var(env_key).is_ok_and(|v| !v.is_empty());
+                if !present {
+                    anyhow::bail!(
+                        "chat_turn routes to provider '{kind}' which is not connected in this \
+                         process ({env_key} is not set in the daemon's environment) — set it \
+                         and re-approve, or pick another model"
+                    );
+                }
+            }
+            Some(bastion_providers::registry::resolve_provider(model)?)
+        }
+        None => None,
+    };
+
+    store
+        .apply(
+            KEY_ROUTING_RULES,
+            &routing_rules_value_json(rules),
+            "web",
+            res.actor.as_deref(),
+        )
+        .await?;
+
+    if rules.is_empty() {
+        return Ok(
+            "routing override cleared — [routing] in bastion.toml (if any) is the effective \
+             table from the next startup read"
+                .to_string(),
+        );
+    }
+
+    let mut lines = Vec::new();
+    for class in RouteClass::ALL {
+        let Some(model) = rules.get(class.as_str()) else {
+            continue;
+        };
+        let line = match class {
+            RouteClass::ChatTurn => match (new_chat_provider.take(), res.provider.as_ref()) {
+                (Some(swapped_in), Some(provider)) => {
+                    // Same order as `/model` (`switch_model`): persisted
+                    // above, then swap the live provider between turns.
+                    *provider.write().await = swapped_in;
+                    tracing::info!(
+                        event = "provider_swapped",
+                        model = %model,
+                        origin = "web:routing",
+                    );
+                    format!("chat_turn → {model} (live)")
+                }
+                _ => format!(
+                    "chat_turn → {model}; no live provider handle here — takes effect next restart"
+                ),
+            },
+            RouteClass::Reflection => format!(
+                "reflection → {model}; the Reflector resolves its provider at startup — takes \
+                 effect on the next restart"
+            ),
+            RouteClass::PursueTask | RouteClass::Cabinet | RouteClass::Compaction => format!(
+                "{} → {model}; persisted only — this class has no agent-reachable model knob \
+                 yet (requires core support, see src/routing.rs)",
+                class.as_str()
+            ),
+        };
+        lines.push(line);
+    }
+    Ok(lines.join(" | "))
 }
 
 async fn apply_model_config(
@@ -850,6 +976,96 @@ mod tests {
         // Nothing was persisted for the refused switch.
         let store = res.config_store.as_ref().unwrap();
         assert!(store.latest(KEY_MODEL_SELECTED).await.unwrap().is_none());
+    }
+
+    // ---- A4.5: routing_config ------------------------------------------
+
+    fn routing(pairs: &[(&str, &str)]) -> ProposalPayload {
+        ProposalPayload::RoutingConfig {
+            rules: pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn routing_config_serde_uses_snake_case_kind_tag() {
+        let value = serde_json::to_value(routing(&[("chat_turn", "llama3.2")])).unwrap();
+        assert_eq!(value["kind"], "routing_config");
+        assert_eq!(value["rules"]["chat_turn"], "llama3.2");
+        let parsed: ProposalPayload = serde_json::from_value(value).unwrap();
+        assert!(matches!(parsed, ProposalPayload::RoutingConfig { .. }));
+    }
+
+    #[tokio::test]
+    async fn routing_config_apply_requires_a_config_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = apply_bare(dir.path(), &routing(&[("chat_turn", "llama3.2")]))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no config store"));
+    }
+
+    #[tokio::test]
+    async fn routing_config_apply_validates_class_names_and_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_f, res) = resources_with_store().await;
+
+        let unknown = routing(&[("not_a_class", "llama3.2")]);
+        let err = apply(dir.path(), "p", &unknown, &res).await.unwrap_err();
+        assert!(err.to_string().contains("unknown routing class"), "{err}");
+
+        let blank = routing(&[("reflection", "   ")]);
+        assert!(apply(dir.path(), "p", &blank, &res).await.is_err());
+
+        // Nothing persisted for the refused proposals.
+        let store = res.config_store.as_ref().unwrap();
+        assert!(store.latest(KEY_ROUTING_RULES).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn routing_config_apply_persists_and_reports_per_class_effect() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_f, res) = resources_with_store().await;
+        // ollama-routed ids: no API-key connectivity guard, no live provider
+        // in `res`, so the apply persists without constructing anything.
+        let payload = routing(&[
+            ("chat_turn", "llama3.2"),
+            ("reflection", "mistral"),
+            ("compaction", "qwen3"),
+        ]);
+        let msg = apply(dir.path(), "p", &payload, &res).await.unwrap();
+        assert!(msg.contains("chat_turn → llama3.2"), "{msg}");
+        assert!(msg.contains("reflection → mistral"), "{msg}");
+        // Honest v1: unsupported classes say so instead of pretending.
+        assert!(msg.contains("compaction → qwen3"), "{msg}");
+        assert!(msg.contains("requires core support"), "{msg}");
+
+        let store = res.config_store.as_ref().unwrap();
+        let raw = store.latest(KEY_ROUTING_RULES).await.unwrap().unwrap();
+        let rules = crate::config_store::routing_rules_from_value_json(&raw).unwrap();
+        assert_eq!(rules.get("chat_turn").map(String::as_str), Some("llama3.2"));
+        assert_eq!(rules.len(), 3);
+        let history = store.history(KEY_ROUTING_RULES, 1).await.unwrap();
+        assert_eq!(history[0].origin, "web");
+        assert_eq!(history[0].actor.as_deref(), Some("alice"));
+    }
+
+    #[tokio::test]
+    async fn routing_config_apply_empty_map_clears_the_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_f, res) = resources_with_store().await;
+        apply(dir.path(), "p", &routing(&[("chat_turn", "llama3.2")]), &res)
+            .await
+            .unwrap();
+
+        let msg = apply(dir.path(), "p", &routing(&[]), &res).await.unwrap();
+        assert!(msg.contains("cleared"), "{msg}");
+        let store = res.config_store.as_ref().unwrap();
+        let raw = store.latest(KEY_ROUTING_RULES).await.unwrap().unwrap();
+        // The latest row IS the cleared sentinel — parses to "no override".
+        assert!(crate::config_store::routing_rules_from_value_json(&raw).is_none());
     }
 
     #[tokio::test]

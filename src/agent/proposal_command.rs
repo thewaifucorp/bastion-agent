@@ -65,6 +65,17 @@ fn describe(p: &Proposal) -> String {
             // The value is never in the row — nothing to redact here.
             format!("secret_set {env_key} ({provider_id}) — value held in memory until approve")
         }
+        ProposalPayload::RoutingConfig { rules } => {
+            if rules.is_empty() {
+                "routing_config (clear the override)".to_string()
+            } else {
+                // Deterministic listing for the console — sorted by class.
+                let mut pairs: Vec<String> =
+                    rules.iter().map(|(c, m)| format!("{c}={m}")).collect();
+                pairs.sort();
+                format!("routing_config {}", pairs.join(" "))
+            }
+        }
     };
     let status = match p.status {
         ProposalStatus::Pending => "PENDING",
@@ -116,6 +127,15 @@ async fn show(store: &Arc<SqliteProposalStore>, owner: &str, id: &str) -> anyhow
                          BASTION_SECRETS_DIR/{env_key} (0600) and dropped. The value is never \
                          shown and never stored in the proposal table."
                     ));
+                }
+                ProposalPayload::RoutingConfig { .. } => {
+                    out.push_str(
+                        "applies through the unified config store (origin web) as the \
+                         routing.rules override — the whole map replaces the previous one. \
+                         chat_turn hot-swaps like /model; reflection loads at the next \
+                         restart; other classes are persisted only until core support lands \
+                         (GET /routing reports supported per class).",
+                    );
                 }
             }
             Ok(out)

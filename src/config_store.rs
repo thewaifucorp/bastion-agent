@@ -49,6 +49,14 @@ pub const KEY_BACKEND_SELECTED: &str = "backend.selected";
 /// at STARTUP only — persisting it takes effect on the next restart.
 pub const KEY_MODEL_FALLBACKS: &str = "model.fallbacks";
 
+/// A4.5: runtime-overridden per-call-site-class routing rules (approved
+/// `routing_config` proposals). Value shape:
+/// `{"rules": {"chat_turn": "<model id>", ...}}` — an empty `rules` map
+/// means "override cleared, use bastion.toml's `[routing]`". The map
+/// REPLACES the previous override entirely (classes absent fall back to
+/// toml), mirroring how `model.fallbacks` replaces the whole ladder.
+pub const KEY_ROUTING_RULES: &str = "routing.rules";
+
 const SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS config_overrides (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -318,6 +326,32 @@ pub fn fallback_models_value_json(models: &[String]) -> String {
     serde_json::json!({ "models": models }).to_string()
 }
 
+/// Serialize per-class routing rules into the `routing.rules` value shape.
+pub fn routing_rules_value_json(rules: &std::collections::HashMap<String, String>) -> String {
+    serde_json::json!({ "rules": rules }).to_string()
+}
+
+/// Parse a `routing.rules` value. Blank class names/models are filtered;
+/// an empty map after filtering (the cleared sentinel) and malformed JSON
+/// both come back as `None` — callers fall back to bastion.toml's
+/// `[routing]`, mirroring [`fallback_models_from_value_json`]'s contract.
+pub fn routing_rules_from_value_json(
+    raw: &str,
+) -> Option<std::collections::HashMap<String, String>> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let rules: std::collections::HashMap<String, String> = value
+        .get("rules")?
+        .as_object()?
+        .iter()
+        .filter_map(|(class, model)| {
+            let model = model.as_str()?.trim();
+            (!class.trim().is_empty() && !model.is_empty())
+                .then(|| (class.clone(), model.to_string()))
+        })
+        .collect();
+    (!rules.is_empty()).then_some(rules)
+}
+
 /// Parse a `model.fallbacks` value. An empty list (the cleared sentinel) and
 /// malformed JSON both come back as `None` — callers fall back to
 /// bastion.toml, mirroring [`model_from_value_json`]'s contract.
@@ -506,6 +540,30 @@ mod tests {
         );
         assert_eq!(fallback_models_from_value_json(r#"{"models":"nope"}"#), None);
         assert_eq!(fallback_models_from_value_json("not json"), None);
+    }
+
+    #[test]
+    fn routing_rules_value_json_roundtrip_and_cleared_sentinel() {
+        let mut rules = std::collections::HashMap::new();
+        rules.insert("chat_turn".to_string(), "gpt-5-mini".to_string());
+        rules.insert("reflection".to_string(), "llama3.2".to_string());
+        assert_eq!(
+            routing_rules_from_value_json(&routing_rules_value_json(&rules)),
+            Some(rules)
+        );
+        // Cleared/blank/malformed all mean "no override".
+        assert_eq!(
+            routing_rules_from_value_json(&routing_rules_value_json(
+                &std::collections::HashMap::new()
+            )),
+            None
+        );
+        assert_eq!(
+            routing_rules_from_value_json(r#"{"rules":{"chat_turn":"   "}}"#),
+            None
+        );
+        assert_eq!(routing_rules_from_value_json(r#"{"rules":"nope"}"#), None);
+        assert_eq!(routing_rules_from_value_json("not json"), None);
     }
 
     #[test]

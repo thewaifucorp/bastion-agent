@@ -90,6 +90,9 @@ struct LoadoutState {
     /// A4 S2: in-memory holding pen for `secret_set` values (see
     /// `proposals::PendingSecretValues`) — shared with the console approve.
     pending_secrets: PendingSecretValues,
+    /// A4.5: bastion.toml's `[routing]` table — the declarative base
+    /// `GET /routing` overlays with the config store's `routing.rules`.
+    routing_toml: Arc<std::collections::HashMap<String, String>>,
     events_tx: broadcast::Sender<String>,
 }
 
@@ -358,6 +361,21 @@ async fn models_handler(
     .into_response()
 }
 
+/// A4.5 `GET /routing`: the effective routing table — all five call-site
+/// classes, always, each with its effective model (config-store override
+/// else `[routing]` toml else null), the layer that supplied it, and the
+/// honest `supported` flag (`crate::routing` docs the knob per class).
+async fn routing_handler(
+    State(state): State<LoadoutState>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    if let Err(resp) = auth(&state, &headers, "routing_unauthorized") {
+        return *resp;
+    }
+    let table = crate::routing::load_table(&state.config_store, &state.routing_toml).await;
+    Json(serde_json::json!({ "items": table.report() })).into_response()
+}
+
 /// One field bag for every kind — serde tags on `kind` would 422 with an
 /// opaque error; dispatching by hand keeps the A3 handler's explicit 400s.
 #[derive(Deserialize)]
@@ -374,6 +392,8 @@ struct CreateProposalRequest {
     provider_id: Option<String>,
     env_key: Option<String>,
     value: Option<String>,
+    // routing_config
+    rules: Option<std::collections::HashMap<String, String>>,
 }
 
 async fn proposals_create_handler(
@@ -464,6 +484,41 @@ async fn proposals_create_handler(
                 Some(bastion_types::SecretValue::new(value)),
             )
         }
+        "routing_config" => {
+            let Some(rules) = req.rules else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "routing_config needs rules (a class → model map; empty clears the override)",
+                )
+                    .into_response();
+            };
+            for (class, model) in &rules {
+                if crate::routing::RouteClass::parse(class).is_none() {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        "unknown routing class — classes are chat_turn, pursue_task, cabinet, \
+                         reflection, compaction",
+                    )
+                        .into_response();
+                }
+                if model.trim().is_empty() {
+                    return (StatusCode::BAD_REQUEST, "routing model ids must not be empty")
+                        .into_response();
+                }
+                // Unknown model ids are legal (custom/niche providers route
+                // by prefix, exactly like /model) — surfaced as a warning in
+                // the log, never a rejection.
+                if !model_catalog::static_catalog().iter().any(|e| e.id == *model) {
+                    tracing::warn!(
+                        event = "routing_rule_uncatalogued_model",
+                        class = %class,
+                        model = %model,
+                        "model id is not in the static catalog — accepted (custom ids are legal)",
+                    );
+                }
+            }
+            (ProposalPayload::RoutingConfig { rules }, None)
+        }
         _ => return (StatusCode::BAD_REQUEST, "unknown proposal kind").into_response(),
     };
     match state.proposal_store.create(&owner, "web", &payload).await {
@@ -507,6 +562,7 @@ pub fn router(
     model_defaults: ModelDefaults,
     auth_cfg: AuthConfig,
     pending_secrets: PendingSecretValues,
+    routing_toml: std::collections::HashMap<String, String>,
     events_tx: broadcast::Sender<String>,
 ) -> Router {
     Router::new()
@@ -520,6 +576,7 @@ pub fn router(
         .route("/config/overrides", get(config_overrides_handler))
         .route("/providers", get(providers_handler))
         .route("/models", get(models_handler))
+        .route("/routing", get(routing_handler))
         .with_state(LoadoutState {
             snapshot: Arc::new(snapshot),
             owner_map: Arc::new(owner_map),
@@ -529,6 +586,7 @@ pub fn router(
             model_defaults: Arc::new(model_defaults),
             auth: Arc::new(auth_cfg),
             pending_secrets,
+            routing_toml: Arc::new(routing_toml),
             events_tx,
         })
 }
@@ -605,6 +663,11 @@ mod tests {
                 },
                 AuthConfig::default(),
                 pending.clone(),
+                // A4.5: a toml `[routing]` rule the store can override.
+                std::collections::HashMap::from([(
+                    "reflection".to_string(),
+                    "llama3.2".to_string(),
+                )]),
                 events_tx,
             ),
             pending,
@@ -812,6 +875,99 @@ mod tests {
         assert_eq!(p["status"], "pending");
         assert_eq!(p["payload"]["kind"], "model_config");
         assert_eq!(p["payload"]["default_model"], "llama3.2");
+    }
+
+    // ---- A4.5: /routing + routing_config proposals ----------------------
+
+    #[tokio::test]
+    async fn routing_requires_owner_token_and_always_lists_all_five_classes() {
+        let owner_map = OwnerMap::from_pairs(&[("tok-alice", "alice")]);
+        let (_f, app, _pending) = sample_router(owner_map).await;
+
+        let (status, _) = get_json(app.clone(), "/routing", None).await;
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+
+        let (status, v) = get_json(app, "/routing", Some("tok-alice")).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let items = v["items"].as_array().unwrap();
+        let classes: Vec<&str> = items
+            .iter()
+            .map(|i| i["class"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            classes,
+            vec!["chat_turn", "pursue_task", "cabinet", "reflection", "compaction"]
+        );
+        // sample_router's toml rule: reflection → llama3.2, source toml.
+        let reflection = items.iter().find(|i| i["class"] == "reflection").unwrap();
+        assert_eq!(reflection["model"], "llama3.2");
+        assert_eq!(reflection["source"], "toml");
+        assert_eq!(reflection["supported"], true);
+        // No rule for chat_turn: nulls, but the row is still listed.
+        let chat = items.iter().find(|i| i["class"] == "chat_turn").unwrap();
+        assert_eq!(chat["model"], serde_json::Value::Null);
+        assert_eq!(chat["source"], serde_json::Value::Null);
+        assert_eq!(chat["supported"], true);
+        // Honest v1: no reachable knob on the pinned core rev.
+        for unsupported in ["pursue_task", "cabinet", "compaction"] {
+            let row = items.iter().find(|i| i["class"] == unsupported).unwrap();
+            assert_eq!(row["supported"], false, "{unsupported}");
+        }
+    }
+
+    #[tokio::test]
+    async fn routing_config_proposal_stages_pending_and_validates_classes() {
+        let owner_map = OwnerMap::from_pairs(&[("tok-alice", "alice")]);
+        let (_f, app, _pending) = sample_router(owner_map).await;
+
+        let (status, _) = post_json(
+            app.clone(),
+            "/proposals",
+            "tok-alice",
+            serde_json::json!({ "kind": "routing_config" }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+
+        let (status, _) = post_json(
+            app.clone(),
+            "/proposals",
+            "tok-alice",
+            serde_json::json!({
+                "kind": "routing_config",
+                "rules": { "not_a_class": "llama3.2" },
+            }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+
+        let (status, _) = post_json(
+            app.clone(),
+            "/proposals",
+            "tok-alice",
+            serde_json::json!({
+                "kind": "routing_config",
+                "rules": { "chat_turn": "  " },
+            }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+
+        // Uncatalogued model id: legal (custom models route by prefix).
+        let (status, p) = post_json(
+            app,
+            "/proposals",
+            "tok-alice",
+            serde_json::json!({
+                "kind": "routing_config",
+                "rules": { "chat_turn": "my-custom-local-model", "compaction": "llama3.2" },
+            }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::CREATED);
+        assert_eq!(p["status"], "pending");
+        assert_eq!(p["payload"]["kind"], "routing_config");
+        assert_eq!(p["payload"]["rules"]["chat_turn"], "my-custom-local-model");
     }
 
     #[tokio::test]

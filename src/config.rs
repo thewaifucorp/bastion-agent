@@ -84,6 +84,24 @@ pub struct BastionConfig {
     /// `NullAuthResolver` keeps resolving everything `Ok`, unchanged).
     #[serde(default)]
     pub auth: AuthConfig,
+    /// A4.5: optional `[routing]` table — model per call-site class
+    /// (`chat_turn`, `pursue_task`, `cabinet`, `reflection`, `compaction`).
+    /// The declarative base the config store's `routing.rules` override
+    /// overlays; see `crate::routing` for resolution and which classes the
+    /// agent can actually apply today. Absent entirely = `#[serde(default)]`
+    /// empty map — byte-identical behavior for every existing deployment.
+    #[serde(default)]
+    pub routing: RoutingConfig,
+}
+
+/// A4.5: the `[routing]` table, keyed by call-site class name. Kept as a
+/// plain string map at parse time (unknown keys must not fail the whole
+/// config load); `crate::routing::RoutingTable::resolve` validates class
+/// names and drops unknown/blank entries with a warning.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RoutingConfig {
+    #[serde(flatten)]
+    pub rules: HashMap<String, String>,
 }
 
 /// M4-07: one configured `[auth.<profile>]` entry — a REFERENCE to a
@@ -708,6 +726,9 @@ mod tests {
             cfg.mcp.servers["memupalace"].url,
             "http://127.0.0.1:8001/mcp"
         );
+        // A4.5: `[routing]` is optional — absent parses to an empty map
+        // (this repo's bastion.toml doesn't declare one).
+        assert!(cfg.routing.rules.is_empty());
     }
 
     // ── SEC-01 age_pubkey validation tests ───────────────────────────────────

@@ -685,8 +685,48 @@ async fn main() -> anyhow::Result<()> {
         .as_deref()
         .and_then(bastion::config_store::model_from_value_json)
         .unwrap_or_else(|| cfg.agent.default_model.clone());
-    let provider: bastion_providers::SharedProvider =
-        Arc::new(RwLock::new(resolve_provider(&default_model)?));
+    // A4.5: the effective routing table (config-store `routing.rules`
+    // override else bastion.toml `[routing]`). A `chat_turn` rule outranks
+    // `default_model` for the loop's provider — the same knob `/model`
+    // hot-swaps. Defensive by design: a rule whose provider can't be
+    // constructed here (key gone since it was approved) logs and falls back
+    // to the default model instead of failing startup.
+    let routing_table = bastion::routing::load_table(&config_store, &cfg.routing.rules).await;
+    let boot_provider = match routing_table.model_for(bastion::routing::RouteClass::ChatTurn) {
+        Some(model) => {
+            // Same connectivity guard as `proposals::apply_model_config`:
+            // some provider constructors PANIC on a missing env key — probe
+            // first so a disconnected rule degrades instead of aborting.
+            let kind = bastion_providers::registry::resolve_provider_kind(model);
+            let connected = bastion::model_catalog::env_key_for_provider(kind)
+                .is_none_or(|env_key| std::env::var(env_key).is_ok_and(|v| !v.is_empty()));
+            let resolved = if connected {
+                resolve_provider(model)
+            } else {
+                Err(anyhow::anyhow!("provider '{kind}' is not connected"))
+            };
+            match resolved {
+                Ok(p) => {
+                    tracing::info!(event = "routing_chat_turn_applied", model = %model);
+                    Some(p)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        event = "routing_chat_turn_failed",
+                        model = %model,
+                        error = %e,
+                        "chat_turn routing rule unusable — falling back to the default model",
+                    );
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+    let provider: bastion_providers::SharedProvider = Arc::new(RwLock::new(match boot_provider {
+        Some(p) => p,
+        None => resolve_provider(&default_model)?,
+    }));
     // A4 S2: the fallback ladder gets the same overlay treatment as
     // `default_model` above — an approved `model_config` proposal persists
     // `model.fallbacks` in the config store, and it is read HERE (the ladder
@@ -1663,6 +1703,9 @@ async fn daemon_loop(
                 // A4 S2: `[auth.*]` for `GET /providers`' subscription rows.
                 cfg.auth.clone(),
                 pending_secret_values.clone(),
+                // A4.5: `[routing]` — the declarative base GET /routing
+                // overlays with the store's `routing.rules` override.
+                cfg.routing.rules.clone(),
                 events_tx.clone(),
             ));
             // US External Control Plane and SDK: `/v1/*` routes, built over
@@ -2038,16 +2081,58 @@ async fn daemon_loop(
         // LEARN-05 gap fix: an explicit [reflector].model must actually select the
         // Reflector's provider, not just be threaded through inertly. Unset/empty falls
         // back to the exact same default-agent provider instance (safe pre-fix behavior).
-        let reflector_provider = bastion_providers::registry::resolve_reflector_provider(
-            cfg.reflector.model.as_deref(),
+        //
+        // A4.5: the routing table's `reflection` class outranks [reflector].model —
+        // this startup read IS the class's knob (the spawned Reflector holds its
+        // provider privately, so a runtime `routing_config` approval lands on the
+        // NEXT restart — documented on GET /routing as supported, not hot).
+        let routing_table =
+            bastion::routing::load_table(&config_store, &cfg.routing.rules).await;
+        let reflector_model: Option<String> = routing_table
+            .model_for(bastion::routing::RouteClass::Reflection)
+            .map(str::to_string)
+            // Same connectivity probe as the chat_turn boot read: provider
+            // constructors may PANIC on a missing env key, and a stale
+            // routing rule must never abort the daemon — degrade to
+            // [reflector].model / the agent provider instead.
+            .filter(|model| {
+                let kind = bastion_providers::registry::resolve_provider_kind(model);
+                let connected = bastion::model_catalog::env_key_for_provider(kind)
+                    .is_none_or(|env_key| std::env::var(env_key).is_ok_and(|v| !v.is_empty()));
+                if !connected {
+                    tracing::warn!(
+                        event = "routing_reflection_disconnected",
+                        model = %model,
+                        "reflection routing rule names a disconnected provider — ignored",
+                    );
+                }
+                connected
+            })
+            .or_else(|| cfg.reflector.model.clone());
+        // Defensive like the chat_turn boot read: a reflection rule whose
+        // provider can't be constructed must not take the daemon down —
+        // warn and fall back to the agent's own provider (pre-rule behavior).
+        let reflector_provider = match bastion_providers::registry::resolve_reflector_provider(
+            reflector_model.as_deref(),
             &cfg.agent.default_model,
             agent.provider.clone(),
-        )?;
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    event = "routing_reflection_failed",
+                    model = ?reflector_model,
+                    error = %e,
+                    "reflection model unusable — Reflector falls back to the agent provider",
+                );
+                agent.provider.clone()
+            }
+        };
 
         let generator: Arc<dyn bastion_cognition::learn::CandidateGenerator> =
             Arc::new(bastion_cognition::learn::LlmCandidateGenerator::new(
                 reflector_provider,
-                cfg.reflector.model.clone(),
+                reflector_model,
                 cfg.reflector.allow_cloud,
             ));
 
