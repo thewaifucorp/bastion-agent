@@ -672,7 +672,9 @@ async fn main() -> anyhow::Result<()> {
     let (events_tx, _) = tokio::sync::broadcast::channel::<String>(128);
     let responder: Arc<dyn bastion_runtime::agent::ports::Responder> =
         Arc::new(bastion::observability::ObservedResponder::new(
-            Arc::new(bastion_personas::persona::responder::PersonaResponder::new(registry)),
+            Arc::new(bastion_personas::persona::responder::PersonaResponder::new(
+                registry,
+            )),
             events_tx.clone(),
         ));
 

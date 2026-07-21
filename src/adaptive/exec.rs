@@ -34,7 +34,6 @@ use bastion_runtime::task::{
     TaskStore, UsageAccum, Verdict, VerdictProvenance, VerificationStatus, Verifier,
 };
 
-
 /// Fallback runtime id used when `execute` is handed an action whose kind
 /// isn't `ActionKind::Runtime` (a host wiring that routed a `Capability`/
 /// `Respond`/`Delegate` action through this executor by mistake) — logged,

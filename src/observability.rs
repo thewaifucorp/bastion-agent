@@ -30,7 +30,7 @@ use std::time::Instant;
 /// request.
 pub const DASHBOARD_HTML: &str = include_str!("observability/dashboard.html");
 
-use bastion_runtime::agent::ports::{Responder, RespondOutcome, TurnContext};
+use bastion_runtime::agent::ports::{RespondOutcome, Responder, TurnContext};
 use tokio::sync::broadcast;
 
 /// `Responder` decorator that broadcasts turn lifecycle events as JSON
@@ -73,7 +73,12 @@ impl Responder for ObservedResponder {
 
         match &result {
             Ok(outcome) => {
-                self.emit(turn_completed(&owner, &session_id, &outcome.attribution, latency_ms));
+                self.emit(turn_completed(
+                    &owner,
+                    &session_id,
+                    &outcome.attribution,
+                    latency_ms,
+                ));
             }
             Err(_) => {
                 // The error itself stays on the tracing/log path (WR-09: no

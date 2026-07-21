@@ -183,10 +183,17 @@ mod tests {
     #[tokio::test]
     async fn issue_prints_token_once_and_list_never_shows_it() {
         let (_f, store) = test_store().await;
-        let out = handle(&store, Some("issue dashboard tasks:read,tasks:control"), "alice")
-            .await
-            .unwrap();
-        assert!(out.contains("token:  bcp_"), "issue must print the token: {out}");
+        let out = handle(
+            &store,
+            Some("issue dashboard tasks:read,tasks:control"),
+            "alice",
+        )
+        .await
+        .unwrap();
+        assert!(
+            out.contains("token:  bcp_"),
+            "issue must print the token: {out}"
+        );
 
         let token = out
             .lines()
@@ -204,7 +211,9 @@ mod tests {
     #[tokio::test]
     async fn issue_defaults_to_tasks_read() {
         let (_f, store) = test_store().await;
-        let out = handle(&store, Some("issue ro-probe"), "alice").await.unwrap();
+        let out = handle(&store, Some("issue ro-probe"), "alice")
+            .await
+            .unwrap();
         assert!(out.contains("scopes: tasks:read"));
     }
 
