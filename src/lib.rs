@@ -16,3 +16,4 @@ pub mod product_import;
 pub mod secret;
 pub mod tui;
 pub mod update;
+pub mod webapp;

@@ -1331,6 +1331,9 @@ pub async fn serve_with_mesh(
     if let Some(control_plane) = control_plane_routes {
         app = app.merge(control_plane);
     }
+    // Observability frontend A2: the embedded web app (or its graceful
+    // "not built" answer) — stateless, always mounted.
+    app = app.merge(crate::webapp::router());
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())

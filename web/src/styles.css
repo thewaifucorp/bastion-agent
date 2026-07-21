@@ -1,0 +1,466 @@
+/* IDV "arcade da guarda" — extensão direta do bastion.run: preto puro,
+   neons (verde/ciano/magenta/âmbar), tudo monospace, chrome de terminal.
+   O verde é a cor do daemon vivo; magenta é deliberação (cabinet); âmbar
+   é lanterna de persona e dinheiro; ciano é informação. */
+
+:root {
+  --bg: #050807;
+  --panel: #0a0f0d;
+  --panel-2: #0f1613;
+  --line: #1a2620;
+  --line-bright: #2c4437;
+  --text: #d6e4dc;
+  --muted: #5e7a6c;
+  --green: #2ee88a;
+  --green-dim: #177144;
+  --cyan: #4fc3f7;
+  --magenta: #e85bd8;
+  --amber: #f2b44d;
+  --amber-dim: #6e5426;
+  --red: #ff5c5c;
+  --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo, Consolas,
+    monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: transparent;
+  border: 1px solid var(--line-bright);
+  padding: 4px 12px;
+  cursor: pointer;
+  text-transform: lowercase;
+}
+button:hover {
+  border-color: var(--green);
+  color: var(--green);
+}
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 1px;
+}
+button.danger:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+button.primary {
+  border-color: var(--green);
+  color: var(--green);
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+input,
+textarea {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 6px 10px;
+  width: 100%;
+}
+
+.app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── topo: marca + tabs numeradas (linguagem do site) ─────────────── */
+.topbar {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.brand {
+  padding: 10px 18px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: var(--green);
+  border-right: 1px solid var(--line);
+  white-space: nowrap;
+}
+.brand small {
+  color: var(--muted);
+  font-weight: 400;
+  letter-spacing: 0.12em;
+}
+.tabs {
+  display: flex;
+}
+.tab {
+  border: 0;
+  border-right: 1px solid var(--line);
+  padding: 10px 16px;
+  color: var(--muted);
+}
+.tab[aria-selected="true"] {
+  color: var(--green);
+  background: var(--panel);
+  box-shadow: inset 0 -2px 0 var(--green);
+}
+.topbar .spacer {
+  flex: 1;
+}
+.conn {
+  align-self: center;
+  padding: 0 18px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.conn::before {
+  content: "●";
+  margin-right: 6px;
+  color: var(--red);
+}
+.conn.live::before {
+  color: var(--green);
+}
+.conn.connecting::before {
+  color: var(--amber);
+}
+
+/* ── lanternas de persona: pixels que acendem ─────────────────────── */
+.lanterns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--line);
+  min-height: 36px;
+  align-items: center;
+}
+.lanterns .hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+.lantern {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  transition: color 1.2s ease;
+}
+.lantern .px {
+  width: 8px;
+  height: 8px;
+  background: var(--amber-dim);
+  transition: background 1.2s ease, box-shadow 1.2s ease;
+}
+.lantern.lit {
+  color: var(--text);
+}
+.lantern.lit .px {
+  background: var(--amber);
+  box-shadow: 0 0 7px 1px rgba(242, 180, 77, 0.55);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .lantern.lit .px {
+    animation: flick 2.2s infinite;
+  }
+  @keyframes flick {
+    0%,
+    100% {
+      box-shadow: 0 0 7px 1px rgba(242, 180, 77, 0.55);
+    }
+    50% {
+      box-shadow: 0 0 4px 1px rgba(242, 180, 77, 0.3);
+    }
+  }
+}
+
+/* ── corpo ─────────────────────────────────────────────────────────── */
+.view {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+}
+.pane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+.pane + .pane {
+  border-left: 1px solid var(--line);
+}
+.pane-head {
+  font-size: 11px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 10px 18px 8px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.pane-head .spacer {
+  flex: 1;
+}
+.scroll {
+  overflow-y: auto;
+  flex: 1;
+  padding: 0 18px 18px;
+}
+
+.empty {
+  color: var(--muted);
+  padding: 28px 0;
+  text-align: center;
+}
+.empty .start {
+  color: var(--green);
+  letter-spacing: 0.2em;
+}
+
+/* tabela de tasks */
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 4px 12px 4px 0;
+  border-bottom: 1px solid var(--line);
+}
+td {
+  padding: 7px 12px 7px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+td.nowrap,
+th.nowrap {
+  white-space: nowrap;
+}
+tr.task {
+  cursor: pointer;
+}
+tr.task:hover td {
+  background: var(--panel);
+}
+tr.task.open td {
+  background: var(--panel-2);
+}
+
+.chip {
+  font-size: 11px;
+  padding: 1px 8px;
+  border: 1px solid var(--line-bright);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.chip.running {
+  color: var(--green);
+  border-color: var(--green-dim);
+}
+.chip.paused {
+  color: var(--cyan);
+}
+.chip.completed,
+.chip.succeeded {
+  color: var(--green);
+}
+.chip.failed,
+.chip.cancelled {
+  color: var(--red);
+}
+.chip.escalated {
+  color: var(--magenta);
+}
+
+/* drawer de detalhe */
+.detail {
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  padding: 14px 18px;
+  max-height: 45%;
+  overflow-y: auto;
+}
+.detail h2 {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.detail .meta {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+.detail .actions {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+.steer-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.attempt {
+  padding: 6px 0;
+  border-top: 1px dashed var(--line);
+  font-size: 12px;
+}
+
+/* livro de vigília */
+.ledger {
+  font-size: 12px;
+}
+.entry {
+  display: flex;
+  gap: 12px;
+  padding: 3px 0;
+}
+.entry time {
+  color: var(--muted);
+  flex: none;
+}
+.entry .kind {
+  flex: none;
+  width: 21ch;
+}
+.kind.k-turn {
+  color: var(--cyan);
+}
+.kind.k-cabinet {
+  color: var(--magenta);
+}
+.kind.k-ok {
+  color: var(--green);
+}
+.kind.k-fail {
+  color: var(--red);
+}
+.kind.k-task {
+  color: var(--amber);
+}
+.entry .body {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* chat */
+.chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+}
+.msg {
+  max-width: 72ch;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.msg .who {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: block;
+  margin-bottom: 2px;
+}
+.msg.me {
+  align-self: flex-end;
+  text-align: right;
+  color: var(--cyan);
+}
+.msg.bastion .who {
+  color: var(--green);
+}
+.msg.pending {
+  color: var(--muted);
+}
+.chat-form {
+  display: flex;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--line);
+}
+
+/* config */
+.cfg {
+  max-width: 76ch;
+  padding-top: 12px;
+}
+.cfg .row {
+  display: grid;
+  grid-template-columns: 26ch 1fr;
+  gap: 10px;
+  margin-bottom: 10px;
+  align-items: center;
+}
+.cfg label {
+  color: var(--muted);
+  font-size: 12px;
+}
+.cfg .note {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 8px 0 14px;
+}
+.cfg code {
+  color: var(--amber);
+}
+
+/* toast */
+.toast {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel-2);
+  border: 1px solid var(--line-bright);
+  padding: 8px 16px;
+  max-width: 80vw;
+}
+.toast.warn {
+  border-color: var(--red);
+}
+
+@media (max-width: 900px) {
+  .view {
+    flex-direction: column;
+  }
+  .pane + .pane {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+  .cfg .row {
+    grid-template-columns: 1fr;
+  }
+}
