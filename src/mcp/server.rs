@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 
+use crate::control_plane::scope::{require_scope, Scope, ScopeSet};
 use axum::Router;
 use bastion_cognition::goal::GoalEngine;
 use bastion_memory::{PrivacyTier, SharedMemory};
@@ -45,6 +46,18 @@ pub struct TokenPermissions {
     pub read_only: bool,
     pub owner_id: String,
     pub privacy_tier: PrivacyTier,
+    /// Control Plane scopes (`control_plane::scope::Scope`) this token is
+    /// granted for the 5 dedicated Control Plane MCP tools
+    /// (create_task/get_task/list_tasks/steer_task/cancel_task, see
+    /// `control_plane::mcp_tools`). Checked in `call_tool` ONLY when
+    /// dispatching to `control_plane_registry` — every other (shared-registry)
+    /// MCP tool is unaffected, and `read_only` still gates ALL tool
+    /// invocation exactly as before this field existed. The HTTP `/v1/*`
+    /// routes (`control_plane::routes`) already enforce this same 4-scope
+    /// model via `SqliteCredentialStore`-issued credentials; this closes the
+    /// same gap for MCP callers, which previously had no scope concept at
+    /// all beyond this coarse `read_only` boolean.
+    pub control_plane_scopes: ScopeSet,
 }
 
 /// 09-REVIEW.md WR-08: constant-time byte comparison so token lookup doesn't leak
@@ -57,6 +70,39 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         .zip(b.iter())
         .fold(0u8, |acc, (x, y)| acc | (x ^ y))
         == 0
+}
+
+/// The Control Plane scope a given MCP tool name requires, or `None` if
+/// `name` isn't one of the 5 dedicated Control Plane tools — every other
+/// MCP tool (the shared registry) is entirely unaffected by Control Plane
+/// scoping. NOTE: this table is the one place that must be kept in sync
+/// with `control_plane::mcp_tools::build_registry`'s tool set — a new
+/// Control Plane tool added there without a matching arm here would ship
+/// UNGATED (falls through to `None`, skipping the scope check entirely).
+/// `scope_mapping_covers_every_registered_control_plane_tool` (below) pins
+/// today's 5-tool set so an unreviewed drift is at least caught by tests.
+fn required_control_plane_scope(name: &str) -> Option<Scope> {
+    match name {
+        "get_task" | "list_tasks" => Some(Scope::TasksRead),
+        "create_task" => Some(Scope::TasksCreate),
+        "steer_task" | "cancel_task" => Some(Scope::TasksControl),
+        _ => None,
+    }
+}
+
+/// Pure scope gate for a Control Plane tool call: `Ok(())` for every
+/// non-control-plane tool name (unaffected) or a control-plane tool the
+/// caller's `scopes` cover; `Err` (a ready-to-return `CallToolResult`,
+/// mirroring the `read_only` check's existing soft-error shape — this is a
+/// 403-equivalent, never the hard `McpError` `authenticate_token` uses for
+/// actual authentication failures) otherwise.
+fn check_control_plane_scope(name: &str, scopes: &ScopeSet) -> Result<(), CallToolResult> {
+    let Some(required) = required_control_plane_scope(name) else {
+        return Ok(());
+    };
+    require_scope(scopes, required).map_err(|missing| {
+        CallToolResult::error(vec![Content::text(format!("forbidden: {missing}"))])
+    })
 }
 
 /// 09-REVIEW.md CR-01/CR-02: shared fail-closed token check used by `list_tools`,
@@ -238,6 +284,15 @@ impl ServerHandler for BastionMcpServer {
                 &registry
             };
 
+            // Gap closed: a Control Plane tool call must additionally carry
+            // the specific scope that tool requires (matching the HTTP
+            // `/v1/*` routes' `require_scope` enforcement) — checked BEFORE
+            // `target.invoke`, so an under-scoped token never reaches
+            // `core_ops` at all, not even for a failed/no-op attempt.
+            if let Err(result) = check_control_plane_scope(&name, &perms.control_plane_scopes) {
+                return Ok(result);
+            }
+
             match target.invoke(&name, Value::Object(args), &ctx).await {
                 // Plan 11-07 (SEC-04): `.data` is the same JSON-stringified content
                 // MCP clients have always received — spotlighting's LLM-facing
@@ -411,10 +466,23 @@ mod tests {
     }
 
     fn rw_perms(owner: &str) -> TokenPermissions {
+        rw_perms_with_scopes(
+            owner,
+            ScopeSet::new([
+                Scope::TasksRead,
+                Scope::TasksCreate,
+                Scope::TasksControl,
+                Scope::WebhooksManage,
+            ]),
+        )
+    }
+
+    fn rw_perms_with_scopes(owner: &str, control_plane_scopes: ScopeSet) -> TokenPermissions {
         TokenPermissions {
             read_only: false,
             owner_id: owner.to_string(),
             privacy_tier: PrivacyTier::LocalOnly,
+            control_plane_scopes,
         }
     }
 
@@ -483,5 +551,94 @@ mod tests {
         assert!(constant_time_eq(b"same-token", b"same-token"));
         assert!(!constant_time_eq(b"same-token", b"different"));
         assert!(!constant_time_eq(b"short", b"much-longer-value"));
+    }
+
+    /// Pins today's 5-tool Control Plane MCP surface against
+    /// `required_control_plane_scope`'s match arms — see that function's own
+    /// doc comment on why an added-but-unmapped tool would silently ship
+    /// ungated.
+    #[test]
+    fn scope_mapping_covers_every_registered_control_plane_tool() {
+        for name in [
+            "create_task",
+            "get_task",
+            "list_tasks",
+            "steer_task",
+            "cancel_task",
+        ] {
+            assert!(
+                required_control_plane_scope(name).is_some(),
+                "'{name}' must map to a required scope"
+            );
+        }
+    }
+
+    #[test]
+    fn non_control_plane_tool_names_are_unaffected_by_scope_gating() {
+        assert_eq!(required_control_plane_scope("browser"), None);
+        assert_eq!(required_control_plane_scope("git"), None);
+        assert!(check_control_plane_scope("browser", &ScopeSet::default()).is_ok());
+    }
+
+    #[test]
+    fn read_and_list_require_tasks_read_only() {
+        let scopes = ScopeSet::new([Scope::TasksRead]);
+        assert!(check_control_plane_scope("get_task", &scopes).is_ok());
+        assert!(check_control_plane_scope("list_tasks", &scopes).is_ok());
+        assert!(check_control_plane_scope("create_task", &scopes).is_err());
+        assert!(check_control_plane_scope("steer_task", &scopes).is_err());
+        assert!(check_control_plane_scope("cancel_task", &scopes).is_err());
+    }
+
+    #[test]
+    fn create_requires_tasks_create_specifically() {
+        let scopes = ScopeSet::new([Scope::TasksCreate]);
+        assert!(check_control_plane_scope("create_task", &scopes).is_ok());
+        assert!(check_control_plane_scope("get_task", &scopes).is_err());
+        assert!(check_control_plane_scope("cancel_task", &scopes).is_err());
+    }
+
+    #[test]
+    fn steer_and_cancel_require_tasks_control() {
+        let scopes = ScopeSet::new([Scope::TasksControl]);
+        assert!(check_control_plane_scope("steer_task", &scopes).is_ok());
+        assert!(check_control_plane_scope("cancel_task", &scopes).is_ok());
+        assert!(check_control_plane_scope("get_task", &scopes).is_err());
+        assert!(check_control_plane_scope("create_task", &scopes).is_err());
+    }
+
+    #[test]
+    fn empty_scope_set_denies_every_control_plane_tool() {
+        let scopes = ScopeSet::default();
+        for name in [
+            "create_task",
+            "get_task",
+            "list_tasks",
+            "steer_task",
+            "cancel_task",
+        ] {
+            assert!(
+                check_control_plane_scope(name, &scopes).is_err(),
+                "'{name}' must be denied with no granted scopes"
+            );
+        }
+    }
+
+    #[test]
+    fn rw_perms_default_helper_grants_every_scope_matching_legacy_full_access_behavior() {
+        // Backward compatibility: a token that predates this field (or an
+        // operator who hasn't opted into narrower scoping) must keep
+        // reaching every Control Plane tool exactly as it could before
+        // control_plane_scopes existed.
+        let perms = rw_perms("alice");
+        for name in [
+            "create_task",
+            "get_task",
+            "list_tasks",
+            "steer_task",
+            "cancel_task",
+        ] {
+            assert!(check_control_plane_scope(name, &perms.control_plane_scopes).is_ok());
+        }
     }
 }
