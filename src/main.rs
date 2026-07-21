@@ -1510,6 +1510,70 @@ async fn daemon_loop(
             let runtime_registry_for_webhook = runtime_registry_for_product.clone();
             let auth_for_webhook = cfg.auth.clone();
             let updates_for_webhook = updates.clone();
+            // Observability A2 (Loadout): boot-time composition snapshot —
+            // personas, tools, runtimes, channels, MCP servers — served at
+            // GET /loadout for the web app's assembled-pieces view.
+            let loadout_routes = Some(bastion::loadout::router(
+                bastion::loadout::snapshot(
+                    registry_for_product
+                        .names()
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                    agent
+                        .capability_registry
+                        .list_names()
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                    runtime_registry_for_product
+                        .descriptors()
+                        .iter()
+                        .map(|d| d.id.to_string())
+                        .collect(),
+                    vec![
+                        bastion::loadout::ChannelPiece {
+                            id: "webhook",
+                            enabled: cfg.channels.webhook.enabled,
+                        },
+                        bastion::loadout::ChannelPiece {
+                            id: "telegram",
+                            enabled: cfg.channels.telegram.enabled,
+                        },
+                        bastion::loadout::ChannelPiece {
+                            id: "whatsapp",
+                            enabled: cfg
+                                .channels
+                                .whatsapp
+                                .as_ref()
+                                .is_some_and(|c| c.enabled),
+                        },
+                        bastion::loadout::ChannelPiece {
+                            id: "discord",
+                            enabled: cfg
+                                .channels
+                                .discord
+                                .as_ref()
+                                .is_some_and(|c| c.enabled),
+                        },
+                        bastion::loadout::ChannelPiece {
+                            id: "slack",
+                            enabled: cfg.channels.slack.as_ref().is_some_and(|c| c.enabled),
+                        },
+                        bastion::loadout::ChannelPiece {
+                            id: "email",
+                            enabled: cfg.channels.email.as_ref().is_some_and(|c| c.enabled),
+                        },
+                        bastion::loadout::ChannelPiece {
+                            id: "voice",
+                            enabled: cfg.channels.voice.enabled,
+                        },
+                    ],
+                    cfg.mcp.servers.keys().cloned().collect(),
+                ),
+                owner_map.clone(),
+                jwt_secret.clone(),
+            ));
             // US External Control Plane and SDK: `/v1/*` routes, built over
             // their own `ControlPlaneState` and merged into the webhook app
             // exactly like `mcp_routes` above.
@@ -1548,6 +1612,7 @@ async fn daemon_loop(
                     agent_name,
                     mcp_routes,
                     control_plane_routes,
+                    loadout_routes,
                     whatsapp_config,
                     composio_oauth.clone(),
                     readiness_for_webhook,

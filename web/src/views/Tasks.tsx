@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, AttemptSummary, Task, tokens, v1 } from "../api";
+import { Empty, useToast } from "../ui";
 
 function money(v: number | null | undefined): string {
   return v == null ? "—" : `$${v.toFixed(2)}`;
@@ -18,13 +19,11 @@ export default function Tasks() {
   const [attempts, setAttempts] = useState<AttemptSummary[]>([]);
   const [steering, setSteering] = useState(false);
   const [guidance, setGuidance] = useState("");
-  const [toast, setToast] = useState<{ text: string; warn: boolean } | null>(
-    null,
-  );
+  const toast = useToast();
 
   const refresh = useCallback(async () => {
     if (!tokens.cp) {
-      setError("credencial bcp_ não configurada — vá em 4: config");
+      setError("no credential");
       return;
     }
     try {
@@ -34,8 +33,8 @@ export default function Tasks() {
     } catch (e) {
       setError(
         e instanceof ApiError && e.status === 401
-          ? "credencial recusada (401) — emita outra com /credential issue"
-          : `tarefas indisponíveis: ${e instanceof Error ? e.message : e}`,
+          ? "credential rejected (401) — issue a new one with /credential issue"
+          : `tasks unavailable: ${e instanceof Error ? e.message : e}`,
       );
     }
   }, []);
@@ -53,13 +52,8 @@ export default function Tasks() {
       setAttempts(att.items ?? att.attempts ?? []);
       setSteering(false);
     } catch (e) {
-      flash(`detalhe indisponível: ${e instanceof Error ? e.message : e}`, true);
+      toast(`detail unavailable: ${e instanceof Error ? e.message : e}`, true);
     }
-  }
-
-  function flash(text: string, warn = false) {
-    setToast({ text, warn });
-    setTimeout(() => setToast(null), 5000);
   }
 
   async function act(
@@ -69,15 +63,15 @@ export default function Tasks() {
     if (!open) return;
     try {
       await v1.action(open.id, action, open.revision, extra);
-      flash(`${action} aplicado`);
+      toast(`${action} applied`);
       await openDetail(open.id);
       refresh();
     } catch (e) {
       const code = e instanceof ApiError ? e.code : String(e);
-      flash(
+      toast(
         code === "stale_revision"
-          ? "revisão velha — detalhe recarregado, tente de novo"
-          : `${action} falhou: ${code}`,
+          ? "stale revision — detail reloaded, try again"
+          : `${action} failed: ${code}`,
         true,
       );
       await openDetail(open.id);
@@ -94,40 +88,47 @@ export default function Tasks() {
     : null;
 
   return (
-    <main className="view">
-      <section className="pane">
-        <div className="pane-head">
-          tarefas duráveis (pursue)
-          <span className="spacer" />
-          <button onClick={refresh}>atualizar</button>
-        </div>
-        <div className="scroll">
-          {error ? (
-            <div className="empty">{error}</div>
+    <>
+      <div className="page-head">
+        <h1>Tasks</h1>
+        <span className="sub">
+          durable Pursue tasks — attempts, verdicts, budget, control
+        </span>
+        <span className="spacer" />
+        <button onClick={refresh}>refresh</button>
+      </div>
+      <div className="page-body flush">
+        <div style={{ flex: 1, overflowY: "auto", padding: "12px 24px" }}>
+          {!tokens.cp ? (
+            <Empty start="NO CREDENTIAL">
+              the task API needs a Control Plane credential — issue one on the
+              daemon console and set it under Connection
+            </Empty>
+          ) : error ? (
+            <div className="error-line">{error}</div>
           ) : items === null ? (
-            <div className="empty">carregando…</div>
+            <div className="empty">loading…</div>
           ) : items.length === 0 ? (
-            <div className="empty">
-              <span className="start">▶ NENHUMA MISSÃO ATIVA</span>
-              <br />
-              objetivos duráveis viram tarefas aqui — dispare um pelo chat
-            </div>
+            <Empty start="NO ACTIVE MISSIONS">
+              durable objectives become tasks here — start one from Chat
+            </Empty>
           ) : (
-            <table aria-label="tarefas Pursue">
+            <table aria-label="Pursue tasks">
               <thead>
                 <tr>
                   <th className="nowrap">id</th>
                   <th>status</th>
-                  <th>objetivo</th>
-                  <th className="nowrap">passos</th>
-                  <th className="nowrap">custo</th>
+                  <th>objective</th>
+                  <th className="nowrap">steps</th>
+                  <th className="nowrap">cost</th>
+                  <th className="nowrap">updated</th>
                 </tr>
               </thead>
               <tbody>
                 {items.map((t) => (
                   <tr
                     key={t.id}
-                    className={"task" + (open?.id === t.id ? " open" : "")}
+                    className={"rowlink" + (open?.id === t.id ? " open" : "")}
                     onClick={() => openDetail(t.id)}
                   >
                     <td className="nowrap">{shortId(t.id)}</td>
@@ -139,6 +140,7 @@ export default function Tasks() {
                     <td className="nowrap">
                       {money(t.budget_summary?.cost_usd)}
                     </td>
+                    <td className="nowrap">{ts(t.updated_at)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -147,29 +149,28 @@ export default function Tasks() {
         </div>
 
         {open && can && (
-          <div className="detail">
+          <div className="drawer">
             <h2>{open.objective}</h2>
             <div className="meta">
-              {open.id} · {open.status} · revisão {open.revision}
+              {open.id} · {open.status} · revision {open.revision}
               {open.stop_reason
-                ? ` · parada: ${open.stop_reason.kind}${open.stop_reason.detail ? ` (${open.stop_reason.detail})` : ""}`
+                ? ` · stopped: ${open.stop_reason.kind}${open.stop_reason.detail ? ` (${open.stop_reason.detail})` : ""}`
+                : ""}
+              {open.budget_summary
+                ? ` · ${open.budget_summary.llm_calls} llm calls · ${open.budget_summary.total_tokens} tokens`
                 : ""}
             </div>
             <div className="actions">
-              {can.pause && (
-                <button onClick={() => act("pause")}>pausar</button>
-              )}
+              {can.pause && <button onClick={() => act("pause")}>pause</button>}
               {can.resume && (
-                <button onClick={() => act("resume")}>retomar</button>
+                <button onClick={() => act("resume")}>resume</button>
               )}
               {can.steer && (
-                <button onClick={() => setSteering((s) => !s)}>
-                  direcionar
-                </button>
+                <button onClick={() => setSteering((s) => !s)}>steer</button>
               )}
               {can.cancel && (
                 <button className="danger" onClick={() => act("cancel")}>
-                  cancelar
+                  cancel
                 </button>
               )}
               <button
@@ -178,7 +179,7 @@ export default function Tasks() {
                   refresh();
                 }}
               >
-                fechar
+                close
               </button>
             </div>
             {steering && (
@@ -186,8 +187,8 @@ export default function Tasks() {
                 <input
                   value={guidance}
                   onChange={(e) => setGuidance(e.target.value)}
-                  placeholder="nova orientação para a tarefa"
-                  aria-label="orientação"
+                  placeholder="fresh guidance for the running task"
+                  aria-label="guidance"
                 />
                 <button
                   className="primary"
@@ -198,17 +199,17 @@ export default function Tasks() {
                     act("steer", { guidance: g });
                   }}
                 >
-                  enviar
+                  send
                 </button>
               </div>
             )}
             {attempts.map((a) => (
               <div className="attempt" key={a.id}>
-                {a.id} · início {ts(a.started_at)}
-                {a.ended_at ? ` · fim ${ts(a.ended_at)}` : " · em andamento"}
+                {a.id} · started {ts(a.started_at)}
+                {a.ended_at ? ` · ended ${ts(a.ended_at)}` : " · in flight"}
                 {a.verified ? (
                   <>
-                    {" · veredicto: "}
+                    {" · verdict: "}
                     <span className={`chip ${a.verified.kind}`}>
                       {a.verified.kind}
                     </span>
@@ -219,12 +220,7 @@ export default function Tasks() {
             ))}
           </div>
         )}
-      </section>
-      {toast && (
-        <div className={"toast" + (toast.warn ? " warn" : "")} role="status">
-          {toast.text}
-        </div>
-      )}
-    </main>
+      </div>
+    </>
   );
 }

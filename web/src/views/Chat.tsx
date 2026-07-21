@@ -1,5 +1,6 @@
 import { FormEvent, useRef, useState } from "react";
 import { ApiError, chat, tokens } from "../api";
+import { Empty } from "../ui";
 
 interface Msg {
   who: "me" | "bastion";
@@ -33,8 +34,8 @@ export default function Chat() {
     } catch (err) {
       reply =
         err instanceof ApiError && err.code === "token_missing"
-          ? "sem token de owner — configure em 4: config"
-          : `turno falhou: ${err instanceof Error ? err.message : err}`;
+          ? "owner token not set — configure it under Connection"
+          : `turn failed: ${err instanceof Error ? err.message : err}`;
     }
     setLog((l) => [
       ...l.filter((m) => !m.pending),
@@ -47,18 +48,21 @@ export default function Chat() {
   }
 
   return (
-    <main className="view">
-      <section className="pane">
-        <div className="pane-head">chat — mesmo turno do console</div>
-        <div className="scroll" ref={scrollRef}>
+    <>
+      <div className="page-head">
+        <h1>Chat</h1>
+        <span className="sub">
+          the console's turn — slash commands (/task, /schedule, /help) work
+        </span>
+      </div>
+      <div className="page-body flush">
+        <div className="scrollwrap" ref={scrollRef} style={{ flex: 1, overflowY: "auto" }}>
           {log.length === 0 ? (
-            <div className="empty">
-              <span className="start">▶ PRESS START</span>
-              <br />
+            <Empty start="PRESS START">
               {tokens.owner
-                ? "fala com o daemon — comandos /task, /schedule etc. funcionam"
-                : "configure o token de owner em 4: config"}
-            </div>
+                ? "talk to the daemon — a durable objective becomes a Pursue task"
+                : "set the owner token under Connection first"}
+            </Empty>
           ) : (
             <div className="chat-log">
               {log.map((m, i) => (
@@ -66,9 +70,7 @@ export default function Chat() {
                   key={i}
                   className={`msg ${m.who} ${m.pending ? "pending" : ""}`}
                 >
-                  <span className="who">
-                    {m.who === "me" ? "você" : "bastion"}
-                  </span>
+                  <span className="who">{m.who === "me" ? "you" : "bastion"}</span>
                   {m.text}
                 </div>
               ))}
@@ -79,15 +81,15 @@ export default function Chat() {
           <input
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder={busy ? "aguardando o turno…" : "mensagem ou /comando"}
+            placeholder={busy ? "waiting for the turn…" : "message or /command"}
             disabled={busy}
-            aria-label="mensagem"
+            aria-label="message"
           />
           <button type="submit" className="primary" disabled={busy}>
-            enviar
+            send
           </button>
         </form>
-      </section>
-    </main>
+      </div>
+    </>
   );
 }

@@ -111,7 +111,11 @@ export const v1 = {
     }),
 };
 
-// ── /webhook (token de owner) ────────────────────────────────────────────
+// ── /webhook (owner token) ───────────────────────────────────────────────
+// Besides chat, /webhook accepts every Remote-scope slash command
+// (/task, /schedule, /model, /backend, /logs, /update, /help, ...) and
+// answers with the same text the console prints — the System views render
+// that output as terminal blocks.
 
 export const chat = {
   turn: (text: string) =>
@@ -120,6 +124,47 @@ export const chat = {
       body: JSON.stringify({ text }),
     }),
 };
+
+export const command = (text: string) => chat.turn(text).then((r) => r.reply);
+
+/** Generic token-authenticated GET — for owner-token JSON routes that are
+ * not /v1 (e.g. /loadout). */
+export const request2 = <T,>(token: string, path: string) =>
+  request<T>(token, path);
+
+// ── /status (unauthenticated, booleans-only) ────────────────────────────
+
+export interface RuntimeStatusRow {
+  id: string;
+  cli_present: boolean;
+  logged_in: boolean;
+}
+
+export interface StatusSnapshot {
+  runtimes: RuntimeStatusRow[];
+  ready: boolean;
+  update: Record<string, unknown>;
+}
+
+export async function status(): Promise<StatusSnapshot> {
+  const resp = await fetch("/status");
+  if (!resp.ok) throw new ApiError(`http_${resp.status}`, resp.status);
+  return resp.json();
+}
+
+export async function health(): Promise<{ healthz: boolean; readyz: boolean }> {
+  const [h, r] = await Promise.all([
+    fetch("/healthz").then((x) => x.ok).catch(() => false),
+    fetch("/readyz").then((x) => x.ok).catch(() => false),
+  ]);
+  return { healthz: h, readyz: r };
+}
+
+export async function agentCard(): Promise<Record<string, unknown> | null> {
+  const resp = await fetch("/agent-card").catch(() => null);
+  if (!resp || !resp.ok) return null;
+  return resp.json().catch(() => null);
+}
 
 // ── /events (SSE via fetch — EventSource não envia header de auth) ───────
 

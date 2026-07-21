@@ -12,6 +12,11 @@ export default defineConfig({
       "/v1": "http://127.0.0.1:8123",
       "/events": "http://127.0.0.1:8123",
       "/webhook": "http://127.0.0.1:8123",
+      "/loadout": "http://127.0.0.1:8123",
+      "/status": "http://127.0.0.1:8123",
+      "/healthz": "http://127.0.0.1:8123",
+      "/readyz": "http://127.0.0.1:8123",
+      "/agent-card": "http://127.0.0.1:8123",
     },
   },
   build: {

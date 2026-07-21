@@ -1,42 +1,86 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  BastionEvent,
-  ConnState,
-  streamEvents,
-  tokens,
-} from "./api";
-import Vigilia from "./views/Vigilia";
-import Tasks from "./views/Tasks";
+import { BastionEvent, ConnState, streamEvents, tokens } from "./api";
+import { ToastProvider } from "./ui";
+import Overview from "./views/Overview";
+import LiveFeed from "./views/LiveFeed";
+import Loadout from "./views/Loadout";
 import Chat from "./views/Chat";
-import Config from "./views/Config";
-
-const TABS = [
-  { key: "vigilia", label: "1: vigília" },
-  { key: "tarefas", label: "2: tarefas" },
-  { key: "chat", label: "3: chat" },
-  { key: "config", label: "4: config" },
-] as const;
-type TabKey = (typeof TABS)[number]["key"];
-
-const LEDGER_MAX = 300;
-export const LANTERN_GLOW_MS = 45_000;
+import Tasks from "./views/Tasks";
+import Schedules from "./views/Schedules";
+import CommandView from "./views/CommandView";
+import Connection from "./views/Connection";
+import About from "./views/About";
 
 export interface LedgerEntry {
   at: number;
   ev: BastionEvent;
 }
+export const LANTERN_GLOW_MS = 45_000;
+const LEDGER_MAX = 400;
+
+interface NavItem {
+  key: string;
+  label: string;
+}
+const NAV: { section: string; items: NavItem[] }[] = [
+  {
+    section: "watch",
+    items: [
+      { key: "overview", label: "Overview" },
+      { key: "loadout", label: "Loadout" },
+      { key: "feed", label: "Live feed" },
+    ],
+  },
+  {
+    section: "work",
+    items: [
+      { key: "chat", label: "Chat" },
+      { key: "tasks", label: "Tasks" },
+      { key: "schedules", label: "Schedules" },
+    ],
+  },
+  {
+    section: "system",
+    items: [
+      { key: "models", label: "Models" },
+      { key: "backends", label: "Backends" },
+      { key: "logs", label: "Logs" },
+      { key: "update", label: "Update" },
+    ],
+  },
+  {
+    section: "settings",
+    items: [
+      { key: "connection", label: "Connection" },
+      { key: "about", label: "About" },
+    ],
+  },
+];
+const ALL_KEYS = NAV.flatMap((s) => s.items.map((i) => i.key));
+
+function routeFromHash(): string {
+  const h = window.location.hash.replace(/^#\/?/, "");
+  return ALL_KEYS.includes(h) ? h : tokens.owner || tokens.cp ? "overview" : "connection";
+}
 
 export default function App() {
-  const [tab, setTab] = useState<TabKey>(() =>
-    tokens.owner || tokens.cp ? "vigilia" : "config",
-  );
+  const [route, setRoute] = useState<string>(routeFromHash);
   const [conn, setConn] = useState<ConnState>("off");
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [personas, setPersonas] = useState<Map<string, number>>(new Map());
-  // Bump para forçar o resfriamento visual das lanternas com o tempo.
-  const [, setClock] = useState(0);
+  const [runningTasks, setRunningTasks] = useState<Set<string>>(new Set());
   const [streamGen, setStreamGen] = useState(0);
   const stopRef = useRef<(() => void) | null>(null);
+
+  // hash <-> route (deep-linkable pages, no router dependency)
+  useEffect(() => {
+    const onHash = () => setRoute(routeFromHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  const go = (key: string) => {
+    window.location.hash = `/${key}`;
+  };
 
   useEffect(() => {
     stopRef.current?.();
@@ -52,93 +96,136 @@ export default function App() {
           return next;
         });
       }
+      // attention plumbing: sidebar badge follows task lifecycle events
+      if (ev.task && typeof ev.task === "string") {
+        setRunningTasks((old) => {
+          const next = new Set(old);
+          if (ev.event === "task.terminal") next.delete(ev.task as string);
+          else next.add(ev.task as string);
+          return next;
+        });
+      }
     }, setConn);
     return () => stopRef.current?.();
   }, [streamGen]);
 
-  useEffect(() => {
-    const t = setInterval(() => setClock((c) => c + 1), 5000);
-    return () => clearInterval(t);
-  }, []);
-
-  // Atalhos de arcade: 1–4 trocam de aba (fora de campos de texto).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
-      if (target.closest("input, textarea")) return;
-      const i = Number(e.key) - 1;
-      if (i >= 0 && i < TABS.length) setTab(TABS[i].key);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
   const connLabel = useMemo(
     () =>
       ({
-        off: "sem token",
-        connecting: "reconectando…",
-        live: "ao vivo",
-        unauthorized: "token recusado",
+        off: "no token",
+        connecting: "reconnecting…",
+        live: "live",
+        unauthorized: "token rejected",
       })[conn],
     [conn],
   );
+  const connDot =
+    conn === "live" ? "ok" : conn === "connecting" ? "warn" : "bad";
 
-  const lanterns = useMemo(
-    () => [...personas.entries()].sort((a, b) => b[1] - a[1]),
-    [personas],
-  );
+  const badge = (key: string): { n: number; hot: boolean } | null => {
+    if (key === "tasks" && runningTasks.size > 0)
+      return { n: runningTasks.size, hot: true };
+    return null;
+  };
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          -BASTION- <small>guarda</small>
+    <ToastProvider>
+      <div className="app">
+        <aside className="sidebar">
+          <div className="brand">
+            -BASTION-
+            <small>
+              <span className={`dot ${connDot}`} />
+              {connLabel}
+            </small>
+          </div>
+          <nav className="nav">
+            {NAV.map((sec) => (
+              <div className="nav-section" key={sec.section}>
+                <div className="nav-title">{sec.section}</div>
+                {sec.items.map((item) => {
+                  const b = badge(item.key);
+                  return (
+                    <button
+                      key={item.key}
+                      className="nav-item"
+                      aria-current={route === item.key ? "page" : undefined}
+                      onClick={() => go(item.key)}
+                    >
+                      {item.label}
+                      {b && (
+                        <span className={"badge" + (b.hot ? " hot" : "")}>
+                          {b.n}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </nav>
+          <div className="sidebar-foot">
+            the agent that can't betray you
+          </div>
+        </aside>
+
+        <div className="main">
+          {route === "overview" && <Overview go={go} />}
+          {route === "loadout" && (
+            <Loadout personasLive={personas} runningTasks={runningTasks} />
+          )}
+          {route === "feed" && (
+            <LiveFeed ledger={ledger} personas={personas} />
+          )}
+          {route === "chat" && <Chat />}
+          {route === "tasks" && <Tasks />}
+          {route === "schedules" && <Schedules />}
+          {route === "models" && (
+            <CommandView
+              title="Models"
+              sub="LLM provider and model selection — /model"
+              listCmd="/model"
+              placeholder="model name (e.g. claude-sonnet-5)"
+              buildCmd={(v) => `/model ${v}`}
+              actionLabel="switch model"
+            />
+          )}
+          {route === "backends" && (
+            <CommandView
+              title="Backends"
+              sub="conversation backend — model loop or a subscription runtime"
+              listCmd="/backend"
+              placeholder="backend id"
+              buildCmd={(v) => `/backend use ${v}`}
+              actionLabel="use backend"
+            />
+          )}
+          {route === "logs" && (
+            <CommandView
+              title="Logs"
+              sub="recent daemon ERROR/WARN entries (timestamp/level/message)"
+              listCmd="/logs"
+            />
+          )}
+          {route === "update" && (
+            <CommandView
+              title="Update"
+              sub="release status and explicit host update"
+              listCmd="/update status"
+              confirmCmd={{
+                cmd: "/update apply",
+                label: "apply update",
+                confirm:
+                  "Apply the host update now? The daemon restarts through the trusted updater.",
+              }}
+            />
+          )}
+          {route === "connection" && (
+            <Connection onSaved={() => setStreamGen((g) => g + 1)} />
+          )}
+          {route === "about" && <About />}
         </div>
-        <nav className="tabs" role="tablist">
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              role="tab"
-              className="tab"
-              aria-selected={tab === t.key}
-              onClick={() => setTab(t.key)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
-        <span className="spacer" />
-        <span className={`conn ${conn}`}>{connLabel}</span>
-      </header>
-
-      <div className="lanterns">
-        {lanterns.length === 0 ? (
-          <span className="hint">
-            lanternas acendem quando uma persona fala
-          </span>
-        ) : (
-          lanterns.map(([name, seen]) => (
-            <span
-              key={name}
-              className={
-                "lantern" +
-                (Date.now() - seen < LANTERN_GLOW_MS ? " lit" : "")
-              }
-            >
-              <span className="px" />
-              {name}
-            </span>
-          ))
-        )}
       </div>
-
-      {tab === "vigilia" && <Vigilia ledger={ledger} />}
-      {tab === "tarefas" && <Tasks />}
-      {tab === "chat" && <Chat />}
-      {tab === "config" && (
-        <Config onSaved={() => setStreamGen((g) => g + 1)} />
-      )}
-    </div>
+    </ToastProvider>
   );
 }

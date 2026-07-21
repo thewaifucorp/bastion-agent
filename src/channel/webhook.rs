@@ -262,7 +262,9 @@ pub fn error_body(e: &anyhow::Error) -> String {
 ///   3. Reject with 401 if both fail.
 // Err is boxed: clippy::result_large_err — axum::response::Response is 128+ bytes,
 // and the Ok path (a plain owner String) is the common case.
-fn resolve_owner_or_401(
+// pub(crate): `loadout.rs` guards GET /loadout with the SAME owner
+// resolution rather than growing a second token scheme.
+pub(crate) fn resolve_owner_or_401(
     headers: &HeaderMap,
     owner_map: &OwnerMap,
     jwt_secret: &str,
@@ -1204,6 +1206,7 @@ pub async fn serve(
         "bastion".to_string(),
         None,
         None, // control_plane_routes — this self-contained entry point mounts none
+        None, // loadout_routes — likewise
         None,
         None,
         readiness,
@@ -1246,6 +1249,9 @@ pub async fn serve_with_mesh(
     // `task_store`/`credential_store` field. `None` only if a caller opts
     // out of mounting it; `daemon_loop` always passes `Some`.
     control_plane_routes: Option<axum::Router>,
+    // Observability A2: GET /loadout (boot-time composition snapshot), built
+    // by `daemon_loop` over its own state — merged like the two above.
+    loadout_routes: Option<axum::Router>,
     // WhatsApp Cloud API config (CHAN-01). None = WhatsApp routes are mounted but
     // reject with 404/403 rather than panicking (daemon startup wiring lands in
     // Plan 10-09).
@@ -1330,6 +1336,9 @@ pub async fn serve_with_mesh(
     }
     if let Some(control_plane) = control_plane_routes {
         app = app.merge(control_plane);
+    }
+    if let Some(loadout) = loadout_routes {
+        app = app.merge(loadout);
     }
     // Observability frontend A2: the embedded web app (or its graceful
     // "not built" answer) — stateless, always mounted.

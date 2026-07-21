@@ -10,6 +10,7 @@ pub mod compose;
 pub mod config;
 pub mod control_plane;
 pub mod extension;
+pub mod loadout;
 pub mod mcp;
 pub mod observability;
 pub mod product_import;
