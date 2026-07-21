@@ -405,18 +405,11 @@ mod tests {
         let backups: Vec<_> = std::fs::read_dir(root.join("personas/ada"))
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("SOUL.md.bak-")
-            })
+            .filter(|e| e.file_name().to_string_lossy().starts_with("SOUL.md.bak-"))
             .collect();
         assert_eq!(backups.len(), 1);
 
-        assert_eq!(
-            list_persona_slugs(root).await,
-            vec!["ada".to_string()]
-        );
+        assert_eq!(list_persona_slugs(root).await, vec!["ada".to_string()]);
         assert!(read_persona(root, "ada").await.unwrap().is_some());
         assert!(read_persona(root, "ghost").await.unwrap().is_none());
     }

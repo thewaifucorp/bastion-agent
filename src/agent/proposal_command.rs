@@ -35,7 +35,10 @@ pub async fn handle(
 fn describe(p: &Proposal) -> String {
     let what = match &p.payload {
         ProposalPayload::PersonaEdit { slug, content } => {
-            format!("persona_edit personas/{slug}/SOUL.md ({} bytes)", content.len())
+            format!(
+                "persona_edit personas/{slug}/SOUL.md ({} bytes)",
+                content.len()
+            )
         }
     };
     let status = match p.status {
@@ -60,11 +63,7 @@ async fn list(store: &Arc<SqliteProposalStore>, owner: &str) -> anyhow::Result<S
     Ok(out)
 }
 
-async fn show(
-    store: &Arc<SqliteProposalStore>,
-    owner: &str,
-    id: &str,
-) -> anyhow::Result<String> {
+async fn show(store: &Arc<SqliteProposalStore>, owner: &str, id: &str) -> anyhow::Result<String> {
     if id.is_empty() {
         return Ok("usage: /proposal show <id>".to_string());
     }
@@ -109,11 +108,7 @@ async fn approve(
     }
 }
 
-async fn reject(
-    store: &Arc<SqliteProposalStore>,
-    owner: &str,
-    id: &str,
-) -> anyhow::Result<String> {
+async fn reject(store: &Arc<SqliteProposalStore>, owner: &str, id: &str) -> anyhow::Result<String> {
     if id.is_empty() {
         return Ok("usage: /proposal reject <id>".to_string());
     }

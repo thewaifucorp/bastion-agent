@@ -218,7 +218,10 @@ pub fn snapshot(
     LoadoutSnapshot {
         personas: persona_names,
         tools: tool_names,
-        runtimes: runtime_ids.into_iter().map(|id| RuntimePiece { id }).collect(),
+        runtimes: runtime_ids
+            .into_iter()
+            .map(|id| RuntimePiece { id })
+            .collect(),
         channels,
         mcp_servers,
         extensions: Vec::new(),

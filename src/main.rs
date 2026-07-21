@@ -592,7 +592,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Observability A3: staged configuration proposals (web proposes,
     // console `/proposal` approves) — same fail-closed init tier.
-    let proposal_store = Arc::new(bastion::proposals::SqliteProposalStore::new(db_path.clone()));
+    let proposal_store = Arc::new(bastion::proposals::SqliteProposalStore::new(
+        db_path.clone(),
+    ));
     proposal_store.init_schema().await?;
 
     // US External Control Plane and SDK, Phase 4: same fail-closed tier —
@@ -1552,19 +1554,11 @@ async fn daemon_loop(
                         },
                         bastion::loadout::ChannelPiece {
                             id: "whatsapp",
-                            enabled: cfg
-                                .channels
-                                .whatsapp
-                                .as_ref()
-                                .is_some_and(|c| c.enabled),
+                            enabled: cfg.channels.whatsapp.as_ref().is_some_and(|c| c.enabled),
                         },
                         bastion::loadout::ChannelPiece {
                             id: "discord",
-                            enabled: cfg
-                                .channels
-                                .discord
-                                .as_ref()
-                                .is_some_and(|c| c.enabled),
+                            enabled: cfg.channels.discord.as_ref().is_some_and(|c| c.enabled),
                         },
                         bastion::loadout::ChannelPiece {
                             id: "slack",
