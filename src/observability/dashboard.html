@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bastion — vigília</title>
+<style>
+  :root {
+    --bg: #0f1520;
+    --panel: #151d2b;
+    --panel-2: #1a2334;
+    --line: #263043;
+    --text: #e8e2d3;
+    --muted: #8b93a3;
+    --lantern: #e0a458;
+    --lantern-dim: #6b5636;
+    --ok: #6fbfa8;
+    --warn: #d96c5f;
+    --steel: #7a9cc6;
+    --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.5;
+    display: flex;
+    flex-direction: column;
+  }
+  a, button, input { font: inherit; color: inherit; }
+  button {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 3px 10px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--lantern-dim); }
+  button:focus-visible, input:focus-visible {
+    outline: 2px solid var(--lantern);
+    outline-offset: 1px;
+  }
+  button.danger:hover { border-color: var(--warn); color: var(--warn); }
+  input {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 4px 8px;
+    width: 100%;
+  }
+
+  /* ── topo: identidade + lanternas ─────────────────────────── */
+  header {
+    padding: 14px 20px 12px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 10px 22px;
+  }
+  .brand {
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: .28em;
+    text-transform: uppercase;
+  }
+  .brand small {
+    color: var(--muted);
+    font-weight: 400;
+    letter-spacing: .18em;
+    margin-left: 8px;
+  }
+  #conn {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  #conn::before {
+    content: "●";
+    margin-right: 5px;
+    color: var(--warn);
+  }
+  #conn.live::before { color: var(--ok); }
+  header .spacer { flex: 1; }
+
+  /* lanternas de persona — assinatura da página: acendem quando a
+     persona fala, esfriam sozinhas depois */
+  #lanterns {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--line);
+    min-height: 38px;
+    align-items: center;
+  }
+  #lanterns .hint { color: var(--muted); font-size: 11px; }
+  .lantern {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--muted);
+    transition: color 1.2s ease;
+  }
+  .lantern .flame {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: var(--lantern-dim);
+    transition: background 1.2s ease, box-shadow 1.2s ease;
+  }
+  .lantern.lit { color: var(--text); }
+  .lantern.lit .flame {
+    background: var(--lantern);
+    box-shadow: 0 0 8px 2px rgba(224, 164, 88, .45);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .lantern.lit .flame { animation: flicker 2.4s infinite; }
+    @keyframes flicker {
+      0%, 100% { box-shadow: 0 0 8px 2px rgba(224,164,88,.45); }
+      50%      { box-shadow: 0 0 5px 1px rgba(224,164,88,.30); }
+    }
+  }
+
+  /* ── corpo: tarefas | livro de eventos ────────────────────── */
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    min-height: 0;
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  section + section { border-left: 1px solid var(--line); }
+  @media (max-width: 900px) {
+    section + section { border-left: 0; border-top: 1px solid var(--line); }
+  }
+  .sec-head {
+    font-family: var(--sans);
+    font-size: 11px;
+    letter-spacing: .22em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 10px 20px 8px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .sec-head .spacer { flex: 1; }
+  .scroll { overflow-y: auto; flex: 1; padding: 0 20px 20px; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    text-align: left;
+    font-weight: 400;
+    color: var(--muted);
+    font-size: 11px;
+    padding: 4px 10px 4px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  td {
+    padding: 6px 10px 6px 0;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+    overflow-wrap: anywhere;
+  }
+  tr.task { cursor: pointer; }
+  tr.task:hover td { background: var(--panel); }
+  tr.task.open td { background: var(--panel-2); }
+  .chip {
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 3px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .chip.running { color: var(--lantern); border-color: var(--lantern-dim); }
+  .chip.paused  { color: var(--steel); }
+  .chip.succeeded, .chip.verified { color: var(--ok); }
+  .chip.failed, .chip.cancelled { color: var(--warn); }
+
+  #detail {
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+    padding: 14px 20px;
+    display: none;
+    max-height: 45%;
+    overflow-y: auto;
+  }
+  #detail.open { display: block; }
+  #detail h2 { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  #detail .meta { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+  #detail .actions { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+  #steer-row { display: none; gap: 8px; margin-top: 8px; }
+  #steer-row.open { display: flex; }
+  .attempt { padding: 6px 0; border-top: 1px dashed var(--line); font-size: 12px; }
+
+  /* o livro (ledger) de eventos ao vivo */
+  #ledger { font-size: 12px; }
+  .entry { display: flex; gap: 10px; padding: 3px 0; }
+  .entry time { color: var(--muted); flex: none; }
+  .entry .kind { flex: none; width: 12ch; }
+  .entry .kind.turn-started   { color: var(--steel); }
+  .entry .kind.cabinet        { color: var(--lantern); }
+  .entry .kind.turn-completed { color: var(--ok); }
+  .entry .kind.turn-failed    { color: var(--warn); }
+  .entry .body { color: var(--muted); overflow-wrap: anywhere; }
+
+  /* ── configurações / toast ────────────────────────────────── */
+  #settings {
+    display: none;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+  #settings.open { display: block; }
+  #settings .row { display: grid; grid-template-columns: 22ch 1fr; gap: 8px; margin-bottom: 8px; align-items: center; }
+  #settings label { color: var(--muted); font-size: 12px; }
+  #settings .note { color: var(--muted); font-size: 11px; margin: 6px 0 10px; }
+  #toast {
+    position: fixed;
+    bottom: 16px; left: 50%;
+    transform: translateX(-50%);
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 8px 16px;
+    display: none;
+    max-width: 80vw;
+  }
+  #toast.warn { border-color: var(--warn); }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">Bastion <small>vigília</small></div>
+  <div id="conn">desconectado</div>
+  <div class="spacer"></div>
+  <button id="btn-settings" aria-expanded="false">tokens</button>
+</header>
+
+<div id="settings">
+  <div class="note">
+    Dois tokens, duas superfícies: o token de owner autentica o feed ao vivo
+    (<code>/events</code>); a credencial do Control Plane autentica as tarefas
+    (<code>/v1/*</code> — emita uma no console do daemon com
+    <code>/credential issue dashboard tasks:read,tasks:control</code>).
+    Ficam somente neste navegador (localStorage).
+  </div>
+  <div class="row">
+    <label for="tok-owner">token de owner (/events)</label>
+    <input id="tok-owner" type="password" autocomplete="off">
+  </div>
+  <div class="row">
+    <label for="tok-cp">credencial bcp_ (/v1)</label>
+    <input id="tok-cp" type="password" autocomplete="off">
+  </div>
+  <button id="btn-save">Salvar e conectar</button>
+</div>
+
+<div id="lanterns"><span class="hint">as lanternas acendem quando uma persona fala</span></div>
+
+<main>
+  <section>
+    <div class="sec-head">
+      Tarefas duráveis
+      <span class="spacer"></span>
+      <button id="btn-refresh">atualizar</button>
+    </div>
+    <div class="scroll">
+      <table aria-label="tarefas Pursue">
+        <thead>
+          <tr><th>id</th><th>status</th><th>objetivo</th><th>passos</th><th>custo</th></tr>
+        </thead>
+        <tbody id="tasks"><tr><td colspan="5" style="color:var(--muted)">sem dados — configure os tokens</td></tr></tbody>
+      </table>
+    </div>
+    <div id="detail"></div>
+  </section>
+
+  <section>
+    <div class="sec-head">Livro de vigília</div>
+    <div class="scroll"><div id="ledger"></div></div>
+  </section>
+</main>
+
+<div id="toast" role="status"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const store = {
+  get owner() { return localStorage.getItem("bastion.ui.owner-token") || ""; },
+  set owner(v) { localStorage.setItem("bastion.ui.owner-token", v); },
+  get cp() { return localStorage.getItem("bastion.ui.cp-token") || ""; },
+  set cp(v) { localStorage.setItem("bastion.ui.cp-token", v); },
+};
+
+let toastTimer;
+function toast(msg, warn) {
+  const el = $("toast");
+  el.textContent = msg;
+  el.className = warn ? "warn" : "";
+  el.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.style.display = "none"; }, 5000);
+}
+
+/* ── configurações ─────────────────────────────────────────── */
+$("btn-settings").addEventListener("click", () => {
+  const open = $("settings").classList.toggle("open");
+  $("btn-settings").setAttribute("aria-expanded", String(open));
+  $("tok-owner").value = store.owner;
+  $("tok-cp").value = store.cp;
+});
+$("btn-save").addEventListener("click", () => {
+  store.owner = $("tok-owner").value.trim();
+  store.cp = $("tok-cp").value.trim();
+  $("settings").classList.remove("open");
+  connectEvents();
+  refreshTasks();
+});
+
+/* ── lanternas de persona ──────────────────────────────────── */
+const personas = new Map(); // nome -> última vez que falou (ms)
+const LANTERN_GLOW_MS = 45000;
+function lightLanterns(names) {
+  const now = Date.now();
+  for (const n of names || []) personas.set(n, now);
+  renderLanterns();
+}
+function renderLanterns() {
+  const el = $("lanterns");
+  if (personas.size === 0) return;
+  const now = Date.now();
+  el.innerHTML = "";
+  const sorted = [...personas.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [name, seen] of sorted) {
+    const span = document.createElement("span");
+    span.className = "lantern" + (now - seen < LANTERN_GLOW_MS ? " lit" : "");
+    const flame = document.createElement("span");
+    flame.className = "flame";
+    span.appendChild(flame);
+    span.appendChild(document.createTextNode(name));
+    el.appendChild(span);
+  }
+}
+setInterval(renderLanterns, 5000);
+
+/* ── livro de eventos (SSE via fetch — EventSource não envia header) ── */
+let sseAbort = null;
+async function connectEvents() {
+  if (sseAbort) sseAbort.abort();
+  if (!store.owner) return;
+  sseAbort = new AbortController();
+  const { signal } = sseAbort;
+  let backoff = 1000;
+  while (!signal.aborted) {
+    try {
+      const resp = await fetch("/events", {
+        headers: { "x-bastion-token": store.owner },
+        signal,
+      });
+      if (resp.status === 401) {
+        setConn(false, "token de owner recusado");
+        return;
+      }
+      if (!resp.ok || !resp.body) throw new Error("HTTP " + resp.status);
+      setConn(true, "ao vivo");
+      backoff = 1000;
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const frame = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          for (const line of frame.split("\n")) {
+            if (line.startsWith("data:")) onEvent(line.slice(5).trim());
+          }
+        }
+      }
+      throw new Error("stream encerrado");
+    } catch (e) {
+      if (signal.aborted) return;
+      setConn(false, "reconectando…");
+      await new Promise((r) => setTimeout(r, backoff));
+      backoff = Math.min(backoff * 2, 15000);
+    }
+  }
+}
+function setConn(live, label) {
+  const el = $("conn");
+  el.classList.toggle("live", live);
+  el.textContent = label;
+}
+
+const KIND_CLASS = {
+  "turn.started": "turn-started",
+  "cabinet.started": "cabinet",
+  "turn.completed": "turn-completed",
+  "turn.failed": "turn-failed",
+};
+function onEvent(raw) {
+  let ev;
+  try { ev = JSON.parse(raw); } catch { return; }
+  const kind = ev.event || ev.type || "?";
+  if (kind === "cabinet.started") lightLanterns(ev.personas);
+  if (kind === "turn.completed") lightLanterns(ev.personas);
+  if (kind === "turn.completed" || kind === "turn.failed") scheduleTaskRefresh();
+
+  const entry = document.createElement("div");
+  entry.className = "entry";
+  const t = document.createElement("time");
+  t.textContent = new Date().toLocaleTimeString();
+  const k = document.createElement("span");
+  k.className = "kind " + (KIND_CLASS[kind] || "");
+  k.textContent = kind;
+  const b = document.createElement("span");
+  b.className = "body";
+  b.textContent = describe(kind, ev);
+  entry.append(t, k, b);
+  const ledger = $("ledger");
+  ledger.prepend(entry);
+  while (ledger.childElementCount > 200) ledger.lastElementChild.remove();
+}
+function describe(kind, ev) {
+  const parts = [];
+  if (ev.owner) parts.push(ev.owner);
+  if (ev.mode === "cabinet") parts.push("gabinete");
+  if (Array.isArray(ev.personas) && ev.personas.length) parts.push(ev.personas.join(" + "));
+  if (typeof ev.latency_ms === "number") parts.push(ev.latency_ms + " ms");
+  if (kind === "mesh_sync") parts.push("sincronia de malha");
+  return parts.join(" · ");
+}
+
+/* ── tarefas (/v1, credencial bcp_) ────────────────────────── */
+async function v1(path, opts = {}) {
+  if (!store.cp) throw new Error("credencial bcp_ não configurada");
+  const resp = await fetch(path, {
+    ...opts,
+    headers: {
+      "x-bastion-token": store.cp,
+      ...(opts.body ? { "content-type": "application/json" } : {}),
+    },
+  });
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const code = body && body.code ? body.code : "HTTP " + resp.status;
+    throw new Error(code);
+  }
+  return body;
+}
+
+let openTaskId = null;
+let refreshTimer = null;
+function scheduleTaskRefresh() {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(refreshTasks, 800);
+}
+async function refreshTasks() {
+  if (!store.cp) return;
+  let data;
+  try { data = await v1("/v1/tasks"); }
+  catch (e) { toast("tarefas: " + e.message, true); return; }
+  const tbody = $("tasks");
+  tbody.innerHTML = "";
+  if (!data.items || data.items.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">nenhuma tarefa durável ainda</td></tr>';
+    return;
+  }
+  for (const t of data.items) {
+    const tr = document.createElement("tr");
+    tr.className = "task" + (t.id === openTaskId ? " open" : "");
+    const cost = t.budget_summary && t.budget_summary.cost_usd != null
+      ? "$" + t.budget_summary.cost_usd.toFixed(2) : "—";
+    const steps = t.budget_summary ? t.budget_summary.steps : "—";
+    tr.innerHTML =
+      "<td>" + esc(shortId(t.id)) + "</td>" +
+      '<td><span class="chip ' + esc(t.status) + '">' + esc(t.status) + "</span></td>" +
+      "<td>" + esc(truncate(t.objective, 90)) + "</td>" +
+      "<td>" + esc(String(steps)) + "</td>" +
+      "<td>" + esc(cost) + "</td>";
+    tr.addEventListener("click", () => openDetail(t.id));
+    tbody.appendChild(tr);
+  }
+}
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function shortId(id) { return id.length > 12 ? id.slice(0, 12) + "…" : id; }
+function truncate(s, n) { return s.length > n ? s.slice(0, n) + "…" : s; }
+
+async function openDetail(id) {
+  openTaskId = id;
+  const el = $("detail");
+  el.classList.add("open");
+  el.textContent = "carregando…";
+  let task, attempts;
+  try {
+    task = await v1("/v1/tasks/" + encodeURIComponent(id));
+    attempts = await v1("/v1/tasks/" + encodeURIComponent(id) + "/attempts");
+  } catch (e) {
+    el.textContent = "detalhe indisponível: " + e.message;
+    return;
+  }
+  el.innerHTML = "";
+  const h = document.createElement("h2");
+  h.textContent = task.objective;
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = task.id + " · " + task.status + " · revisão " + task.revision
+    + (task.stop_reason ? " · parada: " + JSON.stringify(task.stop_reason) : "");
+  el.append(h, meta);
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const can = (a) => ({
+    pause: task.status === "running",
+    resume: task.status === "paused",
+    steer: task.status === "running",
+    cancel: ["pending", "running", "paused"].includes(task.status),
+  })[a];
+  const mk = (label, fn, danger) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    if (danger) b.className = "danger";
+    b.addEventListener("click", fn);
+    return b;
+  };
+  if (can("pause")) actions.append(mk("Pausar", () => act(task, "pause")));
+  if (can("resume")) actions.append(mk("Retomar", () => act(task, "resume")));
+  if (can("steer")) actions.append(mk("Direcionar", () => $("steer-row").classList.toggle("open")));
+  if (can("cancel")) actions.append(mk("Cancelar", () => act(task, "cancel"), true));
+  const close = mk("Fechar", () => { el.classList.remove("open"); openTaskId = null; refreshTasks(); });
+  actions.append(close);
+  el.append(actions);
+
+  const steerRow = document.createElement("div");
+  steerRow.id = "steer-row";
+  const steerInput = document.createElement("input");
+  steerInput.placeholder = "nova orientação para a tarefa";
+  steerRow.append(steerInput, mk("Enviar", async () => {
+    const guidance = steerInput.value.trim();
+    if (!guidance) return;
+    await act(task, "steer", { guidance });
+  }));
+  el.append(steerRow);
+
+  for (const a of attempts.items || attempts.attempts || []) {
+    const div = document.createElement("div");
+    div.className = "attempt";
+    const verified = a.verified ? " · veredicto: " + (a.verified.kind || JSON.stringify(a.verified)) : "";
+    div.textContent = a.id + " · início " + fmtTs(a.started_at)
+      + (a.ended_at ? " · fim " + fmtTs(a.ended_at) : " · em andamento") + verified;
+    el.append(div);
+  }
+}
+function fmtTs(nanos) {
+  return new Date(nanos / 1e6).toLocaleString();
+}
+async function act(task, action, extra) {
+  const body = { expected_revision: task.revision, ...(extra || {}) };
+  try {
+    await v1("/v1/tasks/" + encodeURIComponent(task.id) + ":" + action, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    toast(action + " aplicado");
+    await openDetail(task.id);
+    refreshTasks();
+  } catch (e) {
+    toast(action + " falhou: " + e.message + " — recarregue o detalhe (revisão pode estar velha)", true);
+  }
+}
+
+$("btn-refresh").addEventListener("click", refreshTasks);
+setInterval(refreshTasks, 15000);
+
+/* ── partida ───────────────────────────────────────────────── */
+if (!store.owner && !store.cp) {
+  $("settings").classList.add("open");
+  $("btn-settings").setAttribute("aria-expanded", "true");
+} else {
+  connectEvents();
+  refreshTasks();
+}
+</script>
+</body>
+</html>

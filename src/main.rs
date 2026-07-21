@@ -1974,6 +1974,24 @@ async fn daemon_loop(
                             }
                             continue;
                         }
+                        // Observability frontend: credential cockpit — console
+                        // only (the plaintext token prints exactly once, to the
+                        // operator's terminal; command_catalog Scope::ConsoleOnly
+                        // keeps remote channels out).
+                        if first_token == "/credential" {
+                            let cred_arg = trimmed.split_once(' ').map(|x| x.1);
+                            match bastion::agent::credential_command::handle(
+                                &control_plane_credential_store,
+                                cred_arg,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                            )
+                            .await
+                            {
+                                Ok(msg) => println!("{msg}"),
+                                Err(e) => println!("Erro no comando: {e}"),
+                            }
+                            continue;
+                        }
                         // US-205: schedule cockpit — needs the schedule store.
                         if first_token == "/schedule" {
                             let sched_arg = trimmed.split_once(' ').map(|x| x.1);

@@ -20,6 +20,16 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+/// The bundled observability dashboard (`GET /ui`, served by
+/// `channel/webhook.rs`), embedded like `control_plane/routes.rs` embeds the
+/// OpenAPI YAML. Self-contained single file: the daemon serves it with a CSP
+/// that only allows same-origin connects, so it can never load remote assets.
+/// The page itself is an unauthenticated static shell — every byte of data it
+/// shows comes from `/events` (owner token) and `/v1/*` (Control Plane
+/// credential), both entered by the operator in the page and sent per
+/// request.
+pub const DASHBOARD_HTML: &str = include_str!("observability/dashboard.html");
+
 use bastion_runtime::agent::ports::{Responder, RespondOutcome, TurnContext};
 use tokio::sync::broadcast;
 
