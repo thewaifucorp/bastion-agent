@@ -90,16 +90,22 @@ mod tests {
         );
         // And the steer note itself is readable back out, same shape task_command uses.
         let array = steered.as_array().unwrap();
-        assert!(array
-            .iter()
-            .any(|n| n.get("steer").and_then(Value::as_str) == Some("focus on the auth bug first")));
+        assert!(
+            array
+                .iter()
+                .any(|n| n.get("steer").and_then(Value::as_str)
+                    == Some("focus on the auth bug first"))
+        );
     }
 
     #[test]
     fn append_steer_note_wraps_a_lone_pre_existing_object_like_task_command_does() {
         let pre_existing = serde_json::json!({ "something_else": "value" });
         let result = append_steer_note(pre_existing.clone(), "guidance");
-        assert_eq!(result, Value::Array(vec![pre_existing, serde_json::json!({"steer": "guidance"})]));
+        assert_eq!(
+            result,
+            Value::Array(vec![pre_existing, serde_json::json!({"steer": "guidance"})])
+        );
     }
 
     #[test]

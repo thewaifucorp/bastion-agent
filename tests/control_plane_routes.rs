@@ -252,7 +252,9 @@ async fn create_webhook_subscription_succeeds_for_a_real_public_url() {
     assert_eq!(json["target_url"], "https://example.com/hook");
     // The signing secret is returned exactly once, in this creation
     // response — a caller has no other way to retrieve it.
-    let secret = json["secret"].as_str().expect("secret must be present on creation");
+    let secret = json["secret"]
+        .as_str()
+        .expect("secret must be present on creation");
     assert!(!secret.is_empty());
 }
 
@@ -295,15 +297,25 @@ async fn create_task_enqueues_a_task_created_delivery_for_a_matching_subscriptio
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    let matches = sub_store.active_matching("alice", "task.created").await.unwrap();
-    assert_eq!(matches.len(), 1, "the subscription we seeded should be an active match");
+    let matches = sub_store
+        .active_matching("alice", "task.created")
+        .await
+        .unwrap();
+    assert_eq!(
+        matches.len(),
+        1,
+        "the subscription we seeded should be an active match"
+    );
 
     // Poll briefly: `emit_event` is awaited inside the handler before the
     // response is returned, so this should already be true by the time we
     // get here, but a tiny retry loop keeps the test robust against any
     // future change that makes emission fire-and-forget instead.
     let due = delivery_store.count_pending().await.unwrap();
-    assert_eq!(due, 1, "a task.created delivery must be enqueued for the matching subscription");
+    assert_eq!(
+        due, 1,
+        "a task.created delivery must be enqueued for the matching subscription"
+    );
 }
 
 // ─── Phase 3: POST /v1/tasks (create) ──────────────────────────────────────
@@ -415,7 +427,11 @@ async fn create_task_is_idempotent_on_owner_plus_idempotency_key() {
         serde_json::json!({ "objective": "a completely different objective" }),
     );
     let resp2 = app.clone().oneshot(req2).await.unwrap();
-    assert_eq!(resp2.status(), StatusCode::OK, "replay is 200, not 201 — nothing new created");
+    assert_eq!(
+        resp2.status(),
+        StatusCode::OK,
+        "replay is 200, not 201 — nothing new created"
+    );
     let json2 = body_json(resp2).await;
     assert_eq!(json2["id"], id1);
     assert_eq!(
@@ -423,7 +439,10 @@ async fn create_task_is_idempotent_on_owner_plus_idempotency_key() {
         "replay must return the ORIGINAL objective, not the retry's different body"
     );
 
-    let all = task_store.list_cases_for_owner("alice").await.expect("list");
+    let all = task_store
+        .list_cases_for_owner("alice")
+        .await
+        .expect("list");
     assert_eq!(all.len(), 1, "exactly one task, not two");
 }
 
@@ -444,8 +463,18 @@ async fn create_task_same_idempotency_key_different_owner_creates_separate_tasks
         assert_eq!(resp.status(), StatusCode::CREATED);
     }
 
-    assert_eq!(task_store.list_cases_for_owner("alice").await.unwrap().len(), 1);
-    assert_eq!(task_store.list_cases_for_owner("bob").await.unwrap().len(), 1);
+    assert_eq!(
+        task_store
+            .list_cases_for_owner("alice")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        task_store.list_cases_for_owner("bob").await.unwrap().len(),
+        1
+    );
 }
 
 // ─── Phase 3: POST /v1/tasks/{id}:pause|:resume|:cancel|:steer ────────────
@@ -507,7 +536,11 @@ async fn pause_a_running_task_succeeds_and_bumps_revision() {
     assert_eq!(json["status"], "paused");
     assert_eq!(json["revision"], 2);
 
-    let stored = task_store.load_case("alice", &TaskCaseId("t1".into())).await.unwrap().unwrap();
+    let stored = task_store
+        .load_case("alice", &TaskCaseId("t1".into()))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(stored.status, TaskStatus::Paused);
     assert_eq!(stored.revision, 2);
 }
@@ -530,8 +563,16 @@ async fn pause_with_stale_revision_returns_409_and_does_not_mutate() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CONFLICT);
 
-    let stored = task_store.load_case("alice", &TaskCaseId("t1".into())).await.unwrap().unwrap();
-    assert_eq!(stored.status, TaskStatus::Running, "must not have transitioned");
+    let stored = task_store
+        .load_case("alice", &TaskCaseId("t1".into()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.status,
+        TaskStatus::Running,
+        "must not have transitioned"
+    );
     assert_eq!(stored.revision, 1, "must not have bumped");
 }
 
@@ -540,7 +581,10 @@ async fn pause_a_pending_task_is_an_invalid_transition_409() {
     let (_f, task_store, cred_store, app) = build_app().await;
     let mut pending = sample_case("alice", "t1", 100);
     pending.status = TaskStatus::Pending;
-    task_store.create_case(&pending, "idem-1").await.expect("create");
+    task_store
+        .create_case(&pending, "idem-1")
+        .await
+        .expect("create");
     let token = issue_token(&cred_store, "alice", &[Scope::TasksControl]).await;
 
     let req = post_json(
@@ -569,7 +613,11 @@ async fn pause_wrong_owner_returns_404_not_403() {
         serde_json::json!({ "expected_revision": 1 }),
     );
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "IDOR: never reveal the task exists");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "IDOR: never reveal the task exists"
+    );
 }
 
 #[tokio::test]
@@ -577,7 +625,10 @@ async fn resume_a_paused_task_succeeds() {
     let (_f, task_store, cred_store, app) = build_app().await;
     let mut paused = sample_case("alice", "t1", 100);
     paused.status = TaskStatus::Paused;
-    task_store.create_case(&paused, "idem-1").await.expect("create");
+    task_store
+        .create_case(&paused, "idem-1")
+        .await
+        .expect("create");
     let token = issue_token(&cred_store, "alice", &[Scope::TasksControl]).await;
 
     let req = post_json(
@@ -613,7 +664,11 @@ async fn cancel_sets_a_stop_reason() {
     assert_eq!(json["status"], "cancelled");
     assert_eq!(json["stop_reason"]["kind"], "cancelled");
 
-    let stored = task_store.load_case("alice", &TaskCaseId("t1".into())).await.unwrap().unwrap();
+    let stored = task_store
+        .load_case("alice", &TaskCaseId("t1".into()))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(stored.status.is_terminal());
 }
 
@@ -623,7 +678,10 @@ async fn cancel_an_already_terminal_task_returns_409() {
     let mut done = sample_case("alice", "t1", 100);
     done.status = TaskStatus::Completed;
     done.stop_reason = Some(bastion_runtime::task::StopReason::Completed);
-    task_store.create_case(&done, "idem-1").await.expect("create");
+    task_store
+        .create_case(&done, "idem-1")
+        .await
+        .expect("create");
     let token = issue_token(&cred_store, "alice", &[Scope::TasksControl]).await;
 
     let req = post_json(
@@ -643,7 +701,10 @@ async fn steer_appends_a_note_and_preserves_external_ref() {
     case.business_state = OpaqueState(bastion::control_plane::business_state::new_business_state(
         Some("paperclip-issue-42"),
     ));
-    task_store.create_case(&case, "idem-1").await.expect("create");
+    task_store
+        .create_case(&case, "idem-1")
+        .await
+        .expect("create");
     let token = issue_token(&cred_store, "alice", &[Scope::TasksControl]).await;
 
     let req = post_json(
@@ -661,10 +722,15 @@ async fn steer_appends_a_note_and_preserves_external_ref() {
         "steering must not clobber the external_ref set at creation"
     );
 
-    let stored = task_store.load_case("alice", &TaskCaseId("t1".into())).await.unwrap().unwrap();
+    let stored = task_store
+        .load_case("alice", &TaskCaseId("t1".into()))
+        .await
+        .unwrap()
+        .unwrap();
     let notes = stored.business_state.0.as_array().unwrap();
-    assert!(notes.iter().any(|n| n.get("steer").and_then(Value::as_str)
-        == Some("focus on the auth bug first")));
+    assert!(notes
+        .iter()
+        .any(|n| n.get("steer").and_then(Value::as_str) == Some("focus on the auth bug first")));
 }
 
 #[tokio::test]
@@ -692,7 +758,10 @@ async fn steer_on_terminal_task_returns_409() {
     let mut done = sample_case("alice", "t1", 100);
     done.status = TaskStatus::Cancelled;
     done.stop_reason = Some(bastion_runtime::task::StopReason::Cancelled);
-    task_store.create_case(&done, "idem-1").await.expect("create");
+    task_store
+        .create_case(&done, "idem-1")
+        .await
+        .expect("create");
     let token = issue_token(&cred_store, "alice", &[Scope::TasksControl]).await;
 
     let req = post_json(
@@ -747,7 +816,10 @@ async fn list_tasks_returns_only_the_authenticated_owners_tasks() {
     assert_eq!(items[0]["id"], "t1");
     assert_eq!(items[0]["owner_id"], "alice");
     assert_eq!(
-        items[0]["attempts"].as_array().expect("attempts array").len(),
+        items[0]["attempts"]
+            .as_array()
+            .expect("attempts array")
+            .len(),
         0,
         "list endpoint must not embed attempts (N+1 avoidance)"
     );
@@ -827,14 +899,20 @@ async fn get_task_404_does_not_leak_existence_across_owners() {
     assert_eq!(resp2.status(), StatusCode::NOT_FOUND);
     let body2 = body_json(resp2).await;
 
-    assert_eq!(body1["code"], body2["code"], "identical error code either way");
+    assert_eq!(
+        body1["code"], body2["code"],
+        "identical error code either way"
+    );
 }
 
 #[tokio::test]
 async fn get_task_includes_attempts_unlike_list_tasks() {
     let (_f, task_store, cred_store, app) = build_app().await;
     let case = sample_case("alice", "t1", 100);
-    task_store.create_case(&case, "idem-1").await.expect("create");
+    task_store
+        .create_case(&case, "idem-1")
+        .await
+        .expect("create");
     task_store
         .append_attempt(&Attempt {
             id: AttemptId("a1".into()),

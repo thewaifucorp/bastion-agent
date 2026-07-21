@@ -55,7 +55,12 @@ async fn credentials_are_isolated_across_owners() {
     let (_f, store) = make_store().await;
 
     let (_alice_id, alice_token) = store
-        .issue("alice", None, ScopeSet::new([Scope::TasksRead]), "alice-cred")
+        .issue(
+            "alice",
+            None,
+            ScopeSet::new([Scope::TasksRead]),
+            "alice-cred",
+        )
         .await
         .expect("issue alice");
     let (_bob_id, bob_token) = store
@@ -154,7 +159,12 @@ async fn credential_store_coexists_with_other_tables_on_a_shared_db_file() {
     store.init_schema().await.expect("second init_schema");
 
     let (_id, token) = store
-        .issue("alice", None, ScopeSet::new([Scope::TasksRead]), "shared-file-test")
+        .issue(
+            "alice",
+            None,
+            ScopeSet::new([Scope::TasksRead]),
+            "shared-file-test",
+        )
         .await
         .expect("issue");
     assert!(store.authenticate(&token).await.expect("auth").is_some());
@@ -182,5 +192,8 @@ async fn revoke_error_is_downcastable_from_outside_the_crate() {
         .revoke("alice", "does-not-exist")
         .await
         .expect_err("must error");
-    assert_eq!(err.downcast_ref::<RevokeError>(), Some(&RevokeError::NotFound));
+    assert_eq!(
+        err.downcast_ref::<RevokeError>(),
+        Some(&RevokeError::NotFound)
+    );
 }

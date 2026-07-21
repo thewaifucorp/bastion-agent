@@ -13,6 +13,8 @@ COPY Cargo.toml Cargo.lock ./
 RUN cargo fetch --locked
 
 COPY src ./src
+# routes.rs embeds the frozen OpenAPI contract via include_str!.
+COPY docs/en/contracts ./docs/en/contracts
 # Keep source builds usable on developer machines with limited RAM. CI or
 # high-core builders can override this with --build-arg CARGO_BUILD_JOBS=N.
 ARG CARGO_BUILD_JOBS=2

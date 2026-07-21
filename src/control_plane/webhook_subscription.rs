@@ -389,7 +389,10 @@ mod tests {
             .unwrap();
         }
 
-        let matches = store.active_matching("alice", "task.created").await.unwrap();
+        let matches = store
+            .active_matching("alice", "task.created")
+            .await
+            .unwrap();
         let ids: Vec<_> = matches.iter().map(|s| s.id.as_str()).collect();
         assert!(ids.contains(&"s1"), "exact event_type match");
         assert!(ids.contains(&"s2"), "empty event_types means 'all'");

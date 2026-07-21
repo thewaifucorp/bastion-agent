@@ -59,13 +59,19 @@ pub enum StopReasonDto {
     /// ← `StopReason::BudgetExceeded(BudgetKind)`. `dimension` is the
     /// lowercased `BudgetKind` variant name (`steps`, `wall_clock`, `tokens`,
     /// `money`, `parallelism`).
-    BudgetExceeded { dimension: String },
+    BudgetExceeded {
+        dimension: String,
+    },
     Cancelled,
     AwaitingApproval,
     /// ← `StopReason::Impossible(String)`.
-    Impossible { reason: String },
+    Impossible {
+        reason: String,
+    },
     /// ← `StopReason::Escalated(String)`.
-    Escalated { reason: String },
+    Escalated {
+        reason: String,
+    },
 }
 
 /// ← `bastion_runtime::task::UsageAccum` + `bastion_runtime::task::Bounds`,

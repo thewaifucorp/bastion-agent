@@ -241,8 +241,14 @@ mod tests {
 
     #[test]
     fn stop_reason_maps_all_variants() {
-        assert_eq!(stop_reason(&StopReason::Completed), StopReasonDto::Completed);
-        assert_eq!(stop_reason(&StopReason::Cancelled), StopReasonDto::Cancelled);
+        assert_eq!(
+            stop_reason(&StopReason::Completed),
+            StopReasonDto::Completed
+        );
+        assert_eq!(
+            stop_reason(&StopReason::Cancelled),
+            StopReasonDto::Cancelled
+        );
         assert_eq!(
             stop_reason(&StopReason::AwaitingApproval),
             StopReasonDto::AwaitingApproval

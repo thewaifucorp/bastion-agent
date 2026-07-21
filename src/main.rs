@@ -587,9 +587,7 @@ async fn main() -> anyhow::Result<()> {
     // on this store, so a schema-init failure here refuses to start rather
     // than silently serving with a broken credential table.
     let control_plane_credential_store =
-        Arc::new(bastion::control_plane::credential::SqliteCredentialStore::new(
-            db_path.clone(),
-        ));
+        Arc::new(bastion::control_plane::credential::SqliteCredentialStore::new(db_path.clone()));
     control_plane_credential_store.init_schema().await?;
 
     // US External Control Plane and SDK, Phase 4: same fail-closed tier —
@@ -600,7 +598,9 @@ async fn main() -> anyhow::Result<()> {
             db_path.clone(),
         ),
     );
-    control_plane_webhook_subscription_store.init_schema().await?;
+    control_plane_webhook_subscription_store
+        .init_schema()
+        .await?;
     let control_plane_webhook_delivery_store = Arc::new(
         bastion::control_plane::webhook_delivery::SqliteWebhookDeliveryStore::new(db_path.clone()),
     );
@@ -948,13 +948,15 @@ async fn main() -> anyhow::Result<()> {
             // (create_task/get_task/list_tasks/steer_task/cancel_task) live
             // in their own registry, never `agent.capability_registry` — see
             // `control_plane::mcp_tools`'s module doc for why.
-            let control_plane_mcp_registry = Arc::new(bastion::control_plane::mcp_tools::build_registry(
-                bastion::control_plane::core_ops::CoreOpsState {
-                    task_store: task_store.clone(),
-                    webhook_subscription_store: control_plane_webhook_subscription_store.clone(),
-                    webhook_delivery_store: control_plane_webhook_delivery_store.clone(),
-                },
-            ));
+            let control_plane_mcp_registry =
+                Arc::new(bastion::control_plane::mcp_tools::build_registry(
+                    bastion::control_plane::core_ops::CoreOpsState {
+                        task_store: task_store.clone(),
+                        webhook_subscription_store: control_plane_webhook_subscription_store
+                            .clone(),
+                        webhook_delivery_store: control_plane_webhook_delivery_store.clone(),
+                    },
+                ));
             let mcp_server = bastion::mcp::server::BastionMcpServer::new(
                 Arc::new(agent.capability_registry.clone()),
                 control_plane_mcp_registry,
@@ -1140,14 +1142,16 @@ async fn daemon_loop(
     control_plane_credential_store: Arc<bastion::control_plane::credential::SqliteCredentialStore>,
     // US External Control Plane and SDK, Phase 4: backs
     // `POST /v1/webhook-subscriptions` and its SSRF gate.
-    control_plane_webhook_subscription_store:
-        Arc<bastion::control_plane::webhook_subscription::SqliteWebhookSubscriptionStore>,
+    control_plane_webhook_subscription_store: Arc<
+        bastion::control_plane::webhook_subscription::SqliteWebhookSubscriptionStore,
+    >,
     // Phase 4: the durable retry queue `run_delivery_loop` (spawned inside
     // this function, below) sweeps. Threaded from `main()` alongside the
     // other two Control Plane stores rather than constructed here so all
     // three share the identical fail-closed-at-boot criticality tier.
-    control_plane_webhook_delivery_store:
-        Arc<bastion::control_plane::webhook_delivery::SqliteWebhookDeliveryStore>,
+    control_plane_webhook_delivery_store: Arc<
+        bastion::control_plane::webhook_delivery::SqliteWebhookDeliveryStore,
+    >,
 ) -> anyhow::Result<()> {
     use bastion::agent::command::{CommandResources, CommandResult};
     use tokio::io::{AsyncBufReadExt, BufReader};
@@ -1380,13 +1384,15 @@ async fn daemon_loop(
                 }
                 // Phase 5: same dedicated registry as the McpStdio arm above
                 // — see `control_plane::mcp_tools`'s module doc.
-                let control_plane_mcp_registry = Arc::new(bastion::control_plane::mcp_tools::build_registry(
-                    bastion::control_plane::core_ops::CoreOpsState {
-                        task_store: task_store.clone(),
-                        webhook_subscription_store: control_plane_webhook_subscription_store.clone(),
-                        webhook_delivery_store: control_plane_webhook_delivery_store.clone(),
-                    },
-                ));
+                let control_plane_mcp_registry =
+                    Arc::new(bastion::control_plane::mcp_tools::build_registry(
+                        bastion::control_plane::core_ops::CoreOpsState {
+                            task_store: task_store.clone(),
+                            webhook_subscription_store: control_plane_webhook_subscription_store
+                                .clone(),
+                            webhook_delivery_store: control_plane_webhook_delivery_store.clone(),
+                        },
+                    ));
                 let router = bastion::mcp::server::build_mcp_axum_router(
                     cap_registry,
                     control_plane_mcp_registry,
@@ -1492,7 +1498,8 @@ async fn daemon_loop(
             // enough that a subscriber recovering from an outage sees its
             // backlog drain promptly, cheap enough (one SELECT when the
             // queue is empty, the common case) to run indefinitely.
-            let control_plane_delivery_store_for_loop = control_plane_webhook_delivery_store.clone();
+            let control_plane_delivery_store_for_loop =
+                control_plane_webhook_delivery_store.clone();
             tokio::spawn(bastion::control_plane::webhook_delivery::run_delivery_loop(
                 control_plane_delivery_store_for_loop,
                 std::time::Duration::from_secs(5),

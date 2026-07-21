@@ -68,8 +68,7 @@ const SCHEMA_SQL: &str = "
     CREATE UNIQUE INDEX IF NOT EXISTS idx_cp_cred_hash ON control_plane_credentials(token_hash);
 ";
 
-const READ_COLUMNS: &str =
-    "id, owner_id, project, label, scopes_json, created_at, revoked_at";
+const READ_COLUMNS: &str = "id, owner_id, project, label, scopes_json, created_at, revoked_at";
 
 /// Wall-clock now as nanoseconds-since-epoch — mirrors
 /// `adaptive::schedule::now_nanos`'s convention for this repo's timestamp
@@ -248,7 +247,15 @@ impl SqliteCredentialStore {
                 "INSERT INTO control_plane_credentials
                     (id, owner_id, project, label, scopes_json, token_hash, created_at, revoked_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
-                rusqlite::params![insert_id, owner, project, label, scopes_json, token_hash, created_at],
+                rusqlite::params![
+                    insert_id,
+                    owner,
+                    project,
+                    label,
+                    scopes_json,
+                    token_hash,
+                    created_at
+                ],
             )?;
             Ok::<_, anyhow::Error>(())
         })
@@ -367,8 +374,8 @@ fn uuid_like_id() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::scope::Scope;
+    use super::*;
     use tempfile::NamedTempFile;
 
     async fn make_store() -> (NamedTempFile, SqliteCredentialStore) {
@@ -493,7 +500,12 @@ mod tests {
     async fn list_for_owner_is_isolated_and_omits_secrets() {
         let (_f, store) = make_store().await;
         store
-            .issue("alice", None, ScopeSet::new([Scope::TasksRead]), "alice-cred")
+            .issue(
+                "alice",
+                None,
+                ScopeSet::new([Scope::TasksRead]),
+                "alice-cred",
+            )
             .await
             .expect("issue");
         store

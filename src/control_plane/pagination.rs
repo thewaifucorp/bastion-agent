@@ -179,7 +179,11 @@ mod tests {
     fn malformed_cursor_fails_open_to_page_one() {
         let items = vec![item("a", 100), item("b", 200)];
         let (page, _) = paginate(items, key_of, Some("not-a-real-cursor"), 10);
-        assert_eq!(page.len(), 2, "an unrecognized cursor starts over, not empty/error");
+        assert_eq!(
+            page.len(),
+            2,
+            "an unrecognized cursor starts over, not empty/error"
+        );
     }
 
     #[test]

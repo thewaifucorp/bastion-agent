@@ -102,7 +102,10 @@ pub fn router(state: ControlPlaneState) -> Router {
         .route("/v1/tasks", get(list_tasks).post(create_task))
         .route("/v1/tasks/{id}", get(get_task).post(task_action))
         .route("/v1/tasks/{id}/attempts", get(get_task_attempts))
-        .route("/v1/webhook-subscriptions", post(create_webhook_subscription))
+        .route(
+            "/v1/webhook-subscriptions",
+            post(create_webhook_subscription),
+        )
         .route("/v1/openapi.yaml", get(get_openapi_spec))
         .with_state(state)
 }
@@ -160,10 +163,14 @@ fn core_error_response(err: CoreOpError, verb: &str) -> axum::response::Response
             "conflict",
             &format!("could not {verb} task: concurrent modification"),
         ),
-        CoreOpError::InvalidInput(msg) => error_response(StatusCode::BAD_REQUEST, "invalid_body", &msg),
-        CoreOpError::Internal => {
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", "internal error")
+        CoreOpError::InvalidInput(msg) => {
+            error_response(StatusCode::BAD_REQUEST, "invalid_body", &msg)
         }
+        CoreOpError::Internal => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "internal error",
+        ),
     }
 }
 
@@ -232,15 +239,25 @@ async fn list_tasks(
     headers: axum::http::HeaderMap,
     Query(q): Query<ListTasksQuery>,
 ) -> axum::response::Response {
-    let cred = match resolve_credential_or_401(&headers, &state.credential_store, "v1_tasks_unauthorized").await {
-        Ok(c) => c,
-        Err(resp) => return *resp,
-    };
+    let cred =
+        match resolve_credential_or_401(&headers, &state.credential_store, "v1_tasks_unauthorized")
+            .await
+        {
+            Ok(c) => c,
+            Err(resp) => return *resp,
+        };
     if let Err(resp) = require_scope_or_403(&cred, Scope::TasksRead) {
         return *resp;
     }
 
-    match core_ops::list_tasks(&state.core(), &cred.owner_id, q.status.as_deref(), q.cursor.as_deref()).await {
+    match core_ops::list_tasks(
+        &state.core(),
+        &cred.owner_id,
+        q.status.as_deref(),
+        q.cursor.as_deref(),
+    )
+    .await
+    {
         Ok(resp) => Json(resp).into_response(),
         Err(e) => core_error_response(e, "list"),
     }
@@ -252,7 +269,13 @@ async fn get_task(
     headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let cred = match resolve_credential_or_401(&headers, &state.credential_store, "v1_task_get_unauthorized").await {
+    let cred = match resolve_credential_or_401(
+        &headers,
+        &state.credential_store,
+        "v1_task_get_unauthorized",
+    )
+    .await
+    {
         Ok(c) => c,
         Err(resp) => return *resp,
     };
@@ -278,7 +301,13 @@ async fn get_task_attempts(
     Path(id): Path<String>,
     Query(q): Query<ListAttemptsQuery>,
 ) -> axum::response::Response {
-    let cred = match resolve_credential_or_401(&headers, &state.credential_store, "v1_task_attempts_unauthorized").await {
+    let cred = match resolve_credential_or_401(
+        &headers,
+        &state.credential_store,
+        "v1_task_attempts_unauthorized",
+    )
+    .await
+    {
         Ok(c) => c,
         Err(resp) => return *resp,
     };
@@ -286,7 +315,8 @@ async fn get_task_attempts(
         return *resp;
     }
 
-    match core_ops::get_task_attempts(&state.core(), &cred.owner_id, &id, q.cursor.as_deref()).await {
+    match core_ops::get_task_attempts(&state.core(), &cred.owner_id, &id, q.cursor.as_deref()).await
+    {
         Ok(resp) => Json(resp).into_response(),
         Err(e) => core_error_response(e, "list attempts for"),
     }
@@ -400,7 +430,13 @@ async fn create_task(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
-    let cred = match resolve_credential_or_401(&headers, &state.credential_store, "v1_task_create_unauthorized").await {
+    let cred = match resolve_credential_or_401(
+        &headers,
+        &state.credential_store,
+        "v1_task_create_unauthorized",
+    )
+    .await
+    {
         Ok(c) => c,
         Err(resp) => return *resp,
     };
@@ -436,7 +472,11 @@ async fn create_task(
 
     match core_ops::create_task(&state.core(), &cred.owner_id, &idempotency_key, req).await {
         Ok(outcome) => {
-            let status = if outcome.created { StatusCode::CREATED } else { StatusCode::OK };
+            let status = if outcome.created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            };
             (status, Json(outcome.resource)).into_response()
         }
         Err(e) => core_error_response(e, "create"),
@@ -459,7 +499,13 @@ async fn task_action(
         return error_response(StatusCode::NOT_FOUND, "not_found", "unknown route");
     }
 
-    let cred = match resolve_credential_or_401(&headers, &state.credential_store, "v1_task_action_unauthorized").await {
+    let cred = match resolve_credential_or_401(
+        &headers,
+        &state.credential_store,
+        "v1_task_action_unauthorized",
+    )
+    .await
+    {
         Ok(c) => c,
         Err(resp) => return *resp,
     };
@@ -472,7 +518,16 @@ async fn task_action(
             transition_action(&state, &cred, id, &body, TaskStatus::Paused, None, "pause").await
         }
         "resume" => {
-            transition_action(&state, &cred, id, &body, TaskStatus::Running, None, "resume").await
+            transition_action(
+                &state,
+                &cred,
+                id,
+                &body,
+                TaskStatus::Running,
+                None,
+                "resume",
+            )
+            .await
         }
         "cancel" => {
             transition_action(
@@ -511,8 +566,16 @@ async fn transition_action(
         }
     };
 
-    match core_ops::transition_task(&state.core(), &cred.owner_id, id, target, stop_reason, req.expected_revision, verb)
-        .await
+    match core_ops::transition_task(
+        &state.core(),
+        &cred.owner_id,
+        id,
+        target,
+        stop_reason,
+        req.expected_revision,
+        verb,
+    )
+    .await
     {
         Ok(resource) => Json(resource).into_response(),
         Err(e) => core_error_response(e, verb),
@@ -536,7 +599,15 @@ async fn steer_action(
         }
     };
 
-    match core_ops::steer_task(&state.core(), &cred.owner_id, id, &req.guidance, req.expected_revision).await {
+    match core_ops::steer_task(
+        &state.core(),
+        &cred.owner_id,
+        id,
+        &req.guidance,
+        req.expected_revision,
+    )
+    .await
+    {
         Ok(resource) => Json(resource).into_response(),
         Err(e) => core_error_response(e, "steer"),
     }

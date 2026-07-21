@@ -318,7 +318,14 @@ pub async fn run_delivery_loop(store: Arc<SqliteWebhookDeliveryStore>, tick: Dur
             }
         };
         for delivery in due {
-            match deliver_one(&client, &delivery.target_url, &delivery.secret, &delivery.event_json).await {
+            match deliver_one(
+                &client,
+                &delivery.target_url,
+                &delivery.secret,
+                &delivery.event_json,
+            )
+            .await
+            {
                 Ok(()) => {
                     tracing::info!(
                         event = "webhook_delivered",
@@ -430,7 +437,12 @@ mod tests {
     async fn enqueue_then_due_returns_it_immediately() {
         let (_f, store) = make_store().await;
         store
-            .enqueue("sub1", "https://example.com/hook", "secret", &sample_event())
+            .enqueue(
+                "sub1",
+                "https://example.com/hook",
+                "secret",
+                &sample_event(),
+            )
             .await
             .expect("enqueue");
         let due = store.due(now_nanos()).await.expect("due");
@@ -443,7 +455,12 @@ mod tests {
     async fn mark_delivered_removes_it_from_due() {
         let (_f, store) = make_store().await;
         store
-            .enqueue("sub1", "https://example.com/hook", "secret", &sample_event())
+            .enqueue(
+                "sub1",
+                "https://example.com/hook",
+                "secret",
+                &sample_event(),
+            )
             .await
             .expect("enqueue");
         let due = store.due(now_nanos()).await.expect("due");
@@ -457,7 +474,12 @@ mod tests {
     async fn mark_failed_reschedules_into_the_future_not_immediately_due() {
         let (_f, store) = make_store().await;
         store
-            .enqueue("sub1", "https://example.com/hook", "secret", &sample_event())
+            .enqueue(
+                "sub1",
+                "https://example.com/hook",
+                "secret",
+                &sample_event(),
+            )
             .await
             .expect("enqueue");
         let due = store.due(now_nanos()).await.expect("due");
@@ -483,7 +505,12 @@ mod tests {
     async fn exhausting_all_attempts_marks_the_delivery_dead() {
         let (_f, store) = make_store().await;
         store
-            .enqueue("sub1", "https://example.com/hook", "secret", &sample_event())
+            .enqueue(
+                "sub1",
+                "https://example.com/hook",
+                "secret",
+                &sample_event(),
+            )
             .await
             .expect("enqueue");
         let due = store.due(now_nanos()).await.expect("due");
@@ -502,7 +529,10 @@ mod tests {
             .due(now_nanos() + 1_000_000 * 1_000_000_000)
             .await
             .expect("due far future");
-        assert!(due_far_future.is_empty(), "dead deliveries are never retried");
+        assert!(
+            due_far_future.is_empty(),
+            "dead deliveries are never retried"
+        );
 
         let conn = rusqlite::Connection::open(&store.db_path).unwrap();
         let status: String = conn
@@ -559,12 +589,24 @@ mod tests {
 
         let client = reqwest::Client::new();
         let event_json = serde_json::to_string(&sample_event()).unwrap();
-        deliver_one(&client, &format!("http://{addr}/hook"), "my-secret", &event_json)
-            .await
-            .expect("delivery to local test server succeeds");
+        deliver_one(
+            &client,
+            &format!("http://{addr}/hook"),
+            "my-secret",
+            &event_json,
+        )
+        .await
+        .expect("delivery to local test server succeeds");
 
-        let (sig, body) = received.lock().await.clone().expect("server received a request");
-        assert_eq!(body, event_json, "body sent must be byte-identical to what was signed");
+        let (sig, body) = received
+            .lock()
+            .await
+            .clone()
+            .expect("server received a request");
+        assert_eq!(
+            body, event_json,
+            "body sent must be byte-identical to what was signed"
+        );
         let expected_sig = sign_payload("my-secret", event_json.as_bytes()).unwrap();
         assert_eq!(sig, expected_sig);
     }

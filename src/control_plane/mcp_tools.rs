@@ -69,7 +69,9 @@ fn map_core_op_error(err: CoreOpError) -> anyhow::Error {
             anyhow::anyhow!("task_terminal: task is already {status:?}")
         }
         CoreOpError::InvalidTransition(status) => {
-            anyhow::anyhow!("invalid_transition: cannot transition a task in its current status ({status:?})")
+            anyhow::anyhow!(
+                "invalid_transition: cannot transition a task in its current status ({status:?})"
+            )
         }
         CoreOpError::StaleRevision => anyhow::anyhow!(
             "stale_revision: expected_revision does not match the task's current revision"
@@ -89,9 +91,9 @@ fn require_str(args: &Value, field: &str) -> anyhow::Result<String> {
 }
 
 fn require_u64(args: &Value, field: &str) -> anyhow::Result<u64> {
-    args.get(field)
-        .and_then(Value::as_u64)
-        .ok_or_else(|| anyhow::anyhow!("invalid_input: {field} is required and must be a non-negative integer"))
+    args.get(field).and_then(Value::as_u64).ok_or_else(|| {
+        anyhow::anyhow!("invalid_input: {field} is required and must be a non-negative integer")
+    })
 }
 
 pub struct CreateTaskCapability {
@@ -157,7 +159,12 @@ impl Capability for CreateTaskCapability {
         let acceptance: Vec<String> = args
             .get("acceptance")
             .and_then(Value::as_array)
-            .map(|items| items.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         let bounds = args.get("bounds").and_then(|b| {
             if b.is_null() {
@@ -333,9 +340,10 @@ impl Capability for SteerTaskCapability {
         let id = require_str(&args, "id")?;
         let guidance = require_str(&args, "guidance")?;
         let expected_revision = require_u64(&args, "expected_revision")?;
-        let resource = core_ops::steer_task(&self.state, &ctx.owner, &id, &guidance, expected_revision)
-            .await
-            .map_err(map_core_op_error)?;
+        let resource =
+            core_ops::steer_task(&self.state, &ctx.owner, &id, &guidance, expected_revision)
+                .await
+                .map_err(map_core_op_error)?;
         Ok(serde_json::to_value(resource)?)
     }
 
@@ -436,8 +444,9 @@ mod tests {
         let path = f.path().to_str().unwrap().to_owned();
         let task_store = SqliteTaskStore::new(path.clone());
         task_store.init_schema().await.unwrap();
-        let webhook_subscription_store =
-            Arc::new(super::super::webhook_subscription::SqliteWebhookSubscriptionStore::new(path.clone()));
+        let webhook_subscription_store = Arc::new(
+            super::super::webhook_subscription::SqliteWebhookSubscriptionStore::new(path.clone()),
+        );
         webhook_subscription_store.init_schema().await.unwrap();
         let webhook_delivery_store =
             Arc::new(super::super::webhook_delivery::SqliteWebhookDeliveryStore::new(path.clone()));
@@ -465,7 +474,16 @@ mod tests {
         let registry = build_registry(state);
         let mut names = registry.list_names();
         names.sort();
-        assert_eq!(names, vec!["cancel_task", "create_task", "get_task", "list_tasks", "steer_task"]);
+        assert_eq!(
+            names,
+            vec![
+                "cancel_task",
+                "create_task",
+                "get_task",
+                "list_tasks",
+                "steer_task"
+            ]
+        );
     }
 
     #[tokio::test]

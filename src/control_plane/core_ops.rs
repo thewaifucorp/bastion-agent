@@ -82,10 +82,16 @@ impl std::fmt::Display for CoreOpError {
             CoreOpError::NotFound => write!(f, "not found"),
             CoreOpError::Terminal(status) => write!(f, "task is already {status:?}"),
             CoreOpError::InvalidTransition(status) => {
-                write!(f, "cannot transition a task in its current status ({status:?})")
+                write!(
+                    f,
+                    "cannot transition a task in its current status ({status:?})"
+                )
             }
             CoreOpError::StaleRevision => {
-                write!(f, "expected_revision does not match the task's current revision")
+                write!(
+                    f,
+                    "expected_revision does not match the task's current revision"
+                )
             }
             CoreOpError::Conflict => write!(f, "concurrent modification"),
             CoreOpError::InvalidInput(msg) => write!(f, "{msg}"),
@@ -165,10 +171,14 @@ pub async fn list_tasks(
     status_filter: Option<&str>,
     cursor: Option<&str>,
 ) -> Result<TaskListResponse, CoreOpError> {
-    let cases = state.task_store.list_cases_for_owner(owner).await.map_err(|e| {
-        tracing::error!(event = "control_plane_tasks_list_failed", error = %e);
-        CoreOpError::Internal
-    })?;
+    let cases = state
+        .task_store
+        .list_cases_for_owner(owner)
+        .await
+        .map_err(|e| {
+            tracing::error!(event = "control_plane_tasks_list_failed", error = %e);
+            CoreOpError::Internal
+        })?;
 
     let filtered: Vec<_> = match status_filter {
         Some(status_filter) => cases
@@ -191,12 +201,19 @@ pub async fn list_tasks(
         DEFAULT_PAGE_SIZE,
     );
 
-    let items = page.iter().map(|case| translate::task_resource(case, vec![])).collect();
+    let items = page
+        .iter()
+        .map(|case| translate::task_resource(case, vec![]))
+        .collect();
     Ok(TaskListResponse { items, next_cursor })
 }
 
 /// One task's safe summary, attempts included.
-pub async fn get_task(state: &CoreOpsState, owner: &str, id: &str) -> Result<TaskResource, CoreOpError> {
+pub async fn get_task(
+    state: &CoreOpsState,
+    owner: &str,
+    id: &str,
+) -> Result<TaskResource, CoreOpError> {
     let case_id = TaskCaseId(id.to_string());
     let case = state
         .task_store
@@ -292,7 +309,9 @@ pub async fn create_task(
         ));
     }
     if req.objective.trim().is_empty() {
-        return Err(CoreOpError::InvalidInput("objective must not be empty".to_string()));
+        return Err(CoreOpError::InvalidInput(
+            "objective must not be empty".to_string(),
+        ));
     }
 
     let task_id = deterministic_task_id(owner, idempotency_key);
@@ -301,10 +320,15 @@ pub async fn create_task(
     // earlier call with the same owner+key already created it — return that,
     // ignoring this call's body entirely (the idempotency-key contract is
     // "same key -> same result", not "merge the two request bodies").
-    if let Some(existing) = state.task_store.load_case(owner, &task_id).await.map_err(|e| {
-        tracing::error!(event = "control_plane_task_create_lookup_failed", error = %e);
-        CoreOpError::Internal
-    })? {
+    if let Some(existing) = state
+        .task_store
+        .load_case(owner, &task_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(event = "control_plane_task_create_lookup_failed", error = %e);
+            CoreOpError::Internal
+        })?
+    {
         return Ok(CreateTaskOutcome {
             resource: translate::task_resource(&existing, vec![]),
             created: false,
@@ -358,7 +382,9 @@ pub async fn create_task(
         usage: UsageAccum::default(),
         parent: None,
         correlation: CorrelationIds::default(),
-        business_state: OpaqueState(business_state::new_business_state(req.external_ref.as_deref())),
+        business_state: OpaqueState(business_state::new_business_state(
+            req.external_ref.as_deref(),
+        )),
         created_at: now,
         updated_at: now,
         revision: 1,
@@ -371,10 +397,14 @@ pub async fn create_task(
     // unique per (owner, idempotency_key) — reusing it here matches
     // `adaptive::enqueue_pursue`'s own convention of passing its generated id
     // as the idempotency key.
-    state.task_store.create_case(&case, &task_id.0).await.map_err(|e| {
-        tracing::error!(event = "control_plane_task_create_failed", error = %e);
-        CoreOpError::Internal
-    })?;
+    state
+        .task_store
+        .create_case(&case, &task_id.0)
+        .await
+        .map_err(|e| {
+            tracing::error!(event = "control_plane_task_create_failed", error = %e);
+            CoreOpError::Internal
+        })?;
 
     // Re-fetch rather than echo the in-memory `case`: closes the rare TOCTOU
     // race where a concurrent call with the same idempotency key won
@@ -458,7 +488,13 @@ pub async fn transition_task(
 
     let new_revision = state
         .task_store
-        .transition_status(owner, &case_id, target, stop_reason.clone(), expected_revision)
+        .transition_status(
+            owner,
+            &case_id,
+            target,
+            stop_reason.clone(),
+            expected_revision,
+        )
         .await
         .map_err(|e| {
             tracing::warn!(event = "control_plane_task_action_conflict", verb, error = %e);
@@ -527,7 +563,9 @@ pub async fn steer_task(
     expected_revision: u64,
 ) -> Result<TaskResource, CoreOpError> {
     if guidance.trim().is_empty() {
-        return Err(CoreOpError::InvalidInput("guidance must not be empty".to_string()));
+        return Err(CoreOpError::InvalidInput(
+            "guidance must not be empty".to_string(),
+        ));
     }
 
     let case_id = TaskCaseId(id.to_string());
@@ -548,7 +586,8 @@ pub async fn steer_task(
         return Err(CoreOpError::StaleRevision);
     }
 
-    case.business_state.0 = business_state::append_steer_note(case.business_state.0.clone(), guidance);
+    case.business_state.0 =
+        business_state::append_steer_note(case.business_state.0.clone(), guidance);
     case.updated_at = now_nanos();
 
     let new_revision = state

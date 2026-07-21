@@ -7,9 +7,11 @@
 # this PUBLIC repo:
 #
 #   1. Cloud-concept scope guard — the Core must never gain a billing,
-#      marketplace, tenancy, or control-plane SYMBOL (a `struct`/`enum`/
+#      marketplace, or tenancy SYMBOL (a `struct`/`enum`/
 #      `trait`/`fn`/`mod`/`const`/`static`/`type` DECLARATION, not a prose
-#      mention). Design docs are explicitly allowed to name these concepts
+#      mention). `control_plane` was removed from this list when the
+#      Control Plane became a first-class, documented feature of this repo
+#      (src/control_plane/, docs/en/control-plane-security.md). Design docs are explicitly allowed to name these concepts
 #      when documenting them as OUT OF SCOPE (e.g. C3-cloud-ready-design.md's
 #      own "Fora de escopo" section) — this guard only scans compiled `.rs`
 #      code (src/, crates/*/src/, tests/, examples/*/src/), never docs/.
@@ -45,7 +47,7 @@ fail = False
 # ── Guard 1: cloud-concept scope (code only, declarations only) ─────────────
 
 CODE_DIRS = ["src", "crates", "tests", "examples"]
-BLOCKED_ROOTS = r"(?:billing|marketplace|tenant|tenancy|controlplane|control_plane)"
+BLOCKED_ROOTS = r"(?:billing|marketplace|tenant|tenancy)"
 DECL_RE = re.compile(
     r'^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+|unsafe\s+|const\s+)*'
     r'(?:struct|enum|trait|fn|mod|const|static|type)\s+'

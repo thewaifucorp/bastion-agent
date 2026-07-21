@@ -15,14 +15,12 @@ use std::collections::BTreeSet;
 
 use bastion::control_plane::dto::{
     AttemptListResponse, AttemptSummaryDto, BudgetSummaryDto, CreateTaskBoundsDto,
-    CreateTaskRequest, ErrorEnvelope, StopReasonDto, TaskEventEnvelope, TaskListResponse,
-    TaskMode, TaskResource, TaskStatusDto, WebhookSubscriptionRequest,
-    WebhookSubscriptionResource,
+    CreateTaskRequest, ErrorEnvelope, StopReasonDto, TaskEventEnvelope, TaskListResponse, TaskMode,
+    TaskResource, TaskStatusDto, WebhookSubscriptionRequest, WebhookSubscriptionResource,
 };
 use serde_json::Value;
 
-const FIXTURE_YAML: &str =
-    include_str!("../docs/en/contracts/control-plane-v1.openapi.yaml");
+const FIXTURE_YAML: &str = include_str!("../docs/en/contracts/control-plane-v1.openapi.yaml");
 
 fn fixture() -> Value {
     serde_norway::from_str(FIXTURE_YAML).expect("fixture must parse as YAML")
