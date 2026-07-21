@@ -25,6 +25,19 @@ for how that differs from the library crates it depends on).
   end-to-end by a standalone `paperclip-adapter/` proof.
 - A TypeScript SDK (`sdk/typescript/`) for the Control Plane API.
 - Threat model doc: [`docs/en/control-plane-security.md`](docs/en/control-plane-security.md).
+- **Observability frontend**: `GET /ui` serves an embedded, offline-capable
+  dashboard — live persona lanterns and a turn/task ledger over `/events`,
+  plus the durable-task table with pause/resume/steer/cancel over `/v1`.
+  `/events` now carries turn/persona/cabinet events (emitted around persona
+  routing) and the adaptive loop's task lifecycle events, alongside
+  `mesh_sync`. See [`docs/en/observability.md`](docs/en/observability.md).
+- `/credential` console command issues/lists/revokes Control Plane bearer
+  credentials (token printed once, console only) — the first
+  credential-issuance surface.
+- Webhook subscribers now receive the spec's remaining two event types:
+  `attempt.completed` (every attempt verification) and `task.escalated`,
+  emitted from the adaptive execution loop into the same signed delivery
+  queue.
 
 ## [0.2.1] — 2026-07-20
 
