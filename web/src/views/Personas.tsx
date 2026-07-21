@@ -25,7 +25,9 @@ export default function Personas() {
         proposalsApi.list(),
       ]);
       setSlugs(p.items);
-      setItems(props.items);
+      // this view narrates persona edits only — model/provider proposals
+      // live under Models and Providers
+      setItems(props.items.filter((x) => x.payload.kind === "persona_edit"));
     } catch (e) {
       toast(`personas unavailable: ${e instanceof Error ? e.message : e}`, true);
     }
@@ -162,7 +164,7 @@ export default function Personas() {
                 items.map((p) => (
                   <Row
                     key={p.id}
-                    title={`${p.payload.slug} — ${p.id}`}
+                    title={`${p.payload.kind === "persona_edit" ? p.payload.slug : p.payload.kind} — ${p.id}`}
                     desc={`${p.origin} · ${new Date(p.created_at / 1e6).toLocaleString()}${
                       p.status === "pending"
                         ? ` · approve on console: /proposal approve ${p.id}`

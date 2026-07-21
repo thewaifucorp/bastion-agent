@@ -132,13 +132,22 @@ export const command = (text: string) => chat.turn(text).then((r) => r.reply);
 export const request2 = <T,>(token: string, path: string) =>
   request<T>(token, path);
 
-// ── personas + staged proposals (owner token; A3) ────────────────────────
+// ── personas + staged proposals (owner token; A3/A4) ─────────────────────
+
+export type ProposalPayload =
+  | { kind: "persona_edit"; slug: string; content: string }
+  | {
+      kind: "model_config";
+      default_model: string | null;
+      fallback_models: string[] | null;
+    }
+  | { kind: "secret_set"; provider_id: string; env_key: string };
 
 export interface Proposal {
   id: string;
   owner_id: string;
   origin: string;
-  payload: { kind: "persona_edit"; slug: string; content: string };
+  payload: ProposalPayload;
   status: "pending" | "approved" | "rejected";
   created_at: number;
   resolved_at: number | null;
@@ -161,6 +170,65 @@ export const proposalsApi = {
       method: "POST",
       body: JSON.stringify({ kind: "persona_edit", slug, content }),
     }),
+  /** Stage default model and/or fallback ladder; at least one half required. */
+  createModelConfig: (body: {
+    default_model?: string;
+    fallback_models?: string[];
+  }) =>
+    request<Proposal>(tokens.owner, "/proposals", {
+      method: "POST",
+      body: JSON.stringify({ kind: "model_config", ...body }),
+    }),
+  /** Stage a provider API key. The value travels ONLY in this request body;
+   * the daemon pens it in memory until console approval and never echoes it
+   * back. Callers must not keep it in state after this resolves. */
+  createSecretSet: (provider_id: string, env_key: string, value: string) =>
+    request<Proposal>(tokens.owner, "/proposals", {
+      method: "POST",
+      body: JSON.stringify({ kind: "secret_set", provider_id, env_key, value }),
+    }),
+};
+
+// ── providers + model catalog + config audit (owner token; A4 S2) ────────
+
+export interface ProviderItem {
+  id: string;
+  kind: "api_key" | "subscription_cli" | "local";
+  connected: boolean;
+  source: "env" | "secrets_dir" | "auth_profile" | null;
+  models_count: number;
+}
+
+export interface ModelEntry {
+  id: string;
+  provider_kind: string;
+  display_name: string;
+}
+
+export interface ModelsResponse {
+  providers: { provider_kind: string; models: ModelEntry[] }[];
+  default_model: string;
+  fallback_models: string[];
+}
+
+export interface ConfigOverride {
+  key: string;
+  value: unknown;
+  origin: string;
+  applied_at: number; // unix seconds
+}
+
+export const providersApi = {
+  list: () => request<{ items: ProviderItem[] }>(tokens.owner, "/providers"),
+};
+
+export const modelsApi = {
+  get: () => request<ModelsResponse>(tokens.owner, "/models"),
+};
+
+export const configApi = {
+  overrides: () =>
+    request<{ items: ConfigOverride[] }>(tokens.owner, "/config/overrides"),
 };
 
 // ── /status (unauthenticated, booleans-only) ────────────────────────────
