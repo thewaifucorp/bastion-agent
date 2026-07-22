@@ -914,7 +914,10 @@ mod tests {
     fn validate_persona_contract_rejects_missing_objectives_goals_scope() {
         let problems =
             validate_persona_contract(LEGACY_SOUL).expect_err("legacy SOUL must fail validate");
-        assert!(problems.iter().any(|p| p.contains("objectives")), "{problems:?}");
+        assert!(
+            problems.iter().any(|p| p.contains("objectives")),
+            "{problems:?}"
+        );
         assert!(problems.iter().any(|p| p.contains("goals")), "{problems:?}");
         assert!(problems.iter().any(|p| p.contains("scope")), "{problems:?}");
     }
@@ -954,7 +957,10 @@ mod tests {
             content: LEGACY_SOUL.into(),
         };
         let err = apply_bare(root, &payload).await.unwrap_err();
-        assert!(err.to_string().contains("persona contract invalid"), "{err}");
+        assert!(
+            err.to_string().contains("persona contract invalid"),
+            "{err}"
+        );
         // Refused BEFORE any write — no directory, no file.
         assert!(!root.join("personas/legacy/SOUL.md").exists());
     }

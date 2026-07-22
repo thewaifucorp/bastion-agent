@@ -1137,7 +1137,9 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
         let problems = body["problems"].as_array().expect("problems array");
         assert!(!problems.is_empty());
-        assert!(problems.iter().any(|p| p.as_str().unwrap().contains("objectives")));
+        assert!(problems
+            .iter()
+            .any(|p| p.as_str().unwrap().contains("objectives")));
     }
 
     #[tokio::test]
