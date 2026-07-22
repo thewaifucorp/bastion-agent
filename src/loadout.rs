@@ -425,6 +425,54 @@ async fn companion_care_handler(
     }
 }
 
+/// `event`/`source` — same field names and validation contract as
+/// `CompanionEventCapability`'s schema (`^[A-Za-z0-9._-]+$`, 1-32 chars for
+/// `source`; `event` one of `session-start`/`activity`/`session-stop`),
+/// enforced inside `CompanionHandle::record_event` so both the in-process
+/// capability and this route reject the exact same bad input the exact same
+/// way.
+#[derive(Deserialize)]
+struct CompanionEventRequest {
+    event: String,
+    source: String,
+}
+
+/// S6 `POST /companion/event`: the CLI (`bastion companion event`) and hook
+/// bridges' HTTP counterpart to `CompanionEventCapability` — closes the S5
+/// gap where the standalone CLI had no daemon-aware path and always wrote
+/// `companion.json` directly, even with a daemon (and its capability)
+/// already running as the single writer. Routes through the SAME
+/// `CompanionHandle::record_event` the capability uses, persists, and
+/// broadcasts `companion.updated` on `/events` — then answers with the
+/// updated snapshot (plus the recorded-event message, for the CLI to print)
+/// so a caller never needs a second round trip.
+async fn companion_event_handler(
+    State(state): State<LoadoutState>,
+    headers: HeaderMap,
+    Json(req): Json<CompanionEventRequest>,
+) -> axum::response::Response {
+    if let Err(resp) = auth(&state, &headers, "companion_event_unauthorized") {
+        return *resp;
+    }
+    match state
+        .companion
+        .record_event(&req.event, &req.source, &state.events_tx)
+    {
+        Ok(message) => {
+            let mut body = serde_json::to_value(state.companion.snapshot())
+                .unwrap_or(serde_json::Value::Null);
+            if let serde_json::Value::Object(map) = &mut body {
+                map.insert("message".to_string(), serde_json::json!(message));
+            }
+            Json(body).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(event = "companion_event_failed", error = %e);
+            (StatusCode::BAD_REQUEST, e.to_string()).into_response()
+        }
+    }
+}
+
 /// One field bag for every kind — serde tags on `kind` would 422 with an
 /// opaque error; dispatching by hand keeps the A3 handler's explicit 400s.
 #[derive(Deserialize)]
@@ -632,6 +680,10 @@ pub fn router(
         .route("/routing", get(routing_handler))
         .route("/companion", get(companion_handler))
         .route("/companion/care", axum::routing::post(companion_care_handler))
+        .route(
+            "/companion/event",
+            axum::routing::post(companion_event_handler),
+        )
         .with_state(LoadoutState {
             snapshot: Arc::new(snapshot),
             owner_map: Arc::new(owner_map),
@@ -1126,6 +1178,59 @@ mod tests {
             "/companion/care",
             "tok-alice",
             serde_json::json!({ "action": "nap" }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    // ---- S6: POST /companion/event ---------------------------------------
+
+    #[tokio::test]
+    async fn companion_event_requires_owner_token() {
+        let owner_map = OwnerMap::from_pairs(&[("tok-alice", "alice")]);
+        let (_f, app, _pending) = sample_router(owner_map).await;
+
+        let (status, _) = post_json(
+            app,
+            "/companion/event",
+            "not-a-token",
+            serde_json::json!({ "event": "activity", "source": "claude" }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn companion_event_rejects_an_unknown_kind() {
+        let owner_map = OwnerMap::from_pairs(&[("tok-alice", "alice")]);
+        let (_f, app, _pending) = sample_router(owner_map).await;
+
+        // Rejected INSIDE `CompanionHandle::record_event` before the
+        // `mutate` closure ever reaches `save()` — never writes to the real
+        // `companion.json`, same safety property `companion_care`'s test
+        // above relies on.
+        let (status, _) = post_json(
+            app,
+            "/companion/event",
+            "tok-alice",
+            serde_json::json!({ "event": "session-pause", "source": "claude" }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn companion_event_rejects_an_invalid_source() {
+        let owner_map = OwnerMap::from_pairs(&[("tok-alice", "alice")]);
+        let (_f, app, _pending) = sample_router(owner_map).await;
+
+        // `validate_companion_source` runs before `record_event` ever locks
+        // the shared handle — same no-write-on-reject guarantee.
+        let (status, _) = post_json(
+            app,
+            "/companion/event",
+            "tok-alice",
+            serde_json::json!({ "event": "activity", "source": "has space" }),
         )
         .await;
         assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);

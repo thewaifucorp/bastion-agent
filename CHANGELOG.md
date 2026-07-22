@@ -10,6 +10,38 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **TUI config-applied notice + companion event HTTP forwarding (A4-U/A5 S6)**:
+  closes the two gaps S1-S5 left open — the TUI never reacted to a
+  `config.applied` from elsewhere, and `bastion companion event` always
+  wrote `companion.json` directly even with a daemon (and its own
+  `CompanionEventCapability`) already running as the single writer.
+  - TUI (`run_app`'s `AppMsg::SseEvent` arm, `src/tui.rs`): a `config.applied`
+    frame whose `key` is `model.selected`, `backend.selected`,
+    `model.fallbacks`, or `routing.rules` now surfaces a one-line notice in
+    the transcript (`"config updated from <origin>: <key>"`), reusing the
+    same `Line::System` mechanism other inline confirmations use. No new
+    cache to invalidate: `/model`, `/backend`, `/models`, and `/routing` all
+    read the daemon fresh over HTTP on every invocation, so the notice is
+    the whole fix. Pure parsing helper `config_applied_notice` mirrors
+    `is_companion_updated_event`'s shape (`event`-or-`type`, tolerant of
+    malformed/foreign frames).
+  - `POST /companion/event` (owner-token, `src/loadout.rs`) `{event,
+    source}` — same `session-start | activity | session-stop` kinds and
+    `^[A-Za-z0-9._-]+$` (1-32 char) source validation
+    `CompanionEventCapability`'s schema already enforces. Routes through the
+    SAME `CompanionHandle::record_event` the capability uses, persists,
+    broadcasts `companion.updated`, and answers with the updated snapshot
+    plus the recorded-event message (the same due-cue-aware text the
+    direct-file path always returned).
+  - `bastion companion event` (CLI) is now async and mirrors
+    `companion_care`'s S5 forward-then-fallback pattern: detects a reachable
+    local daemon (`runtime_ready`/`is_local_url`/`local_bootstrap_token`)
+    and forwards over HTTP with the local bootstrap token, falling back to
+    the direct file read/write on any failure (stderr warning, never a hard
+    error). This closes the S5 gap note below — the CLI and
+    `CompanionEventCapability` no longer race on `companion.json` while a
+    daemon is running.
+
 - **Companion/buddy on the web, shared daemon state (A5 S5)**: the TUI's
   tamagotchi-style companion gets a web view with the daemon as the single
   writer of `companion.json` while it's running.
@@ -43,9 +75,10 @@ for how that differs from the library crates it depends on).
     over HTTP with the local bootstrap token when one is running instead of
     writing the file out from under it; falls back to the direct file
     read/write (pre-A5 behavior) on any HTTP failure, with a stderr
-    warning. `bastion companion event` has no HTTP counterpart (no
-    `POST /companion/event` route) — documented residual race with
-    `CompanionEventCapability` when both are used at once.
+    warning. `bastion companion event` had no HTTP counterpart yet at this
+    slice (no `POST /companion/event` route) — a documented residual race
+    with `CompanionEventCapability` when both were used at once, closed in
+    S6 above.
   - The interactive TUI (a separate OS process from the daemon — it talks
     HTTP/SSE, never shares memory) reloads its own `CompanionState` from
     disk when an SSE frame carries `companion.updated`, narrowing but not

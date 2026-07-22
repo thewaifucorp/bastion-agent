@@ -947,35 +947,53 @@ fn validate_companion_source(source: &str) -> Result<()> {
 /// own short-lived process). Events only update local companion wellbeing
 /// state; they cannot invoke tools or alter Bastion capabilities.
 ///
-/// Fase A5 S5: unlike `companion_care` below, this has no HTTP forwarding —
-/// the daemon exposes no `POST /companion/event` (only `/companion` and
-/// `/companion/care`; see `src/loadout.rs`). When the daemon is ALSO
-/// running and its `CompanionEventCapability` handles the same kind of
-/// signal in-process (agent-invoked, not this CLI), the two can race on
-/// `companion.json` — a narrow, documented gap: both paths still always
-/// `load()` fresh and `save()` immediately, so the file itself never
-/// corrupts, but one write can clobber the other's cue timers.
-pub fn companion_event(kind: &str, source: &str) -> Result<String> {
+/// Fase S6: mirrors `companion_care`'s forward-then-fallback pattern below —
+/// while a daemon is running, `POST /companion/event` (`src/loadout.rs`)
+/// routes through the SAME `CompanionHandle` `CompanionEventCapability`
+/// mutates, closing the S5 gap where this CLI path and an in-process
+/// capability call could race on `companion.json` (both always `load()`ed
+/// fresh and `save()`d immediately, so the file itself never corrupted, but
+/// one write could clobber the other's cue timers). Falls back to the
+/// direct file read/write (the pre-S6 behavior) when the daemon isn't
+/// reachable, isn't local, or the HTTP call itself fails for any reason — a
+/// stderr warning, never a hard error; the event still records either way.
+pub async fn companion_event(kind: &str, source: &str) -> Result<String> {
     validate_companion_source(source)?;
+    if !matches!(kind, "session-start" | "activity" | "session-stop") {
+        bail!("unknown companion event '{kind}'");
+    }
+
+    if let Some((client, base_url, token)) = local_daemon_client().await {
+        match post_companion_event(&client, &base_url, token.as_deref(), kind, source).await {
+            Ok(message) => return Ok(message),
+            Err(error) => eprintln!(
+                "companion: local daemon reachable but /companion/event failed ({error}); \
+                 falling back to a direct file write"
+            ),
+        }
+    }
 
     let mut state = CompanionState::load(false);
-    match kind {
-        "session-start" => state.start_session(source),
-        "activity" => return companion_activity(&mut state, source),
-        "session-stop" => state.stop_session(source),
-        _ => bail!("unknown companion event '{kind}'"),
-    }
+    let message = match kind {
+        "session-start" => {
+            state.start_session(source);
+            format!("companion event recorded: session-start ({source})")
+        }
+        "activity" => {
+            let cue = state.record_source_activity(source);
+            cue.map_or_else(
+                || format!("companion event recorded: activity ({source})"),
+                |due| care_cue(due).to_string(),
+            )
+        }
+        "session-stop" => {
+            state.stop_session(source);
+            format!("companion event recorded: session-stop ({source})")
+        }
+        _ => unreachable!("kind validated above"),
+    };
     state.save()?;
-    Ok(format!("companion event recorded: {kind} ({source})"))
-}
-
-fn companion_activity(state: &mut CompanionState, source: &str) -> Result<String> {
-    let cue = state.record_source_activity(source);
-    state.save()?;
-    Ok(cue.map_or_else(
-        || format!("companion event recorded: activity ({source})"),
-        |due| care_cue(due).to_string(),
-    ))
+    Ok(message)
 }
 
 fn care_action_message(action: CareAction) -> &'static str {
@@ -1060,6 +1078,44 @@ async fn post_companion_care(
         bail!("daemon responded with {}", response.status());
     }
     Ok(())
+}
+
+/// Fase S6: `POST /companion/event`'s response is the updated
+/// `CompanionSnapshot` plus a `message` field — the exact same text
+/// `CompanionHandle::record_event` returns (including the due-cue wording
+/// for `activity`), so forwarding through the daemon never loses anything
+/// the direct file-write fallback would have told the operator.
+#[derive(Deserialize)]
+struct CompanionEventResponse {
+    message: String,
+}
+
+async fn post_companion_event(
+    client: &Client,
+    base_url: &str,
+    token: Option<&str>,
+    kind: &str,
+    source: &str,
+) -> Result<String> {
+    let mut request = client
+        .post(format!("{}/companion/event", base_url.trim_end_matches('/')))
+        .timeout(Duration::from_secs(5))
+        .json(&serde_json::json!({ "event": kind, "source": source }));
+    if let Some(token) = token {
+        request = request.header("x-bastion-token", token);
+    }
+    let response = request
+        .send()
+        .await
+        .context("sending the event to the local daemon")?;
+    if !response.status().is_success() {
+        bail!("daemon responded with {}", response.status());
+    }
+    let parsed: CompanionEventResponse = response
+        .json()
+        .await
+        .context("parsing the /companion/event response")?;
+    Ok(parsed.message)
 }
 
 pub fn companion_status() -> String {
@@ -1256,6 +1312,39 @@ fn is_companion_updated_event(event: &str) -> bool {
                 .map(|kind| kind == "companion.updated")
         })
         .unwrap_or(false)
+}
+
+/// Fase S6: a one-line, human-readable notice for a `config.applied` SSE
+/// frame (`src/config_store.rs`), when its `key` is one the TUI's own
+/// `/model`, `/backend`, `/models`, or `/routing` commands care about.
+/// `None` for any other frame (including a `config.applied` for a key this
+/// TUI doesn't surface, or a malformed/foreign frame) — pure so it's
+/// testable without a live SSE stream, mirroring `is_companion_updated_event`
+/// above.
+fn config_applied_notice(event: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(event).ok()?;
+    let kind = value
+        .get("event")
+        .or_else(|| value.get("type"))
+        .and_then(serde_json::Value::as_str)?;
+    if kind != "config.applied" {
+        return None;
+    }
+    let key = value.get("key").and_then(serde_json::Value::as_str)?;
+    const TUI_READ_KEYS: &[&str] = &[
+        crate::config_store::KEY_MODEL_SELECTED,
+        crate::config_store::KEY_BACKEND_SELECTED,
+        crate::config_store::KEY_MODEL_FALLBACKS,
+        crate::config_store::KEY_ROUTING_RULES,
+    ];
+    if !TUI_READ_KEYS.contains(&key) {
+        return None;
+    }
+    let origin = value
+        .get("origin")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    Some(format!("config updated from {origin}: {key}"))
 }
 
 struct App {
@@ -1807,6 +1896,16 @@ async fn run_app(
                 if is_companion_updated_event(&e) {
                     app.companion = CompanionState::load(app.appearance.game_default);
                 }
+                // Fase S6: `config.applied` (`src/config_store.rs`) for a
+                // key this session's `/model`/`/backend`/`/models`/
+                // `/routing` commands read — those all query the daemon
+                // fresh over HTTP on every invocation (no cached copy lives
+                // in `App`), so there is nothing here to invalidate; the one
+                // thing worth doing client-side is telling the operator a
+                // change from elsewhere (console or web) just landed.
+                if let Some(notice) = config_applied_notice(&e) {
+                    app.lines.push(Line::System(notice));
+                }
                 app.lines.push(Line::Event(e));
             }
             AppMsg::Key(key) if key.kind == KeyEventKind::Press => {
@@ -2234,6 +2333,46 @@ mod tests {
         ));
         assert!(!is_companion_updated_event(r#"{"event":"turn.completed"}"#));
         assert!(!is_companion_updated_event("mesh_sync"));
+    }
+
+    #[test]
+    fn config_applied_notice_surfaces_only_keys_the_tui_reads() {
+        assert_eq!(
+            config_applied_notice(
+                r#"{"event":"config.applied","type":"config.applied","key":"model.selected","origin":"web","applied_at":1}"#
+            ),
+            Some("config updated from web: model.selected".to_string())
+        );
+        assert_eq!(
+            config_applied_notice(
+                r#"{"type":"config.applied","key":"backend.selected","origin":"console"}"#
+            ),
+            Some("config updated from console: backend.selected".to_string())
+        );
+        assert_eq!(
+            config_applied_notice(
+                r#"{"event":"config.applied","key":"model.fallbacks","origin":"web"}"#
+            ),
+            Some("config updated from web: model.fallbacks".to_string())
+        );
+        assert_eq!(
+            config_applied_notice(
+                r#"{"event":"config.applied","key":"routing.rules","origin":"web"}"#
+            ),
+            Some("config updated from web: routing.rules".to_string())
+        );
+        // A future/unrelated key: no notice (nothing this TUI reads is
+        // invalidated).
+        assert_eq!(
+            config_applied_notice(r#"{"event":"config.applied","key":"some.other.key"}"#),
+            None
+        );
+        // Not a config.applied frame at all.
+        assert_eq!(
+            config_applied_notice(r#"{"event":"companion.updated"}"#),
+            None
+        );
+        assert_eq!(config_applied_notice("mesh_sync"), None);
     }
 
     #[test]
