@@ -173,10 +173,19 @@ class BastionApiError(Exception):
     when the server returned one (every ``/v1/*`` error response does, by
     contract) so callers can branch on ``.code`` (e.g. ``"stale_revision"``,
     ``"scope_denied"``) without string-matching ``.args[0]``.
+
+    ``envelope`` is only *typed* as ``ErrorEnvelope`` -- at runtime it's
+    whatever JSON object the server sent back, and a non-conforming server
+    (a proxy's error page, a malformed error body) may omit any of these
+    keys. Reading with ``.get(..., "")`` instead of direct indexing means a
+    malformed envelope degrades to empty-string fields instead of raising a
+    ``KeyError`` that would mask the real HTTP status/error.
     """
 
     def __init__(self, status: int, envelope: ErrorEnvelope) -> None:
-        super().__init__(f"Bastion API error {status} [{envelope['code']}]: {envelope['message']}")
+        code = envelope.get("code", "")
+        message = envelope.get("message", "")
+        super().__init__(f"Bastion API error {status} [{code}]: {message}")
         self.status = status
-        self.code = envelope["code"]
-        self.request_id = envelope["request_id"]
+        self.code = code
+        self.request_id = envelope.get("request_id", "")

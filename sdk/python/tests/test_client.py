@@ -109,6 +109,13 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/fail":
             self._send_json(403, {"code": "forbidden", "message": "no scope", "request_id": "r2"})
             return
+        if self.path == "/v1/fail-malformed":
+            # A non-conforming error body -- valid JSON, but missing every
+            # ErrorEnvelope key (e.g. a proxy's own error shape in front of
+            # Bastion). Regression coverage for BastionApiError.__init__
+            # degrading gracefully instead of raising KeyError.
+            self._send_json(500, {"error": "upstream exploded"})
+            return
         self._send_json(404, {"code": "not_found", "message": "no route", "request_id": "r1"})
 
 
@@ -203,6 +210,17 @@ def test_non_2xx_response_raises_bastion_api_error_with_parsed_envelope(server):
     assert err.status == 403
     assert err.code == "forbidden"
     assert err.request_id == "r2"
+
+
+def test_malformed_error_envelope_degrades_gracefully(server):
+    client = BastionClient(server.base_url, token="bcp_test")
+    with pytest.raises(BastionApiError) as exc_info:
+        client._request("POST", "/v1/fail-malformed")
+    err = exc_info.value
+    assert err.status == 500
+    assert err.code == ""
+    assert err.request_id == ""
+    assert "Bastion API error 500" in str(err)
 
 
 def test_tasks_iterator_pages_through_results(server):
