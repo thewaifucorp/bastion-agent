@@ -10,6 +10,33 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **Agent-side persona contract v2 validation (C0-P3)**: the web PROPOSES a
+  `persona_edit`, but nothing wrote a SOUL.md that fails to parse or
+  declares an incomplete contract-v2 (empty `objectives`/`goals`/`scope`, or
+  an explicit-but-empty `tools` allowlist) until now — both the web POST and
+  the console's approve accepted anything under the size cap.
+  - `src/proposals.rs`: `validate_persona_contract(content: &str) ->
+    Result<(), Vec<String>>` — the ONE shared gate, built on the pinned
+    core's `bastion_personas::persona::parse_soul` +
+    `PersonaFront::validate()`. `apply()`'s `PersonaEdit` branch now calls it
+    before writing (and before the backup copy): a parse or validate failure
+    bails with every problem listed, joined readably, and nothing is
+    written.
+  - `src/loadout.rs` `proposals_create_handler`'s `persona_edit` arm calls
+    the same helper and answers `400` with `{"problems": [...]}` on failure
+    — the web gets immediate feedback instead of only discovering the
+    rejection when the console tries (and fails) to approve.
+  - `GET /personas/{slug}` (`persona_read_handler` / the new pure
+    `persona_read_body` helper) now also returns the parsed structured
+    contract: `{slug, content, contract: {name, description, objectives,
+    goals, tools, scope, skills, privacy_tier, weight} | null, problems:
+    string[]}`. A successful parse always populates `contract` (even a
+    legacy SOUL.md missing every v2 field) with `validate()`'s problems
+    listed alongside it, prompting the P4 web form to offer an upgrade
+    rather than silently accepting it; an unparseable file still answers
+    `200` with the raw `content`, `contract: null`, and the parse error as
+    `problems`' one entry — never a `500`.
+
 - **TUI config-applied notice + companion event HTTP forwarding (A4-U/A5 S6)**:
   closes the two gaps S1-S5 left open — the TUI never reacted to a
   `config.applied` from elsewhere, and `bastion companion event` always
