@@ -1054,7 +1054,8 @@ async fn local_daemon_client() -> Option<(Client, String, Option<String>)> {
     if !runtime_ready(&client, &base_url).await {
         return None;
     }
-    Some((client, base_url, local_bootstrap_token(&base_url)))
+    let token = local_bootstrap_token(&base_url);
+    Some((client, base_url, token))
 }
 
 async fn post_companion_care(
