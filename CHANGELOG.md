@@ -8,6 +8,8 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-07-22
+
 ### Added
 
 - **Structured persona contract v2 form (C0-P4)**: `web/src/views/Personas.tsx`
