@@ -37,11 +37,26 @@
 //! authenticated by `mcp::server::authenticate_token`'s
 //! `TokenPermissions.owner_id` before `CapabilityRegistry::invoke` is ever
 //! reached (`InvokeCtx.owner`, threaded in by `BastionMcpServer::call_tool`).
-//! `core_ops` takes that already-resolved owner directly — there is
-//! deliberately no second, MCP-specific credential/scope system here; an
-//! MCP token's owner can do everything Control Plane scopes would otherwise
-//! gate (read/create/control), same as every other MCP tool today has no
-//! per-tool scoping beyond `TokenPermissions.read_only`.
+//! `core_ops` takes that already-resolved owner directly.
+//!
+//! There IS an MCP-specific scope gate, layered on top of that owner
+//! resolution: `TokenPermissions.read_only` still blocks ALL tool invocation
+//! uniformly (unchanged), but a non-read-only token is now further narrowed
+//! by `TokenPermissions.control_plane_scopes` (a `control_plane::scope::ScopeSet`)
+//! — `mcp::server::call_tool` maps each of these 5 tool names to the
+//! `Scope` it requires (`required_control_plane_scope`: `TasksRead` for
+//! `get_task`/`list_tasks`, `TasksCreate` for `create_task`, `TasksControl`
+//! for `steer_task`/`cancel_task`) and calls `check_control_plane_scope`
+//! BEFORE dispatching here — an under-scoped token never reaches `core_ops`
+//! at all, not even for a failed/no-op attempt. This mirrors the same
+//! 4-scope vocabulary (`tasks:read`/`tasks:create`/`tasks:control`/
+//! `webhooks:manage`) the HTTP `/v1/*` routes already enforce via
+//! `SqliteCredentialStore`-issued credentials, so an MCP token is no longer
+//! strictly coarser-grained than an HTTP credential. Backward compatible: a
+//! token configured with no `control_plane_scopes` keeps its pre-existing
+//! behavior (every scope when not `read_only`, none when `read_only`) — see
+//! `docs/en/control-plane-security.md`'s "New in Phase 5" / "Closed since
+//! Phase 5" sections for the full mechanism and its compatibility guarantee.
 
 use std::sync::Arc;
 

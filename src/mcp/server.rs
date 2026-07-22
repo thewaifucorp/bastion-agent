@@ -96,6 +96,15 @@ fn required_control_plane_scope(name: &str) -> Option<Scope> {
 /// mirroring the `read_only` check's existing soft-error shape — this is a
 /// 403-equivalent, never the hard `McpError` `authenticate_token` uses for
 /// actual authentication failures) otherwise.
+///
+/// This function alone does NOT know whether `name` actually resolves to
+/// `control_plane_registry` at dispatch time — it re-derives "is this a
+/// Control Plane tool" from `required_control_plane_scope`'s static table.
+/// `call_tool` is responsible for only calling this when its own
+/// `dispatches_to_control_plane` (computed from `control_plane_registry.
+/// list_names()`, the actual dispatch decision) is true, so the two checks
+/// stay symmetric even if a future shared-registry capability name were to
+/// collide with one of these 5 tool names.
 fn check_control_plane_scope(name: &str, scopes: &ScopeSet) -> Result<(), CallToolResult> {
     let Some(required) = required_control_plane_scope(name) else {
         return Ok(());
@@ -278,7 +287,9 @@ impl ServerHandler for BastionMcpServer {
             // (see the `control_plane_registry` field doc comment) — dispatch
             // to it when the name is one of its own, otherwise fall through
             // to the shared registry exactly as before.
-            let target = if control_plane_registry.list_names().contains(&name.as_ref()) {
+            let dispatches_to_control_plane =
+                control_plane_registry.list_names().contains(&name.as_ref());
+            let target = if dispatches_to_control_plane {
                 &control_plane_registry
             } else {
                 &registry
@@ -289,8 +300,23 @@ impl ServerHandler for BastionMcpServer {
             // `/v1/*` routes' `require_scope` enforcement) — checked BEFORE
             // `target.invoke`, so an under-scoped token never reaches
             // `core_ops` at all, not even for a failed/no-op attempt.
-            if let Err(result) = check_control_plane_scope(&name, &perms.control_plane_scopes) {
-                return Ok(result);
+            //
+            // Gated on `dispatches_to_control_plane` — the SAME boolean used
+            // to pick `target` above — rather than letting
+            // `check_control_plane_scope` re-derive "is this a Control Plane
+            // tool" from the raw `name` in isolation. This keeps the scope
+            // gate symmetric with dispatch: a name is only ever scope-checked
+            // when it is ACTUALLY routed to `control_plane_registry`. Without
+            // this, a future shared-registry capability that happened to
+            // share a name with one of the 5 CP tools (e.g. a hypothetical
+            // "cancel_task") would still get scope-gated by
+            // `required_control_plane_scope`'s static table even though
+            // `target` resolved to the shared registry for it.
+            if dispatches_to_control_plane {
+                if let Err(result) = check_control_plane_scope(&name, &perms.control_plane_scopes)
+                {
+                    return Ok(result);
+                }
             }
 
             match target.invoke(&name, Value::Object(args), &ctx).await {
