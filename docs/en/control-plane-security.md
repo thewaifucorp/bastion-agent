@@ -315,12 +315,25 @@ the alternative; consistency with the rest of the product won.
   was performed manually for Phase 5 sign-off.
 
 ## Known gaps carried forward past Phase 5
-- `attempt.completed`/`task.escalated` are not emitted — see Phase 4's
-  section above. Needs execution-loop wiring outside Control Plane routes'
-  current scope; unaffected by Phase 5.
-- No credential-issuance or webhook-subscription-management (list/revoke)
-  HTTP/CLI surface exists — `issue()`/`revoke()` on both stores are only
-  callable from trusted host code today, not from `/v1/*`.
+
+Two of the original gaps were closed by the observability frontend work
+(see [Observability](observability.md)):
+
+- ~~`attempt.completed`/`task.escalated` are not emitted~~ — CLOSED. The
+  adaptive execution loop now emits both through
+  `observability::LifecycleObserver` (`src/observability.rs`) into the same
+  signed, durable delivery queue as the Phase 4 events: `attempt.completed`
+  on every attempt verification, `task.escalated` on a terminal transition
+  to `Escalated` (single-cycle convergence failures and delegated-parent
+  aggregation failures alike).
+- ~~No credential-issuance surface exists~~ — PARTIALLY CLOSED. The
+  console-only `/credential` command (`src/agent/credential_command.rs`)
+  issues/lists/revokes credentials; the plaintext token prints exactly once
+  to the operator's terminal. Deliberately still NOT reachable from `/v1/*`
+  or any remote channel — issuance stays a trusted-host operation.
+  Webhook-subscription management (list/revoke) remains absent.
+
+Still open:
 - `project` is stored but not enforced anywhere, including by every route
   added so far (`list_tasks`/`create_task` scope by owner only).
 - No rate limiting on any route or MCP tool.

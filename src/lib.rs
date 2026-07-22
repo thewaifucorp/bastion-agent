@@ -11,6 +11,7 @@ pub mod config;
 pub mod control_plane;
 pub mod extension;
 pub mod mcp;
+pub mod observability;
 pub mod product_import;
 pub mod secret;
 pub mod tui;

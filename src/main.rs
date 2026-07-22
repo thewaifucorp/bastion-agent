@@ -665,9 +665,18 @@ async fn main() -> anyhow::Result<()> {
     // `PersonaRegistry` handle; keep a clone from BEFORE the move, same pattern
     // as `goals_for_product`/`mcp_for_product` above.
     let registry_for_product = registry.clone();
-    let responder: Arc<dyn bastion_runtime::agent::ports::Responder> = Arc::new(
-        bastion_personas::persona::responder::PersonaResponder::new(registry),
-    );
+    // Observability: the SSE broadcast channel is created HERE (not in
+    // daemon_loop's webhook section anymore) so `ObservedResponder` can emit
+    // turn/persona/cabinet events on the same stream `/events` serves. For
+    // non-daemon commands nothing ever subscribes and every send is a no-op.
+    let (events_tx, _) = tokio::sync::broadcast::channel::<String>(128);
+    let responder: Arc<dyn bastion_runtime::agent::ports::Responder> =
+        Arc::new(bastion::observability::ObservedResponder::new(
+            Arc::new(bastion_personas::persona::responder::PersonaResponder::new(
+                registry,
+            )),
+            events_tx.clone(),
+        ));
 
     // Init shared memory
     let memory: bastion_memory::SharedMemory = Arc::new(RwLock::new(Box::new(SqliteMemory::new(
@@ -933,6 +942,7 @@ async fn main() -> anyhow::Result<()> {
                 control_plane_credential_store,
                 control_plane_webhook_subscription_store,
                 control_plane_webhook_delivery_store,
+                events_tx,
             )
             .await?;
         }
@@ -1152,9 +1162,27 @@ async fn daemon_loop(
     control_plane_webhook_delivery_store: Arc<
         bastion::control_plane::webhook_delivery::SqliteWebhookDeliveryStore,
     >,
+    // Observability: SSE broadcast channel, created in `main()` so the
+    // `ObservedResponder` decorator (built there, before this call) shares
+    // the exact stream `/events` serves — see `bastion::observability`.
+    events_tx: tokio::sync::broadcast::Sender<String>,
 ) -> anyhow::Result<()> {
     use bastion::agent::command::{CommandResources, CommandResult};
     use tokio::io::{AsyncBufReadExt, BufReader};
+
+    // Observability frontend: the one lifecycle observer every adaptive
+    // cycle/delegation in this daemon emits through — SSE (`/events`) +
+    // Control Plane delivery queue (attempt.completed / task.escalated) +
+    // the tracing line TracingObserver used to own.
+    let lifecycle_observer: Arc<dyn bastion_runtime::hooks::Observer> =
+        bastion::observability::LifecycleObserver::new(
+            events_tx.clone(),
+            bastion::control_plane::core_ops::CoreOpsState {
+                task_store: task_store.clone(),
+                webhook_subscription_store: control_plane_webhook_subscription_store.clone(),
+                webhook_delivery_store: control_plane_webhook_delivery_store.clone(),
+            },
+        );
     use tokio::signal::unix::{signal, SignalKind};
 
     // PROACT-05: take pending_rx out of the agent so we own it in the select! loop.
@@ -1263,8 +1291,9 @@ async fn daemon_loop(
             }
             let h = agent_handle.clone();
             let owner_map = webhook_owner_map;
-            // Phase 6: mesh connectivity — load peers from config, create broadcast channel for SSE.
-            let (events_tx, _) = tokio::sync::broadcast::channel::<String>(128);
+            // Phase 6: mesh connectivity — load peers from config. The SSE
+            // broadcast channel now arrives as the `events_tx` parameter
+            // (created in `main()` so `ObservedResponder` shares it).
             let peer_map_initial = bastion::config::load_mesh_peers(cfg);
             let mesh_peer_map = Arc::new(RwLock::new(peer_map_initial));
             // WR-01/CR-04: APP_JWT_SECRET must be set — no insecure fallback. This is the
@@ -1766,6 +1795,7 @@ async fn daemon_loop(
         let registry_for_sched = runtime_registry_for_product.clone();
         let memory_for_sched = memory.clone();
         let pending_tx_for_sched = agent.pending_tx.clone();
+        let observer_for_sched = lifecycle_observer.clone();
         tokio::spawn(adaptive::run_scheduler(
             schedule_store,
             std::time::Duration::from_secs(30),
@@ -1774,6 +1804,7 @@ async fn daemon_loop(
                 let registry = registry_for_sched.clone();
                 let memory = memory_for_sched.clone();
                 let tx = pending_tx_for_sched.clone();
+                let observer = observer_for_sched.clone();
                 async move {
                     let decision = adaptive::select_mode(&spec.intent);
                     if decision.mode == bastion_runtime::task::ExecutionMode::Pursue {
@@ -1790,7 +1821,7 @@ async fn daemon_loop(
                                 let owner = spec.owner.clone();
                                 tokio::spawn(async move {
                                     if let Err(e) = adaptive::run_coding_pursue(
-                                        &store, &registry, &memory, &owner, &id,
+                                        &store, &registry, &memory, &owner, &id, &observer,
                                     )
                                     .await
                                     {
@@ -1961,6 +1992,24 @@ async fn daemon_loop(
                             }
                             continue;
                         }
+                        // Observability frontend: credential cockpit — console
+                        // only (the plaintext token prints exactly once, to the
+                        // operator's terminal; command_catalog Scope::ConsoleOnly
+                        // keeps remote channels out).
+                        if first_token == "/credential" {
+                            let cred_arg = trimmed.split_once(' ').map(|x| x.1);
+                            match bastion::agent::credential_command::handle(
+                                &control_plane_credential_store,
+                                cred_arg,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                            )
+                            .await
+                            {
+                                Ok(msg) => println!("{msg}"),
+                                Err(e) => println!("Erro no comando: {e}"),
+                            }
+                            continue;
+                        }
                         // US-205: schedule cockpit — needs the schedule store.
                         if first_token == "/schedule" {
                             let sched_arg = trimmed.split_once(' ').map(|x| x.1);
@@ -2053,6 +2102,7 @@ async fn daemon_loop(
                                     let registry = runtime_registry_for_product.clone();
                                     let objective = s.clone();
                                     let memory = memory.clone();
+                                    let observer = lifecycle_observer.clone();
                                     let owner =
                                         bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string();
                                     tokio::spawn(async move {
@@ -2061,7 +2111,8 @@ async fn daemon_loop(
                                                 match store.load_case(&owner, &id).await {
                                                     Ok(Some(parent)) => {
                                                         if let Err(e) = bastion::adaptive::run_delegated(
-                                                            store, registry, memory, parent, children,
+                                                            store, registry, memory, parent,
+                                                            children, observer,
                                                         )
                                                         .await
                                                         {
@@ -2074,6 +2125,7 @@ async fn daemon_loop(
                                             None => {
                                                 if let Err(e) = bastion::adaptive::run_coding_pursue(
                                                     &store, &registry, &memory, &owner, &id,
+                                                    &observer,
                                                 ).await {
                                                     tracing::error!(event = "pursue_cycle_error", task = %id, error = %e);
                                                 }
@@ -2290,6 +2342,7 @@ async fn daemon_loop(
                                 let memory = memory.clone();
                                 let owner = req.owner.clone();
                                 let task_id = id.clone();
+                                let observer = lifecycle_observer.clone();
                                 tokio::spawn(async move {
                                     match bastion::adaptive::decompose(&objective) {
                                         Some(children) => {
@@ -2297,7 +2350,8 @@ async fn daemon_loop(
                                                 Ok(Some(parent)) => {
                                                     if let Err(e) =
                                                         bastion::adaptive::run_delegated(
-                                                            store, registry, memory, parent, children,
+                                                            store, registry, memory, parent,
+                                                            children, observer,
                                                         )
                                                         .await
                                                     {
@@ -2310,6 +2364,7 @@ async fn daemon_loop(
                                         None => {
                                             if let Err(e) = bastion::adaptive::run_coding_pursue(
                                                 &store, &registry, &memory, &owner, &task_id,
+                                                &observer,
                                             ).await {
                                                 tracing::error!(event = "pursue_cycle_error", task = %task_id, error = %e);
                                             }

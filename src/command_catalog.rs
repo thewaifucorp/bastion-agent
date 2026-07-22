@@ -144,6 +144,13 @@ pub const CATALOG: &[CommandSpec] = &[
         aliases: &[],
     },
     CommandSpec {
+        name: "/credential",
+        usage: "/credential list | issue <label> [scopes] | revoke <id>",
+        desc: "issue/revoke Control Plane bearer credentials (token shown once, console only)",
+        scope: Scope::ConsoleOnly,
+        aliases: &[],
+    },
+    CommandSpec {
         name: "/stop",
         usage: "/stop",
         desc: "shut down the daemon",
@@ -310,6 +317,8 @@ mod tests {
         "/task",
         // Adaptive Execution (US-205): personal scheduler cockpit.
         "/schedule",
+        // Observability frontend: Control Plane credential cockpit.
+        "/credential",
     ];
 
     const OLD_REMOTE_ALLOWED: &[&str] = &[

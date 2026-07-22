@@ -74,7 +74,7 @@ impl Channel for WebhookChannel {
 
 use axum::{
     extract::{Query, State},
-    http::HeaderMap,
+    http::{header, HeaderMap},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse,
@@ -362,6 +362,28 @@ async fn handle(
             (status, Json(serde_json::json!({ "error": body }))).into_response()
         }
     }
+}
+
+/// GET /ui — the bundled observability dashboard (static shell, no data).
+///
+/// Unauthenticated on purpose, like `/healthz`: the HTML embeds zero
+/// secrets and zero data — everything it renders comes from `/events` and
+/// `/v1/*`, each authenticated per request with a token the operator types
+/// into the page. The CSP pins every connection to same-origin, so the page
+/// structurally cannot exfiltrate those tokens to another host.
+async fn dashboard_handler() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; \
+                 connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
+            ),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        crate::observability::DASHBOARD_HTML,
+    )
 }
 
 /// GET /events — real-time SSE feed.
@@ -1265,6 +1287,9 @@ pub async fn serve_with_mesh(
     let mut app = Router::new()
         .route("/webhook", post(handle))
         .route("/events", axum::routing::get(sse_handler))
+        // Observability frontend: bundled static dashboard (see its handler
+        // doc for why it is unauthenticated).
+        .route("/ui", get(dashboard_handler))
         .route("/agent-card", get(agent_card_handler))
         .route("/mesh/ingest", post(ingest_handler))
         .route("/auth/exchange", post(auth_exchange_handler))
