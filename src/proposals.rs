@@ -62,7 +62,10 @@ pub enum ProposalStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProposalPayload {
-    PersonaEdit { slug: String, content: String },
+    PersonaEdit {
+        slug: String,
+        content: String,
+    },
     /// A4 S2: default model and/or fallback ladder. `None` = leave that half
     /// untouched; at least one must be `Some` (guarded at create and apply).
     ModelConfig {
@@ -84,7 +87,9 @@ pub enum ProposalPayload {
     /// ids are legal, exactly like `/model`. Supported classes get their
     /// knob applied at approve (see [`apply`]); unsupported ones are
     /// persisted only, reported `supported: false` by `GET /routing`.
-    RoutingConfig { rules: HashMap<String, String> },
+    RoutingConfig {
+        rules: HashMap<String, String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -906,7 +911,10 @@ mod tests {
             fallback_models: Some(vec!["mistral".into()]),
         };
         let msg = apply(dir.path(), "prop-x", &payload, &res).await.unwrap();
-        assert!(msg.contains("next restart"), "fallbacks are startup-loaded: {msg}");
+        assert!(
+            msg.contains("next restart"),
+            "fallbacks are startup-loaded: {msg}"
+        );
 
         let store = res.config_store.as_ref().unwrap();
         let selected = store.latest(KEY_MODEL_SELECTED).await.unwrap().unwrap();
@@ -1056,9 +1064,14 @@ mod tests {
     async fn routing_config_apply_empty_map_clears_the_override() {
         let dir = tempfile::tempdir().unwrap();
         let (_f, res) = resources_with_store().await;
-        apply(dir.path(), "p", &routing(&[("chat_turn", "llama3.2")]), &res)
-            .await
-            .unwrap();
+        apply(
+            dir.path(),
+            "p",
+            &routing(&[("chat_turn", "llama3.2")]),
+            &res,
+        )
+        .await
+        .unwrap();
 
         let msg = apply(dir.path(), "p", &routing(&[]), &res).await.unwrap();
         assert!(msg.contains("cleared"), "{msg}");

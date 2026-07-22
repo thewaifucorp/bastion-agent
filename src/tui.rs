@@ -1098,7 +1098,10 @@ async fn post_companion_event(
     source: &str,
 ) -> Result<String> {
     let mut request = client
-        .post(format!("{}/companion/event", base_url.trim_end_matches('/')))
+        .post(format!(
+            "{}/companion/event",
+            base_url.trim_end_matches('/')
+        ))
         .timeout(Duration::from_secs(5))
         .json(&serde_json::json!({ "event": kind, "source": source }));
     if let Some(token) = token {
@@ -1219,7 +1222,9 @@ impl CompanionHandle {
         let (message, _snapshot) = self.mutate(events_tx, "event", |state| match kind {
             "session-start" => {
                 state.start_session(source);
-                Ok(format!("companion event recorded: session-start ({source})"))
+                Ok(format!(
+                    "companion event recorded: session-start ({source})"
+                ))
             }
             "activity" => {
                 let cue = state.record_source_activity(source);
@@ -2289,19 +2294,13 @@ mod tests {
 
     #[test]
     fn care_action_messages_match_the_action() {
-        assert_eq!(
-            care_action_message(CareAction::Water),
-            "companion hydrated"
-        );
+        assert_eq!(care_action_message(CareAction::Water), "companion hydrated");
         assert_eq!(care_action_message(CareAction::Feed), "companion fed");
         assert_eq!(
             care_action_message(CareAction::Play),
             "companion break logged"
         );
-        assert_eq!(
-            care_action_message(CareAction::Sleep),
-            "companion resting"
-        );
+        assert_eq!(care_action_message(CareAction::Sleep), "companion resting");
     }
 
     #[test]
@@ -2429,7 +2428,10 @@ mod tests {
             Some(v) => std::env::set_var("BASTION_URL", v),
             None => std::env::remove_var("BASTION_URL"),
         }
-        assert!(result.is_none(), "remote URLs are never treated as the local daemon");
+        assert!(
+            result.is_none(),
+            "remote URLs are never treated as the local daemon"
+        );
     }
 
     #[test]

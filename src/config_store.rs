@@ -538,7 +538,10 @@ mod tests {
             fallback_models_from_value_json(r#"{"models":["", "  "]}"#),
             None
         );
-        assert_eq!(fallback_models_from_value_json(r#"{"models":"nope"}"#), None);
+        assert_eq!(
+            fallback_models_from_value_json(r#"{"models":"nope"}"#),
+            None
+        );
         assert_eq!(fallback_models_from_value_json("not json"), None);
     }
 

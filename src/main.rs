@@ -2112,8 +2112,7 @@ async fn daemon_loop(
         // this startup read IS the class's knob (the spawned Reflector holds its
         // provider privately, so a runtime `routing_config` approval lands on the
         // NEXT restart — documented on GET /routing as supported, not hot).
-        let routing_table =
-            bastion::routing::load_table(&config_store, &cfg.routing.rules).await;
+        let routing_table = bastion::routing::load_table(&config_store, &cfg.routing.rules).await;
         let reflector_model: Option<String> = routing_table
             .model_for(bastion::routing::RouteClass::Reflection)
             .map(str::to_string)

@@ -71,7 +71,9 @@ impl Capability for CompanionEventCapability {
             .and_then(Value::as_str)
             .filter(|source| !source.trim().is_empty() && source.len() <= 32)
             .ok_or_else(|| anyhow::anyhow!("source must contain 1-32 characters"))?;
-        let message = self.companion.record_event(event, source, &self.events_tx)?;
+        let message = self
+            .companion
+            .record_event(event, source, &self.events_tx)?;
         Ok(json!({ "recorded": true, "message": message }))
     }
 

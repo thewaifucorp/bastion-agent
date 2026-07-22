@@ -83,8 +83,14 @@ pub const API_KEY_PROVIDERS: &[ApiKeyProvider] = &[
 pub const OLLAMA_DISPLAY_NAME: &str = "Ollama";
 
 /// Provider kinds in the order `GET /models` groups them.
-pub const PROVIDER_KIND_ORDER: &[&str] =
-    &["anthropic", "openai", "gemini", "groq", "openrouter", "ollama"];
+pub const PROVIDER_KIND_ORDER: &[&str] = &[
+    "anthropic",
+    "openai",
+    "gemini",
+    "groq",
+    "openrouter",
+    "ollama",
+];
 
 /// Env key an API-key provider reads, by provider id (`None` for ollama /
 /// unknown ids). Also the whitelist `secret_set` proposals validate against.
@@ -126,8 +132,14 @@ const STATIC_MODELS: &[(&str, &str)] = &[
     ("groq/qwen/qwen3-32b", "Qwen3 32B (Groq)"),
     ("groq/moonshotai/kimi-k2-instruct", "Kimi K2 (Groq)"),
     // openrouter — passthrough sample (any other `vendor/model[:tag]` slug)
-    ("deepseek/deepseek-chat-v3.1:free", "DeepSeek Chat v3.1 (free)"),
-    ("meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B Instruct (free)"),
+    (
+        "deepseek/deepseek-chat-v3.1:free",
+        "DeepSeek Chat v3.1 (free)",
+    ),
+    (
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "Llama 3.3 70B Instruct (free)",
+    ),
     ("qwen/qwen3-coder:free", "Qwen3 Coder (free)"),
     // ollama — common local pulls (any bare id with no known prefix)
     ("llama3.2", "Llama 3.2 (local)"),

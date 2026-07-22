@@ -197,10 +197,7 @@ impl RoutingTable {
 /// overlaid on bastion.toml's `[routing]`. Store read errors degrade to the
 /// toml base with a warning — a broken DB must never take routing reads
 /// down with it.
-pub async fn load_table(
-    store: &ConfigStore,
-    toml_rules: &HashMap<String, String>,
-) -> RoutingTable {
+pub async fn load_table(store: &ConfigStore, toml_rules: &HashMap<String, String>) -> RoutingTable {
     let override_rules = match store.latest(KEY_ROUTING_RULES).await {
         Ok(raw) => raw.as_deref().and_then(routing_rules_from_value_json),
         Err(e) => {
@@ -249,7 +246,10 @@ mod tests {
 
     #[test]
     fn override_wins_over_toml_per_class() {
-        let toml = rules(&[("chat_turn", "gemini-2.5-flash"), ("reflection", "llama3.2")]);
+        let toml = rules(&[
+            ("chat_turn", "gemini-2.5-flash"),
+            ("reflection", "llama3.2"),
+        ]);
         let over = rules(&[("chat_turn", "gpt-5-mini")]);
         let table = RoutingTable::resolve(&toml, Some(&over));
 
@@ -286,7 +286,13 @@ mod tests {
         let classes: Vec<&str> = report.iter().map(|r| r.class).collect();
         assert_eq!(
             classes,
-            vec!["chat_turn", "pursue_task", "cabinet", "reflection", "compaction"]
+            vec![
+                "chat_turn",
+                "pursue_task",
+                "cabinet",
+                "reflection",
+                "compaction"
+            ]
         );
         let reflection = &report[3];
         assert_eq!(reflection.model.as_deref(), Some("llama3.2"));

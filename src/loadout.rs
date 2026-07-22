@@ -230,7 +230,13 @@ async fn effective_models(state: &LoadoutState) -> (String, Vec<String>) {
 /// the TOML base AND the effective overrides — so a custom id always shows.
 fn merged_catalog_for(state: &LoadoutState, effective: &(String, Vec<String>)) -> Vec<ModelEntry> {
     let configured = std::iter::once(state.model_defaults.default_model.as_str())
-        .chain(state.model_defaults.fallback_models.iter().map(String::as_str))
+        .chain(
+            state
+                .model_defaults
+                .fallback_models
+                .iter()
+                .map(String::as_str),
+        )
         .chain(std::iter::once(effective.0.as_str()))
         .chain(effective.1.iter().map(String::as_str));
     model_catalog::merged_catalog(configured)
@@ -459,8 +465,8 @@ async fn companion_event_handler(
         .record_event(&req.event, &req.source, &state.events_tx)
     {
         Ok(message) => {
-            let mut body = serde_json::to_value(state.companion.snapshot())
-                .unwrap_or(serde_json::Value::Null);
+            let mut body =
+                serde_json::to_value(state.companion.snapshot()).unwrap_or(serde_json::Value::Null);
             if let serde_json::Value::Object(map) = &mut body {
                 map.insert("message".to_string(), serde_json::json!(message));
             }
@@ -505,7 +511,10 @@ async fn proposals_create_handler(
     let (payload, secret_value) = match req.kind.as_str() {
         "persona_edit" => {
             let (Some(slug), Some(content)) = (req.slug, req.content) else {
-                return (StatusCode::BAD_REQUEST, "persona_edit needs slug and content")
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "persona_edit needs slug and content",
+                )
                     .into_response();
             };
             if !proposals::is_safe_slug(&slug) {
@@ -534,7 +543,10 @@ async fn proposals_create_handler(
                     return (StatusCode::BAD_REQUEST, "too many fallback models").into_response();
                 }
                 if fallbacks.iter().any(|m| m.trim().is_empty()) {
-                    return (StatusCode::BAD_REQUEST, "fallback model ids must not be empty")
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        "fallback model ids must not be empty",
+                    )
                         .into_response();
                 }
             }
@@ -567,8 +579,7 @@ async fn proposals_create_handler(
                     .into_response();
             }
             if value.is_empty() {
-                return (StatusCode::BAD_REQUEST, "secret value must not be empty")
-                    .into_response();
+                return (StatusCode::BAD_REQUEST, "secret value must not be empty").into_response();
             }
             if value.len() > proposals::MAX_SECRET_VALUE_BYTES {
                 return (StatusCode::PAYLOAD_TOO_LARGE, "secret value too large").into_response();
@@ -599,13 +610,19 @@ async fn proposals_create_handler(
                         .into_response();
                 }
                 if model.trim().is_empty() {
-                    return (StatusCode::BAD_REQUEST, "routing model ids must not be empty")
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        "routing model ids must not be empty",
+                    )
                         .into_response();
                 }
                 // Unknown model ids are legal (custom/niche providers route
                 // by prefix, exactly like /model) — surfaced as a warning in
                 // the log, never a rejection.
-                if !model_catalog::static_catalog().iter().any(|e| e.id == *model) {
+                if !model_catalog::static_catalog()
+                    .iter()
+                    .any(|e| e.id == *model)
+                {
                     tracing::warn!(
                         event = "routing_rule_uncatalogued_model",
                         class = %class,
@@ -679,7 +696,10 @@ pub fn router(
         .route("/models", get(models_handler))
         .route("/routing", get(routing_handler))
         .route("/companion", get(companion_handler))
-        .route("/companion/care", axum::routing::post(companion_care_handler))
+        .route(
+            "/companion/care",
+            axum::routing::post(companion_care_handler),
+        )
         .route(
             "/companion/event",
             axum::routing::post(companion_event_handler),
@@ -939,10 +959,20 @@ mod tests {
             .collect();
         assert_eq!(
             kinds,
-            vec!["anthropic", "openai", "gemini", "groq", "openrouter", "ollama"]
+            vec![
+                "anthropic",
+                "openai",
+                "gemini",
+                "groq",
+                "openrouter",
+                "ollama"
+            ]
         );
         // The custom toml default merged into its (ollama) group.
-        let ollama = providers.iter().find(|p| p["provider_kind"] == "ollama").unwrap();
+        let ollama = providers
+            .iter()
+            .find(|p| p["provider_kind"] == "ollama")
+            .unwrap();
         let ids: Vec<&str> = ollama["models"]
             .as_array()
             .unwrap()
@@ -1004,13 +1034,16 @@ mod tests {
         let (status, v) = get_json(app, "/routing", Some("tok-alice")).await;
         assert_eq!(status, axum::http::StatusCode::OK);
         let items = v["items"].as_array().unwrap();
-        let classes: Vec<&str> = items
-            .iter()
-            .map(|i| i["class"].as_str().unwrap())
-            .collect();
+        let classes: Vec<&str> = items.iter().map(|i| i["class"].as_str().unwrap()).collect();
         assert_eq!(
             classes,
-            vec!["chat_turn", "pursue_task", "cabinet", "reflection", "compaction"]
+            vec![
+                "chat_turn",
+                "pursue_task",
+                "cabinet",
+                "reflection",
+                "compaction"
+            ]
         );
         // sample_router's toml rule: reflection → llama3.2, source toml.
         let reflection = items.iter().find(|i| i["class"] == "reflection").unwrap();
