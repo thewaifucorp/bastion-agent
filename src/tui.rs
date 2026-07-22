@@ -2401,11 +2401,11 @@ mod tests {
     // `std::env` is process-global — this test serializes on its own env
     // vars via ENV_LOCK and restores the prior value, same pattern
     // `loadout.rs`'s provider tests use for GEMINI_API_KEY.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[tokio::test]
     async fn local_daemon_client_is_none_when_nothing_is_listening() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let saved = std::env::var("BASTION_URL").ok();
         // Port 1 is reserved (never a listening Bastion daemon in any test
         // environment) — the readyz probe fails fast with connection
@@ -2421,7 +2421,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_daemon_client_is_none_for_a_remote_url() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().await;
         let saved = std::env::var("BASTION_URL").ok();
         std::env::set_var("BASTION_URL", "https://bastion.example.com");
         let result = local_daemon_client().await;
