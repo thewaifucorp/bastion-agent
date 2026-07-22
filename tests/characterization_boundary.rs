@@ -111,6 +111,7 @@ fn ctx(owner: &str, tier: Option<PrivacyTier>) -> InvokeCtx {
     InvokeCtx {
         owner: owner.to_owned(),
         privacy_tier: tier,
+        allowed_tools: None,
     }
 }
 
@@ -353,6 +354,7 @@ fn make_registry_for_agent() -> PersonaRegistry {
             tier: PrivacyTier::CloudOk,
             weight: 0.8,
             skills: vec![],
+            ..Default::default()
         },
     );
     PersonaRegistry::new_from_map(personas)

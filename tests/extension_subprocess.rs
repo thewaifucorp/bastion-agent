@@ -45,6 +45,7 @@ fn ctx(owner: &str) -> InvokeCtx {
     InvokeCtx {
         owner: owner.to_string(),
         privacy_tier: Some(bastion_memory::PrivacyTier::CloudOk),
+        allowed_tools: None,
     }
 }
 

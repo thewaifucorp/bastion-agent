@@ -458,6 +458,7 @@ async fn runner_egress_single_local_only_blocks_cloud_provider() {
             tier: PrivacyTier::LocalOnly,
             weight: 0.9,
             skills: vec![],
+            ..Default::default()
         },
     );
     let registry = PersonaRegistry::new_from_map(personas);
@@ -533,6 +534,7 @@ async fn runner_egress_parallel_local_only_blocks_all_cloud_calls() {
                 tier: PrivacyTier::LocalOnly,
                 weight: 0.8,
                 skills: vec![],
+                ..Default::default()
             },
         );
     }
@@ -959,6 +961,7 @@ async fn cli_session_deterministic_across_turns() {
             tier: bastion_memory::PrivacyTier::CloudOk,
             weight: 0.9,
             skills: vec![],
+            ..Default::default()
         },
     );
 
