@@ -23,6 +23,12 @@ export class ApiError extends Error {
   constructor(
     public code: string,
     public status: number,
+    /** C0-P4: `POST /proposals` 400s a `persona_edit` whose contract fails
+     * `validate_persona_contract` with `{"problems": [...]}` instead of a
+     * `code` — carried here so the Personas form can render the SAME
+     * problem strings the backend produced, inline, instead of a generic
+     * "staging failed" toast. */
+    public problems?: string[],
   ) {
     super(code);
   }
@@ -43,7 +49,11 @@ async function request<T>(
   });
   const body = await resp.json().catch(() => ({}));
   if (!resp.ok) {
-    throw new ApiError(body?.code ?? `http_${resp.status}`, resp.status);
+    throw new ApiError(
+      body?.code ?? `http_${resp.status}`,
+      resp.status,
+      Array.isArray(body?.problems) ? body.problems : undefined,
+    );
   }
   return body as T;
 }
@@ -154,11 +164,40 @@ export interface Proposal {
   resolved_at: number | null;
 }
 
+/** C0-P3's parsed persona contract-v2, as `GET /personas/{slug}` reports it
+ * under `contract` — `null` only when the SOUL.md front-matter failed to
+ * parse at all (see `PersonaReadResponse.problems` for why). `tools: null`
+ * means unrestricted (no allowlist); `tools: []` is a legal-but-suspicious
+ * explicit empty allowlist the backend's `validate()` flags as a problem. */
+export interface PersonaContract {
+  name: string;
+  description: string | null;
+  objectives: string[];
+  goals: string[];
+  tools: string[] | null;
+  scope: string | null;
+  skills: string[];
+  privacy_tier: string;
+  weight: number;
+}
+
+export interface PersonaReadResponse {
+  slug: string;
+  /** Raw SOUL.md text — always present, even when `contract` is `null`, so
+   * the raw-mode escape hatch can still show/fix an unparseable file. */
+  content: string;
+  contract: PersonaContract | null;
+  /** `validate()`'s problems for a successful parse (empty when fully
+   * contract-v2-complete), or the one parse-error string when `contract` is
+   * `null`. */
+  problems: string[];
+}
+
 export const personas = {
   list: () =>
     request<{ items: string[] }>(tokens.owner, "/personas"),
   read: (slug: string) =>
-    request<{ slug: string; content: string }>(
+    request<PersonaReadResponse>(
       tokens.owner,
       `/personas/${encodeURIComponent(slug)}`,
     ),

@@ -203,7 +203,7 @@ export default function App() {
           {route === "chat" && <Chat />}
           {route === "tasks" && <Tasks />}
           {route === "schedules" && <Schedules />}
-          {route === "personas" && <Personas />}
+          {route === "personas" && <Personas configTick={configTick} />}
           {route === "buddy" && <Buddy configTick={companionTick} />}
           {route === "providers" && <Providers configTick={configTick} />}
           {route === "models" && <Models configTick={configTick} />}
