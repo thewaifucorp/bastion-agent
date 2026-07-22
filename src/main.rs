@@ -521,7 +521,9 @@ async fn main() -> anyhow::Result<()> {
             CompanionAction::Event { kind, source } => {
                 bastion::tui::companion_event(kind.as_str(), source)?
             }
-            CompanionAction::Care { action } => bastion::tui::companion_care(action.as_str())?,
+            CompanionAction::Care { action } => {
+                bastion::tui::companion_care(action.as_str()).await?
+            }
         };
         println!("{output}");
         return Ok(());
@@ -856,8 +858,18 @@ async fn main() -> anyhow::Result<()> {
     // BIG-1 (Gap 2): one McpToolAdapter per connected MCP tool, into the SAME
     // registry instance the loop owns (moved verbatim out of `AgentLoop::new`).
     bastion_mcp::registry_setup::register_mcp_tools(&mut agent.capability_registry, &mcp_client);
+    // A5 S5: the daemon's single in-process writer for companion.json —
+    // shared by `CompanionEventCapability` (registered right below) and,
+    // later, `POST /companion/care` (`loadout::router`, wired in
+    // `daemon_loop`) via the clone threaded through the `daemon_loop(...)`
+    // call below. See `tui::CompanionHandle`'s doc comment for what this
+    // does and does not make race-free.
+    let companion_handle = bastion::tui::CompanionHandle::load(false);
     agent.capability_registry.register(Arc::new(
-        bastion::companion_capability::CompanionEventCapability::new(),
+        bastion::companion_capability::CompanionEventCapability::new(
+            companion_handle.clone(),
+            events_tx.clone(),
+        ),
     ))?;
     // US-204: governed browser (read-only HTTP backend; interaction/screenshot
     // via CDP is backlog). needs_approval=true, so every web reach crosses the
@@ -1041,6 +1053,7 @@ async fn main() -> anyhow::Result<()> {
                 config_store,
                 provider.clone(),
                 events_tx,
+                companion_handle,
             )
             .await?;
         }
@@ -1277,6 +1290,10 @@ async fn daemon_loop(
     // `ObservedResponder` decorator (built there, before this call) shares
     // the exact stream `/events` serves — see `bastion::observability`.
     events_tx: tokio::sync::broadcast::Sender<String>,
+    // A5 S5: the SAME shared handle `CompanionEventCapability` mutates
+    // through (registered on `agent.capability_registry` in `main()`,
+    // before this call) — `POST /companion/care` below wires the other end.
+    companion_handle: bastion::tui::CompanionHandle,
 ) -> anyhow::Result<()> {
     use bastion::agent::command::{CommandResources, CommandResult};
     use tokio::io::{AsyncBufReadExt, BufReader};
@@ -1707,6 +1724,10 @@ async fn daemon_loop(
                 // overlays with the store's `routing.rules` override.
                 cfg.routing.rules.clone(),
                 events_tx.clone(),
+                // A5 S5: same handle `CompanionEventCapability` mutates
+                // through — `GET /companion` / `POST /companion/care` and
+                // the hook-bridge capability share one in-process writer.
+                companion_handle,
             ));
             // US External Control Plane and SDK: `/v1/*` routes, built over
             // their own `ControlPlaneState` and merged into the webhook app

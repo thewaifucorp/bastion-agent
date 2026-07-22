@@ -12,6 +12,7 @@ import Connection from "./views/Connection";
 import Personas from "./views/Personas";
 import Providers from "./views/Providers";
 import Models from "./views/Models";
+import Buddy from "./views/Buddy";
 import About from "./views/About";
 
 export interface LedgerEntry {
@@ -41,6 +42,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { key: "tasks", label: "Tasks" },
       { key: "schedules", label: "Schedules" },
       { key: "personas", label: "Personas" },
+      { key: "buddy", label: "Buddy" },
     ],
   },
   {
@@ -78,6 +80,9 @@ export default function App() {
   // bumped on config.change_requested / config.applied so the Providers and
   // Models views re-fetch what the daemon now reports
   const [configTick, setConfigTick] = useState(0);
+  // bumped on companion.updated (A5 S5) so the Buddy view re-fetches after
+  // a care action, an XP award, or a hook session event
+  const [companionTick, setCompanionTick] = useState(0);
   const [streamGen, setStreamGen] = useState(0);
   const stopRef = useRef<(() => void) | null>(null);
 
@@ -110,6 +115,9 @@ export default function App() {
       const kind = typeof ev.event === "string" ? ev.event : ev.type;
       if (kind === "config.change_requested" || kind === "config.applied") {
         setConfigTick((t) => t + 1);
+      }
+      if (kind === "companion.updated") {
+        setCompanionTick((t) => t + 1);
       }
       // attention plumbing: sidebar badge follows task lifecycle events
       if (ev.task && typeof ev.task === "string") {
@@ -196,6 +204,7 @@ export default function App() {
           {route === "tasks" && <Tasks />}
           {route === "schedules" && <Schedules />}
           {route === "personas" && <Personas />}
+          {route === "buddy" && <Buddy configTick={companionTick} />}
           {route === "providers" && <Providers configTick={configTick} />}
           {route === "models" && <Models configTick={configTick} />}
           {route === "backends" && (

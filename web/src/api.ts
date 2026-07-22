@@ -260,6 +260,47 @@ export const configApi = {
     request<{ items: ConfigOverride[] }>(tokens.owner, "/config/overrides"),
 };
 
+// ── companion / Buddy (A5 S5) ────────────────────────────────────────────
+
+export interface CompanionNeeds {
+  water: number;
+  food: number;
+  play: number;
+  rest: number;
+}
+
+/** A static, markup-stripped representative portrait — the pack's idle
+ * frame (or a small built-in face when no custom pet pack is loaded). The
+ * TUI keeps the full tick-animated experience; this is one still frame. */
+export interface CompanionFrame {
+  rows: string[];
+  width: number;
+}
+
+export type CareAction = "water" | "feed" | "play" | "sleep";
+
+export interface CompanionSnapshot {
+  game_enabled: boolean;
+  level: number;
+  xp: number;
+  successful_turns: number;
+  needs: CompanionNeeds;
+  /** Needs currently due, using the same names `POST /companion/care`
+   * accepts. */
+  cues: string[];
+  frame: CompanionFrame;
+  pack_name: string;
+}
+
+export const companionApi = {
+  get: () => request<CompanionSnapshot>(tokens.owner, "/companion"),
+  care: (action: CareAction) =>
+    request<CompanionSnapshot>(tokens.owner, "/companion/care", {
+      method: "POST",
+      body: JSON.stringify({ action }),
+    }),
+};
+
 // ── /status (unauthenticated, booleans-only) ────────────────────────────
 
 export interface RuntimeStatusRow {

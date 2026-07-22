@@ -34,7 +34,9 @@ use serde_json::json;
 use std::io::{self, Stdout, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::broadcast;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use url::{Host, Url};
 use visual::{Appearance, Identity, VisualMode};
@@ -925,10 +927,10 @@ fn care_cue(cue: CareCue) -> &'static str {
     }
 }
 
-/// Stable, binary-level event bridge for Claude/Codex/OpenCode hooks. Events
-/// only update local companion wellbeing state; they cannot invoke tools or
-/// alter Bastion capabilities.
-pub fn companion_event(kind: &str, source: &str) -> Result<String> {
+/// Same validation both the standalone-CLI and shared-handle event paths
+/// apply before touching `companion.json` — pulled out so `CompanionHandle`
+/// (daemon-side) and `companion_event` (CLI-side) agree byte for byte.
+fn validate_companion_source(source: &str) -> Result<()> {
     let valid_source = !source.is_empty()
         && source.len() <= 32
         && source
@@ -937,6 +939,24 @@ pub fn companion_event(kind: &str, source: &str) -> Result<String> {
     if !valid_source {
         bail!("companion source must be 1-32 ASCII letters, digits, '-', '_' or '.'");
     }
+    Ok(())
+}
+
+/// Stable, binary-level event bridge for Claude/Codex/OpenCode hooks
+/// (standalone CLI: `bastion companion event <kind> <source>`, always its
+/// own short-lived process). Events only update local companion wellbeing
+/// state; they cannot invoke tools or alter Bastion capabilities.
+///
+/// Fase A5 S5: unlike `companion_care` below, this has no HTTP forwarding —
+/// the daemon exposes no `POST /companion/event` (only `/companion` and
+/// `/companion/care`; see `src/loadout.rs`). When the daemon is ALSO
+/// running and its `CompanionEventCapability` handles the same kind of
+/// signal in-process (agent-invoked, not this CLI), the two can race on
+/// `companion.json` — a narrow, documented gap: both paths still always
+/// `load()` fresh and `save()` immediately, so the file itself never
+/// corrupts, but one write can clobber the other's cue timers.
+pub fn companion_event(kind: &str, source: &str) -> Result<String> {
+    validate_companion_source(source)?;
 
     let mut state = CompanionState::load(false);
     match kind {
@@ -958,23 +978,284 @@ fn companion_activity(state: &mut CompanionState, source: &str) -> Result<String
     ))
 }
 
-pub fn companion_care(action: &str) -> Result<String> {
+fn care_action_message(action: CareAction) -> &'static str {
+    match action {
+        CareAction::Water => "companion hydrated",
+        CareAction::Feed => "companion fed",
+        CareAction::Play => "companion break logged",
+        CareAction::Sleep => "companion resting",
+    }
+}
+
+/// Standalone CLI (`bastion companion care <action>`, always its own
+/// short-lived process — see this module's doc comment). Fase A5 S5: while
+/// a daemon is running, IT is the single writer of `companion.json` (its
+/// `CompanionHandle` backs both `POST /companion/care` and the hook-bridge
+/// capability) — so this forwards the action over HTTP with the same
+/// local-only bootstrap token the interactive chat client uses to
+/// auto-connect (`local_bootstrap_token`), instead of writing the file out
+/// from under it. Falls back to the direct file read/write (today's
+/// behavior, pre-A5) when the daemon isn't reachable, isn't local, or the
+/// HTTP call itself fails for any reason — a stderr warning, never a hard
+/// error; the care action still applies either way.
+pub async fn companion_care(action: &str) -> Result<String> {
+    let care = companion::parse_care_action(action)?;
+    let message = care_action_message(care);
+
+    if let Some((client, base_url, token)) = local_daemon_client().await {
+        match post_companion_care(&client, &base_url, token.as_deref(), action).await {
+            Ok(()) => return Ok(message.to_string()),
+            Err(error) => eprintln!(
+                "companion: local daemon reachable but /companion/care failed ({error}); \
+                 falling back to a direct file write"
+            ),
+        }
+    }
+
     let mut state = CompanionState::load(false);
-    let (care, message) = match action {
-        "water" => (CareAction::Water, "companion hydrated"),
-        "feed" => (CareAction::Feed, "companion fed"),
-        "play" => (CareAction::Play, "companion break logged"),
-        "sleep" | "rest" => (CareAction::Sleep, "companion resting"),
-        _ => bail!("unknown companion care action '{action}'"),
-    };
     state.care(care);
     state.save()?;
     Ok(message.to_string())
 }
 
+/// Same local-daemon detection the interactive chat client uses to
+/// auto-connect (`ensure_runtime`'s `runtime_ready` probe over `/readyz`,
+/// gated to loopback URLs by `is_local_url`) — reused here so the
+/// standalone CLI and `bastion` (chat) agree on whether a daemon is "the"
+/// writer right now. Never a remote `BASTION_URL`: that's neither assumed
+/// reachable nor trusted with the local bootstrap token.
+async fn local_daemon_client() -> Option<(Client, String, Option<String>)> {
+    let base_url = std::env::var("BASTION_URL").unwrap_or_else(|_| {
+        let port = std::env::var("BASTION_HTTP_PORT").unwrap_or_else(|_| "8080".to_string());
+        format!("http://127.0.0.1:{port}")
+    });
+    if !is_local_url(&base_url) {
+        return None;
+    }
+    let client = Client::new();
+    if !runtime_ready(&client, &base_url).await {
+        return None;
+    }
+    Some((client, base_url, local_bootstrap_token(&base_url)))
+}
+
+async fn post_companion_care(
+    client: &Client,
+    base_url: &str,
+    token: Option<&str>,
+    action: &str,
+) -> Result<()> {
+    let mut request = client
+        .post(format!("{}/companion/care", base_url.trim_end_matches('/')))
+        .timeout(Duration::from_secs(5))
+        .json(&serde_json::json!({ "action": action }));
+    if let Some(token) = token {
+        request = request.header("x-bastion-token", token);
+    }
+    let response = request
+        .send()
+        .await
+        .context("sending the care action to the local daemon")?;
+    if !response.status().is_success() {
+        bail!("daemon responded with {}", response.status());
+    }
+    Ok(())
+}
+
 pub fn companion_status() -> String {
     let state = CompanionState::load(false);
     state.status_panel()
+}
+
+// ── Fase A5 S5: daemon-shared companion state ───────────────────────────
+
+/// `GET /companion`'s response shape — see `CompanionState::snapshot`
+/// (`src/tui/companion.rs`) for the level/XP/need formulas this mirrors.
+/// Fields are private: consumers reach them only through `Serialize`
+/// (`Json(handle.snapshot())` in `src/loadout.rs`), never by name — that's
+/// what lets this type stay `pub` while `CompanionState` itself does not.
+#[derive(Clone, Debug, Serialize)]
+pub struct CompanionSnapshot {
+    game_enabled: bool,
+    level: u64,
+    xp: u64,
+    successful_turns: u64,
+    needs: CompanionNeeds,
+    /// Needs currently due, using the same action names `POST
+    /// /companion/care` accepts (`water`/`feed`/`play`/`sleep`).
+    cues: Vec<&'static str>,
+    frame: CompanionFrame,
+    pack_name: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CompanionNeeds {
+    water: u64,
+    food: u64,
+    play: u64,
+    rest: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CompanionFrame {
+    rows: Vec<String>,
+    width: usize,
+}
+
+/// The daemon's single in-process writer for `companion.json` while it's
+/// running — shared between `POST /companion/care` (`src/loadout.rs`) and
+/// `CompanionEventCapability`'s hook-triggered session events
+/// (`src/companion_capability.rs`), instead of each independently
+/// `CompanionState::load()`/`save()`-ing the file per call.
+///
+/// The interactive chat client (`bastion` with no subcommand) is a
+/// SEPARATE OS process talking to the daemon over HTTP/SSE (see this
+/// module's top doc comment) — it cannot share this handle. It keeps its
+/// own `CompanionState` (loaded once in `run_app`) and reloads it from disk
+/// whenever an SSE frame carries `companion.updated` (`run_app`'s
+/// `AppMsg::SseEvent` arm), which narrows but does not close a residual
+/// race: between that reload and the TUI's own next `/pet` save, the TUI
+/// can still overwrite a concurrent daemon-side write (two processes, no
+/// shared lock). The state is cosmetic-only (XP/care timers), so the worst
+/// case is a clobbered timer reset, never anything load-bearing.
+#[derive(Clone)]
+pub struct CompanionHandle(Arc<Mutex<CompanionState>>);
+
+impl CompanionHandle {
+    pub fn load(default_game: bool) -> Self {
+        Self(Arc::new(Mutex::new(CompanionState::load(default_game))))
+    }
+
+    pub fn snapshot(&self) -> CompanionSnapshot {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .snapshot()
+    }
+
+    /// `POST /companion/care`: applies care, persists, and broadcasts
+    /// `companion.updated` on `events_tx`.
+    pub fn care(
+        &self,
+        action: &str,
+        events_tx: &broadcast::Sender<String>,
+    ) -> Result<CompanionSnapshot> {
+        let (_, snapshot) = self.mutate(events_tx, "care", |state| {
+            let parsed = companion::parse_care_action(action)?;
+            state.care(parsed);
+            Ok(())
+        })?;
+        Ok(snapshot)
+    }
+
+    /// The daemon-side twin of the standalone `companion_event` CLI path
+    /// above — same kind/source contract, mutating through this shared
+    /// handle instead of an independent load/save. Used by
+    /// `CompanionEventCapability`, which runs in-process with the daemon
+    /// (registered on `agent.capability_registry` in `main()`).
+    pub fn record_event(
+        &self,
+        kind: &str,
+        source: &str,
+        events_tx: &broadcast::Sender<String>,
+    ) -> Result<String> {
+        validate_companion_source(source)?;
+        let (message, _snapshot) = self.mutate(events_tx, "event", |state| match kind {
+            "session-start" => {
+                state.start_session(source);
+                Ok(format!("companion event recorded: session-start ({source})"))
+            }
+            "activity" => {
+                let cue = state.record_source_activity(source);
+                Ok(cue.map_or_else(
+                    || format!("companion event recorded: activity ({source})"),
+                    |due| care_cue(due).to_string(),
+                ))
+            }
+            "session-stop" => {
+                state.stop_session(source);
+                Ok(format!("companion event recorded: session-stop ({source})"))
+            }
+            _ => bail!("unknown companion event '{kind}'"),
+        })?;
+        Ok(message)
+    }
+
+    /// Locks, mutates, persists, and broadcasts — every daemon-side
+    /// companion write goes through this one path so `companion.updated`
+    /// can never be forgotten on a new call site. `reason` escalates to
+    /// `"level_up"` whenever the mutation crosses a level threshold,
+    /// whatever the caller's `base_reason`.
+    fn mutate<T>(
+        &self,
+        events_tx: &broadcast::Sender<String>,
+        base_reason: &'static str,
+        mutation: impl FnOnce(&mut CompanionState) -> Result<T>,
+    ) -> Result<(T, CompanionSnapshot)> {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_level = state.level();
+        let value = mutation(&mut state)?;
+        state.save()?;
+        let snapshot = state.snapshot();
+        drop(state);
+        let reason = escalate_reason(previous_level, snapshot.level, base_reason);
+        // Best-effort broadcast: no subscribers is not an error — the
+        // HTTP/capability caller still gets its snapshot either way.
+        let _ = events_tx.send(companion_updated_frame(reason, snapshot.level, snapshot.xp));
+        Ok((value, snapshot))
+    }
+}
+
+/// `"level_up"` whenever a mutation crossed a level threshold, else the
+/// caller's own `base_reason` (`"care"` or `"event"`). Pulled out of
+/// `CompanionHandle::mutate` as a pure function so it's testable without
+/// touching `companion.json` (every other bit of `CompanionHandle` does).
+fn escalate_reason(previous_level: u64, new_level: u64, base_reason: &'static str) -> &'static str {
+    if new_level > previous_level {
+        "level_up"
+    } else {
+        base_reason
+    }
+}
+
+/// `companion.updated` SSE frame. `reason` is `"care"` (`POST
+/// /companion/care`), `"event"` (a hook session/activity signal), or
+/// `"level_up"` (either mutation crossed a level threshold). `"xp"` is
+/// reserved for a future daemon-side XP-granting path — today XP only
+/// accrues in the interactive TUI client's own turn loop (`award_success`/
+/// `award_input` in `run_app`, a separate process — see `CompanionHandle`'s
+/// doc comment), which never reaches this broadcaster. Carries both
+/// `event` and `type` — same duplication `config.applied` uses
+/// (`src/config_store.rs`) for consumers that key off either field.
+fn companion_updated_frame(reason: &str, level: u64, xp: u64) -> String {
+    json!({
+        "event": "companion.updated",
+        "type": "companion.updated",
+        "reason": reason,
+        "level": level,
+        "xp": xp,
+    })
+    .to_string()
+}
+
+/// Same `event`-or-`type` field lookup `visual::mode_for_event` uses —
+/// separate from it because a `companion.updated` frame doesn't map to a
+/// `VisualMode`, it triggers a disk reload instead (see the
+/// `AppMsg::SseEvent` arm in `run_app`).
+fn is_companion_updated_event(event: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(event)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("event")
+                .or_else(|| value.get("type"))
+                .and_then(serde_json::Value::as_str)
+                .map(|kind| kind == "companion.updated")
+        })
+        .unwrap_or(false)
 }
 
 struct App {
@@ -1516,6 +1797,16 @@ async fn run_app(
                 if let Some(mode) = visual::mode_for_event(&e) {
                     app.visual_mode = mode;
                 }
+                // Fase A5 S5: the daemon (a SEPARATE process — see
+                // `CompanionHandle`'s doc comment) may have just mutated
+                // `companion.json` itself (`POST /companion/care` from the
+                // web Buddy view, or a hook event through
+                // `CompanionEventCapability`). Reload from disk so this
+                // session's view converges — narrows but does not close the
+                // residual two-writer race documented on `CompanionHandle`.
+                if is_companion_updated_event(&e) {
+                    app.companion = CompanionState::load(app.appearance.game_default);
+                }
                 app.lines.push(Line::Event(e));
             }
             AppMsg::Key(key) if key.kind == KeyEventKind::Press => {
@@ -1897,6 +2188,63 @@ mod tests {
         assert!(!is_local_url("not-a-url"));
     }
 
+    #[test]
+    fn care_action_messages_match_the_action() {
+        assert_eq!(
+            care_action_message(CareAction::Water),
+            "companion hydrated"
+        );
+        assert_eq!(care_action_message(CareAction::Feed), "companion fed");
+        assert_eq!(
+            care_action_message(CareAction::Play),
+            "companion break logged"
+        );
+        assert_eq!(
+            care_action_message(CareAction::Sleep),
+            "companion resting"
+        );
+    }
+
+    #[test]
+    fn escalate_reason_prefers_level_up_over_the_base_reason() {
+        assert_eq!(escalate_reason(1, 1, "care"), "care");
+        assert_eq!(escalate_reason(1, 2, "care"), "level_up");
+        assert_eq!(escalate_reason(3, 3, "event"), "event");
+        assert_eq!(escalate_reason(3, 4, "event"), "level_up");
+    }
+
+    #[test]
+    fn companion_updated_frame_carries_event_and_type() {
+        let frame = companion_updated_frame("care", 2, 15);
+        let value: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(value["event"], "companion.updated");
+        assert_eq!(value["type"], "companion.updated");
+        assert_eq!(value["reason"], "care");
+        assert_eq!(value["level"], 2);
+        assert_eq!(value["xp"], 15);
+    }
+
+    #[test]
+    fn recognizes_the_companion_updated_sse_frame_by_either_field() {
+        assert!(is_companion_updated_event(
+            r#"{"event":"companion.updated","type":"companion.updated","reason":"care","level":1,"xp":3}"#
+        ));
+        assert!(is_companion_updated_event(
+            r#"{"type":"companion.updated","level":1,"xp":3}"#
+        ));
+        assert!(!is_companion_updated_event(r#"{"event":"turn.completed"}"#));
+        assert!(!is_companion_updated_event("mesh_sync"));
+    }
+
+    #[test]
+    fn validates_companion_event_source() {
+        assert!(validate_companion_source("claude").is_ok());
+        assert!(validate_companion_source("codex-cli_1.0").is_ok());
+        assert!(validate_companion_source("").is_err());
+        assert!(validate_companion_source("has space").is_err());
+        assert!(validate_companion_source(&"x".repeat(33)).is_err());
+    }
+
     #[tokio::test]
     async fn readiness_probe_accepts_ready_runtime() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1909,6 +2257,40 @@ mod tests {
 
         assert!(runtime_ready(&Client::new(), &format!("http://{address}"),).await);
         server.abort();
+    }
+
+    // `std::env` is process-global — this test serializes on its own env
+    // vars via ENV_LOCK and restores the prior value, same pattern
+    // `loadout.rs`'s provider tests use for GEMINI_API_KEY.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[tokio::test]
+    async fn local_daemon_client_is_none_when_nothing_is_listening() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let saved = std::env::var("BASTION_URL").ok();
+        // Port 1 is reserved (never a listening Bastion daemon in any test
+        // environment) — the readyz probe fails fast with connection
+        // refused, well inside its own 2s timeout.
+        std::env::set_var("BASTION_URL", "http://127.0.0.1:1");
+        let result = local_daemon_client().await;
+        match saved {
+            Some(v) => std::env::set_var("BASTION_URL", v),
+            None => std::env::remove_var("BASTION_URL"),
+        }
+        assert!(result.is_none(), "no daemon is listening on port 1");
+    }
+
+    #[tokio::test]
+    async fn local_daemon_client_is_none_for_a_remote_url() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let saved = std::env::var("BASTION_URL").ok();
+        std::env::set_var("BASTION_URL", "https://bastion.example.com");
+        let result = local_daemon_client().await;
+        match saved {
+            Some(v) => std::env::set_var("BASTION_URL", v),
+            None => std::env::remove_var("BASTION_URL"),
+        }
+        assert!(result.is_none(), "remote URLs are never treated as the local daemon");
     }
 
     #[test]

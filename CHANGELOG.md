@@ -10,6 +10,52 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **Companion/buddy on the web, shared daemon state (A5 S5)**: the TUI's
+  tamagotchi-style companion gets a web view with the daemon as the single
+  writer of `companion.json` while it's running.
+  - `src/tui/companion.rs`: `CompanionState::snapshot()` — the one place
+    level/XP/need-percent/due-cue formulas are computed, reused by both the
+    TUI's own `/pet stats` panel and the new HTTP route; `parse_care_action`
+    pulled out of the old inline matches (shared by the CLI and the HTTP
+    handler, `"rest"` still an alias for `sleep`).
+  - `src/tui.rs`: `CompanionHandle` — an `Arc<Mutex<CompanionState>>`
+    wrapper that is the daemon's single in-process writer, shared between
+    `POST /companion/care` (`src/loadout.rs`) and
+    `CompanionEventCapability`'s hook-triggered session events
+    (`src/companion_capability.rs`) instead of each independently
+    load()/save()-ing the file. Every mutation broadcasts
+    `companion.updated` (`event/type`, `reason` — `care`/`event`/
+    `level_up`, `level`, `xp`) on `/events`.
+  - `GET /companion` (owner-token): `{game_enabled, level, xp,
+    successful_turns, needs: {water, food, play, rest}, cues, frame:
+    {rows, width}, pack_name}` — `frame` is a static, markup-stripped
+    representative portrait (the pack's idle `guard` frame, or a small
+    built-in ASCII face when no custom pet pack is loaded); the TUI keeps
+    the full tick-animated experience, this is intentionally simpler.
+  - `POST /companion/care` (owner-token) `{action}` (`water`/`feed`/
+    `play`/`sleep`, `rest` accepted as an alias) — applies care through
+    `CompanionHandle`, persists, broadcasts, and answers with the updated
+    snapshot.
+  - Standalone CLI (`bastion companion care`, always its own short-lived
+    process): now async — detects a reachable local daemon with the same
+    `runtime_ready`/`is_local_url`/`local_bootstrap_token` mechanism the
+    interactive chat client uses to auto-connect, and forwards the action
+    over HTTP with the local bootstrap token when one is running instead of
+    writing the file out from under it; falls back to the direct file
+    read/write (pre-A5 behavior) on any HTTP failure, with a stderr
+    warning. `bastion companion event` has no HTTP counterpart (no
+    `POST /companion/event` route) — documented residual race with
+    `CompanionEventCapability` when both are used at once.
+  - The interactive TUI (a separate OS process from the daemon — it talks
+    HTTP/SSE, never shares memory) reloads its own `CompanionState` from
+    disk when an SSE frame carries `companion.updated`, narrowing but not
+    closing a residual two-writer race on `companion.json` — documented in
+    code, cosmetic-only state (XP/care timers).
+  - Web: a "Buddy" sidebar view — monospace pet frame, four need bars,
+    Water/Feed/Play/Sleep care buttons (optimistic refresh from the
+    daemon's own response), level/XP, a friendly explanation when
+    `game_enabled` is `false`, live refresh on `companion.updated`.
+
 - **LLM routing by call-site class (A4.5 S4)**: route model choice by
   deterministic call-site class — `chat_turn`, `pursue_task`, `cabinet`,
   `reflection`, `compaction` — never semantic classification.

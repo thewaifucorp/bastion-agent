@@ -25,6 +25,8 @@ use bastion_types::SecretResolver;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
+use crate::tui::CompanionHandle;
+
 use crate::channel::webhook::resolve_owner_or_401;
 use crate::channel::OwnerMap;
 use crate::config::{AuthConfig, AuthProfileEntry};
@@ -94,6 +96,11 @@ struct LoadoutState {
     /// `GET /routing` overlays with the config store's `routing.rules`.
     routing_toml: Arc<std::collections::HashMap<String, String>>,
     events_tx: broadcast::Sender<String>,
+    /// A5 S5: the daemon's shared companion handle — the SAME instance
+    /// `CompanionEventCapability` mutates through, so the daemon stays a
+    /// single writer of `companion.json` (see `tui::CompanionHandle`'s doc
+    /// comment for the residual TUI-process race this does NOT close).
+    companion: CompanionHandle,
 }
 
 fn auth(
@@ -376,6 +383,48 @@ async fn routing_handler(
     Json(serde_json::json!({ "items": table.report() })).into_response()
 }
 
+/// A5 S5 `GET /companion`: the companion's current snapshot — level, XP,
+/// need percents, due cues, and a static representative frame. Read-only;
+/// always fresh, since every daemon-side mutation (`POST /companion/care`,
+/// `CompanionEventCapability`) saves to disk synchronously through the same
+/// `CompanionHandle`.
+async fn companion_handler(
+    State(state): State<LoadoutState>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    if let Err(resp) = auth(&state, &headers, "companion_unauthorized") {
+        return *resp;
+    }
+    Json(state.companion.snapshot()).into_response()
+}
+
+#[derive(Deserialize)]
+struct CareRequest {
+    action: String,
+}
+
+/// A5 S5 `POST /companion/care`: applies a care action through the shared
+/// `CompanionHandle` (single writer while the daemon runs), persists, and
+/// broadcasts `companion.updated` on `/events` — then answers with the
+/// updated snapshot so the web Buddy view can render it without a second
+/// round trip.
+async fn companion_care_handler(
+    State(state): State<LoadoutState>,
+    headers: HeaderMap,
+    Json(req): Json<CareRequest>,
+) -> axum::response::Response {
+    if let Err(resp) = auth(&state, &headers, "companion_care_unauthorized") {
+        return *resp;
+    }
+    match state.companion.care(&req.action, &state.events_tx) {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(e) => {
+            tracing::warn!(event = "companion_care_failed", error = %e);
+            (StatusCode::BAD_REQUEST, e.to_string()).into_response()
+        }
+    }
+}
+
 /// One field bag for every kind — serde tags on `kind` would 422 with an
 /// opaque error; dispatching by hand keeps the A3 handler's explicit 400s.
 #[derive(Deserialize)]
@@ -564,6 +613,10 @@ pub fn router(
     pending_secrets: PendingSecretValues,
     routing_toml: std::collections::HashMap<String, String>,
     events_tx: broadcast::Sender<String>,
+    // A5 S5: shared with `CompanionEventCapability` — same instance, so
+    // `POST /companion/care` and hook-triggered session events serialize
+    // through one in-process writer.
+    companion: CompanionHandle,
 ) -> Router {
     Router::new()
         .route("/loadout", get(loadout_handler))
@@ -577,6 +630,8 @@ pub fn router(
         .route("/providers", get(providers_handler))
         .route("/models", get(models_handler))
         .route("/routing", get(routing_handler))
+        .route("/companion", get(companion_handler))
+        .route("/companion/care", axum::routing::post(companion_care_handler))
         .with_state(LoadoutState {
             snapshot: Arc::new(snapshot),
             owner_map: Arc::new(owner_map),
@@ -588,6 +643,7 @@ pub fn router(
             pending_secrets,
             routing_toml: Arc::new(routing_toml),
             events_tx,
+            companion,
         })
 }
 
@@ -669,6 +725,12 @@ mod tests {
                     "llama3.2".to_string(),
                 )]),
                 events_tx,
+                // A5 S5: `CompanionHandle::load` only ever READS
+                // `companion.json` at construction (no `save()`), so this is
+                // side-effect-free against a developer's real
+                // `~/.config/bastion` — see the module doc for why a
+                // POST /companion/care round trip isn't exercised here.
+                CompanionHandle::load(false),
             ),
             pending,
         )
@@ -1011,5 +1073,61 @@ mod tests {
         let id = p["id"].as_str().unwrap();
         let penned = pending.take(id).await.expect("value must be penned");
         assert_eq!(penned.expose_secret(), "sk-pen-only");
+    }
+
+    // ---- A5 S5: /companion + /companion/care -----------------------------
+
+    #[tokio::test]
+    async fn companion_requires_owner_token_and_reports_the_snapshot_shape() {
+        let owner_map = OwnerMap::from_pairs(&[("tok-alice", "alice")]);
+        let (_f, app, _pending) = sample_router(owner_map).await;
+
+        let (status, _) = get_json(app.clone(), "/companion", None).await;
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+
+        let (status, v) = get_json(app, "/companion", Some("tok-alice")).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        // Shape-only: `CompanionHandle` always reads the REAL
+        // `~/.config/bastion/companion.json` (see `sample_router`'s
+        // comment), so the actual numbers vary by machine — this pins the
+        // contract, not the values.
+        assert!(v["game_enabled"].is_boolean());
+        assert!(v["level"].as_u64().unwrap() >= 1);
+        assert!(v["xp"].is_u64());
+        assert!(v["successful_turns"].is_u64());
+        for need in ["water", "food", "play", "rest"] {
+            assert!(v["needs"][need].is_u64(), "needs.{need}");
+        }
+        assert!(v["cues"].is_array());
+        assert!(v["frame"]["rows"].is_array());
+        assert!(v["frame"]["width"].is_u64());
+        assert!(v["pack_name"].is_string());
+    }
+
+    #[tokio::test]
+    async fn companion_care_requires_owner_token_and_rejects_an_unknown_action() {
+        let owner_map = OwnerMap::from_pairs(&[("tok-alice", "alice")]);
+        let (_f, app, _pending) = sample_router(owner_map).await;
+
+        let (status, _) = post_json(
+            app.clone(),
+            "/companion/care",
+            "not-a-token",
+            serde_json::json!({ "action": "water" }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+
+        // An unknown action is rejected INSIDE `CompanionHandle::mutate`
+        // before it ever calls `save()` (see `tui.rs`) — this never writes
+        // to companion.json, so it's safe to run against the real path.
+        let (status, _) = post_json(
+            app,
+            "/companion/care",
+            "tok-alice",
+            serde_json::json!({ "action": "nap" }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
     }
 }
