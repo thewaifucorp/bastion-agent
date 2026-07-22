@@ -24,6 +24,9 @@ for how that differs from the library crates it depends on).
   through a registry dedicated to external MCP callers, and demonstrated
   end-to-end by a standalone `paperclip-adapter/` proof.
 - A TypeScript SDK (`sdk/typescript/`) for the Control Plane API.
+- A Python SDK (`sdk/python/bastion_control_plane`) mirroring the TypeScript
+  SDK field-for-field, zero runtime dependencies (stdlib only), now covered
+  by CI (`pytest sdk/python/tests/`, 24 tests).
 - Threat model doc: [`docs/en/control-plane-security.md`](docs/en/control-plane-security.md).
 - **Web app (`GET /app`)**: a bundled Vite/React app — vigília (live persona
   lanterns + event ledger), tarefas (durable tasks with attempt verdicts and
@@ -44,6 +47,21 @@ for how that differs from the library crates it depends on).
   `attempt.completed` (every attempt verification) and `task.escalated`,
   emitted from the adaptive execution loop into the same signed delivery
   queue.
+
+### Fixed
+
+- MCP callers invoking the 5 Control Plane tools were gated only by the
+  coarse `read_only` boolean — a non-read-only MCP token could invoke all 5
+  uniformly. `TokenPermissions` now carries a `control_plane_scopes` allowlist
+  checked per-tool (`tasks:read`/`tasks:create`/`tasks:control`) before
+  dispatch, matching the scope model the HTTP `/v1/*` routes already
+  enforce; the scope check is gated on the same "does this name actually
+  resolve to the Control Plane registry" decision used for dispatch, so it
+  can't be fooled by a future shared-registry capability sharing a CP tool's
+  name.
+- `BastionApiError.__init__` (Python SDK) no longer raises `KeyError` on a
+  malformed/non-conforming server error body — missing envelope fields now
+  default to an empty string instead of masking the real HTTP error.
 
 ## [0.2.1] — 2026-07-20
 
