@@ -289,3 +289,6 @@ GEMINI.md
 .kiro/steering/aag.md
 opencode.json
 # aag:ignore:end
+
+# Vite dev-server dependency pre-bundle cache (regenerated on npm run dev)
+web/.vite/

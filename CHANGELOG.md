@@ -22,7 +22,7 @@ for how that differs from the library crates it depends on).
 - The same task-store logic is now also reachable as 5 MCP tools
   (`create_task`/`get_task`/`list_tasks`/`steer_task`/`cancel_task`), exposed
   through a registry dedicated to external MCP callers, and demonstrated
-  end-to-end by a standalone `paperclip-adapter/` proof.
+  end-to-end by a standalone `integrations/paperclip-adapter/` proof.
 - A TypeScript SDK (`sdk/typescript/`) for the Control Plane API.
 - A Python SDK (`sdk/python/bastion_control_plane`) mirroring the TypeScript
   SDK field-for-field, zero runtime dependencies (stdlib only), now covered

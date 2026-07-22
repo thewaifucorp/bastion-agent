@@ -14,7 +14,7 @@ delivery (`src/control_plane/webhook_delivery.rs`). The same task-store logic
 those routes call is now ALSO reachable as 5 MCP tools
 (`create_task`/`get_task`/`list_tasks`/`steer_task`/`cancel_task`, see "New in
 Phase 5" below) and demonstrated end-to-end by a standalone proof adapter
-(`paperclip-adapter/`). See
+(`integrations/paperclip-adapter/`). See
 [`contracts/control-plane-v1.openapi.yaml`](contracts/control-plane-v1.openapi.yaml)
 and "Known gaps" below for what's still genuinely absent (an event stream
 covering all 5 spec event types, credential/subscription self-service, rate
@@ -298,18 +298,18 @@ the alternative; consistency with the rest of the product won.
   prefixes each message with the identical slug HTTP's `ErrorEnvelope.code`
   uses (`not_found:`, `stale_revision:`, `task_terminal:`, ...) so a caller
   parsing either surface's errors uses the same vocabulary.
-- **`paperclip-adapter/` is a standalone crate, not a Rust dependency on
+- **`integrations/paperclip-adapter/` is a standalone crate, not a Rust dependency on
   `bastion`.** Paperclip's actual codebase isn't available to this repo, so
   this is a reference implementation proving the public `/v1/*` HTTP
   contract alone is sufficient: `heartbeat`/`poll`/`cancel`, each built only
   against `docs/en/contracts/control-plane-v1.openapi.yaml`'s documented
-  shapes (`paperclip-adapter/src/types.rs` hand-transcribes them
+  shapes (`integrations/paperclip-adapter/src/types.rs` hand-transcribes them
   independently — it does not import `control_plane::dto`). Terminal
   outcomes are mapped from `status`/`stop_reason.kind`'s typed
   discriminants, never from parsing `reason`/`dimension` string content.
   Session state the caller must persist is exactly `{task_id, revision}` —
   the adapter has no database of its own. Tested against a mocked server
-  (`wiremock`, `paperclip-adapter/tests/adapter.rs`) for request shape and
+  (`wiremock`, `integrations/paperclip-adapter/tests/adapter.rs`) for request shape and
   typed-outcome mapping; a real end-to-end run against a live `bastion-core`
   container (create → poll → cancel against a genuine SQLite-backed task)
   was performed manually for Phase 5 sign-off.

@@ -24,7 +24,7 @@ info:
     `cancel_task`, `src/control_plane/mcp_tools.rs`) via the same
     `core_ops.rs` business logic — see the security doc's "New in Phase 5"
     section. `sdk/typescript/` is the one client library shipped (no Python
-    SDK); `paperclip-adapter/` is a standalone proof adapter demonstrating
+    SDK); `integrations/paperclip-adapter/` is a standalone proof adapter demonstrating
     an external orchestrator driving this exact HTTP contract.
   contact:
     name: Bastion (thewaifucorp/bastion-agent)
