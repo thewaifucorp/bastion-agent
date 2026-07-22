@@ -6,6 +6,7 @@
 //! Secrets (API keys, tokens) NEVER appear in bastion.toml — they come from .env only.
 
 use crate::channel::OwnerMap;
+use crate::control_plane::scope::Scope;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -484,6 +485,16 @@ pub struct McpServerTokenConfig {
     /// operator explicitly sets this to `true`.
     #[serde(default)]
     pub cloud_ok: bool,
+    /// Control Plane scopes (`control_plane::scope::Scope`) this token is
+    /// granted for the 5 dedicated Control Plane MCP tools — e.g.
+    /// `control_plane_scopes = ["TasksRead"]`. `None` (the default, omitted
+    /// from bastion.toml) preserves this token's pre-existing behavior
+    /// exactly: every scope when `read_only == false`, none when `true` —
+    /// see `main.rs`'s `build_token_perms`. Set this explicitly to narrow a
+    /// token, e.g. to a Paperclip-style integration that should only ever
+    /// read tasks, never create/control them.
+    #[serde(default)]
+    pub control_plane_scopes: Option<Vec<Scope>>,
 }
 
 /// Config section for the MCP server (not the client — D-08).

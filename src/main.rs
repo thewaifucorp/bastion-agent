@@ -2401,6 +2401,25 @@ async fn daemon_loop(
     Ok(())
 }
 
+/// The Control Plane scopes a configured MCP token gets when
+/// `control_plane_scopes` is left unset in bastion.toml — preserves every
+/// existing deployment's behavior byte-for-byte from before this field
+/// existed: a non-read-only token could reach all 5 Control Plane tools, a
+/// read_only token could reach none (it can't invoke ANY tool at all, see
+/// `call_tool`'s own `read_only` check).
+fn default_control_plane_scopes(read_only: bool) -> bastion::control_plane::scope::ScopeSet {
+    if read_only {
+        bastion::control_plane::scope::ScopeSet::default()
+    } else {
+        bastion::control_plane::scope::ScopeSet::new([
+            bastion::control_plane::scope::Scope::TasksRead,
+            bastion::control_plane::scope::Scope::TasksCreate,
+            bastion::control_plane::scope::Scope::TasksControl,
+            bastion::control_plane::scope::Scope::WebhooksManage,
+        ])
+    }
+}
+
 /// Build token permissions map from config (shared between daemon and mcp-stdio paths).
 #[cfg(feature = "mcp-server")]
 fn build_token_perms(
@@ -2410,6 +2429,12 @@ fn build_token_perms(
         .tokens
         .iter()
         .map(|(token, t)| {
+            let control_plane_scopes = match &t.control_plane_scopes {
+                Some(scopes) => {
+                    bastion::control_plane::scope::ScopeSet::new(scopes.iter().copied())
+                }
+                None => default_control_plane_scopes(t.read_only),
+            };
             (
                 token.clone(),
                 bastion::mcp::server::TokenPermissions {
@@ -2420,6 +2445,7 @@ fn build_token_perms(
                     } else {
                         bastion_memory::PrivacyTier::LocalOnly
                     },
+                    control_plane_scopes,
                 },
             )
         })
@@ -2429,6 +2455,33 @@ fn build_token_perms(
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+
+    #[test]
+    fn default_control_plane_scopes_matches_pre_existing_read_only_semantics() {
+        // Backward compatibility pin: an operator's already-deployed
+        // bastion.toml has no `control_plane_scopes` key at all, and must
+        // keep behaving exactly as it did before this field existed.
+        use bastion::control_plane::scope::Scope;
+
+        let read_write = default_control_plane_scopes(false);
+        for scope in [
+            Scope::TasksRead,
+            Scope::TasksCreate,
+            Scope::TasksControl,
+            Scope::WebhooksManage,
+        ] {
+            assert!(
+                read_write.has(scope),
+                "non-read-only token must keep full access to {scope:?}"
+            );
+        }
+
+        let read_only = default_control_plane_scopes(true);
+        assert!(
+            !read_only.has(Scope::TasksRead),
+            "read_only tokens can't invoke any tool at all (see call_tool's own check) — empty is correct"
+        );
+    }
 
     #[test]
     fn bare_bastion_selects_default_tui_flow() {

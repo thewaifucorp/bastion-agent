@@ -254,15 +254,25 @@ the alternative; consistency with the rest of the product won.
   `list_tools`' listing (re-sorted after the merge to preserve the existing
   byte-stable-ordering guarantee, COST-01/D-14b).
 - **MCP auth reuses `mcp::server::TokenPermissions`, not a second Control
-  Plane credential.** An MCP caller is authenticated by
+  Plane credential — but it DOES enforce the same 4-scope model the HTTP
+  `/v1/*` routes use.** An MCP caller is authenticated by
   `authenticate_token`'s existing fail-closed check before
   `CapabilityRegistry::invoke` is ever reached; `InvokeCtx.owner` (from the
   token's configured `owner_id`) is passed straight to `core_ops` as the
-  owner string. There is no per-tool scope gate mirroring
-  `tasks:read`/`tasks:create`/`tasks:control`/`webhooks:manage` — an MCP
-  token that can invoke tools at all can do everything `core_ops` exposes
-  for its owner, matching how every other MCP tool has no finer-grained
-  scoping today, only the blanket `read_only` flag.
+  owner string. `TokenPermissions` now also carries a
+  `control_plane_scopes: ScopeSet` field — `call_tool` maps each of the 5
+  tool names to the `Scope` it requires (`required_control_plane_scope`) and
+  calls `require_scope` BEFORE dispatching to `control_plane_registry`, the
+  exact same `TasksRead`/`TasksCreate`/`TasksControl`/`WebhooksManage`
+  vocabulary `require_scope_or_403` enforces on the HTTP side
+  (`control_plane::scope`). An under-scoped token is rejected with a soft
+  `CallToolResult::error` (403-equivalent — the token DID authenticate, it
+  just isn't authorized for that tool) before `core_ops` is ever touched.
+  Backward compatible: a token with no `control_plane_scopes` configured in
+  `bastion.toml` keeps its pre-existing behavior exactly (every scope when
+  not `read_only`, none when `read_only`) — narrowing a token now requires
+  setting `control_plane_scopes` explicitly (`main.rs`'s
+  `build_token_perms`/`default_control_plane_scopes`).
 - **Read-only MCP tokens still can't invoke ANY tool, including the new
   read-only-safe ones.** `call_tool`'s `perms.read_only` check
   (`mcp/server.rs`) is a pre-existing, blanket "read-only token cannot
@@ -314,9 +324,18 @@ the alternative; consistency with the rest of the product won.
 - `project` is stored but not enforced anywhere, including by every route
   added so far (`list_tasks`/`create_task` scope by owner only).
 - No rate limiting on any route or MCP tool.
-- No Python SDK (spec: "Python SDK second") — the TS SDK (`sdk/typescript/`)
-  is the only client library this project shipped.
-- MCP tools have no per-tool scope gate (`tasks:read` vs `tasks:control`
-  etc.) the way HTTP credentials do — see "New in Phase 5" above. An MCP
-  token that can call tools at all has the full `core_ops` surface for its
-  owner.
+
+## Closed since Phase 5
+- **Python SDK** (was: "spec asked for Python second, only TS shipped") —
+  `sdk/python/bastion_control_plane` now mirrors `sdk/typescript/`
+  field-for-field: same method surface, same wire contract, zero runtime
+  dependencies (stdlib `urllib.request`/`hmac`/`hashlib`/`uuid`). 23 pytest
+  tests, including a real local `http.server` mock (no mocked transport),
+  mirroring the TS SDK's own documented test approach.
+- **MCP tools now have a per-tool scope gate** — `TokenPermissions` gained
+  `control_plane_scopes: ScopeSet`; `call_tool` requires the matching
+  `TasksRead`/`TasksCreate`/`TasksControl` scope (`require_scope`) before
+  dispatching to `control_plane_registry`, the same 4-scope vocabulary the
+  HTTP routes already enforced. See "New in Phase 5" above for the full
+  mechanism and its backward-compatibility guarantee (an unconfigured
+  token's behavior is unchanged).

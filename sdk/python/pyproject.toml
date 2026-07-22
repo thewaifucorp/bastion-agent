@@ -1,0 +1,25 @@
+[project]
+name = "bastion-control-plane"
+version = "0.1.0"
+description = "Python client for Bastion's External Control Plane API (/v1/*). Mirrors sdk/typescript/ field-for-field against the same frozen wire contract."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+# Zero runtime dependencies, deliberately -- built on urllib.request/hmac/
+# hashlib/uuid (all stdlib), the same "no Node-only imports, built on the
+# global fetch" minimalism the TypeScript SDK (sdk/typescript/) follows,
+# ported to what Python's own stdlib already provides.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
