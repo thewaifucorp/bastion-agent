@@ -313,8 +313,7 @@ impl ServerHandler for BastionMcpServer {
             // `required_control_plane_scope`'s static table even though
             // `target` resolved to the shared registry for it.
             if dispatches_to_control_plane {
-                if let Err(result) = check_control_plane_scope(&name, &perms.control_plane_scopes)
-                {
+                if let Err(result) = check_control_plane_scope(&name, &perms.control_plane_scopes) {
                     return Ok(result);
                 }
             }
