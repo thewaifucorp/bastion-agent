@@ -165,6 +165,7 @@ impl ExtensionUiHost {
         let ctx = InvokeCtx {
             owner: self.owner.clone(),
             privacy_tier: self.privacy_tier,
+            allowed_tools: None,
         };
         self.registry
             .invoke(capability, args, &ctx)

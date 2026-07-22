@@ -46,6 +46,7 @@ pub async fn handle_voice_turn(
     let ctx = InvokeCtx {
         owner: owner.to_string(),
         privacy_tier: Some(PrivacyTier::LocalOnly),
+        allowed_tools: None,
     };
 
     // Plan 11-07 (SEC-04): `.data` unwraps the raw capability output from the

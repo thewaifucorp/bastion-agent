@@ -565,6 +565,7 @@ mod tests {
         InvokeCtx {
             owner: "alice".to_string(),
             privacy_tier: None,
+            allowed_tools: None,
         }
     }
 
