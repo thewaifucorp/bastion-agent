@@ -555,6 +555,77 @@ impl CompanionState {
         )
     }
 
+    /// Fase A5 S5: single source of truth for `GET /companion`'s shape —
+    /// the level/XP/need-percent formulas live ONLY here; the HTTP route
+    /// (`src/loadout.rs`, via `tui::CompanionHandle::snapshot`) and this
+    /// module's own `status_panel` both ultimately read the same numbers
+    /// instead of the web layer recomputing them.
+    pub(super) fn snapshot(&self) -> super::CompanionSnapshot {
+        let (pack_name, frame) = self.frame_and_name();
+        super::CompanionSnapshot {
+            game_enabled: self.game_enabled,
+            level: self.level(),
+            xp: self.xp,
+            successful_turns: self.successful_turns,
+            needs: super::CompanionNeeds {
+                water: need_percent(self.active_since_water_secs, WATER_DUE_SECS),
+                food: need_percent(self.active_since_food_secs, FOOD_DUE_SECS),
+                play: need_percent(self.active_since_play_secs, PLAY_DUE_SECS),
+                rest: need_percent(self.active_since_rest_secs, REST_DUE_SECS),
+            },
+            cues: self.due_cues(),
+            frame,
+            pack_name,
+        }
+    }
+
+    /// Needs currently "due now" (same threshold `need_indicator` uses for
+    /// `● now`) — canonical care-action names (`water`/`feed`/`play`/`sleep`),
+    /// so the web view can cross-reference them against `POST
+    /// /companion/care`'s own action strings without a second naming table.
+    fn due_cues(&self) -> Vec<&'static str> {
+        let mut cues = Vec::new();
+        if self.active_since_rest_secs >= REST_DUE_SECS {
+            cues.push("sleep");
+        }
+        if self.active_since_water_secs >= WATER_DUE_SECS {
+            cues.push("water");
+        }
+        if self.active_since_food_secs >= FOOD_DUE_SECS {
+            cues.push("feed");
+        }
+        if self.active_since_play_secs >= PLAY_DUE_SECS {
+            cues.push("play");
+        }
+        cues
+    }
+
+    /// Web's static representative frame: the pack's `guard` (idle) state,
+    /// first animation frame, markup stripped — simpler than threading
+    /// tick-based animation and turn-driven `VisualMode` (both TUI-only
+    /// concepts, see `visual.rs`) through a stateless HTTP GET. Documented
+    /// simplification: the web Buddy view shows one idle portrait, the TUI
+    /// keeps the full animated experience.
+    fn frame_and_name(&self) -> (String, super::CompanionFrame) {
+        if let Some(pack) = self
+            .pet_path
+            .as_deref()
+            .and_then(|path| PetPack::load(path).ok())
+        {
+            let animation = pack.animation(VisualMode::Guard);
+            let rows: Vec<String> = animation
+                .frames
+                .first()
+                .into_iter()
+                .flatten()
+                .map(|line| strip_markup(line).unwrap_or_else(|_| line.clone()))
+                .collect();
+            let width = rows.iter().map(|row| row.width()).max().unwrap_or(0);
+            return (pack.name.clone(), super::CompanionFrame { rows, width });
+        }
+        default_web_frame()
+    }
+
     pub(super) fn status_panel(&self) -> String {
         let (current, target) = self.progress();
         let game = if self.game_enabled {
@@ -585,6 +656,34 @@ impl CompanionState {
             need_percent(self.active_since_rest_secs, REST_DUE_SECS),
         )
     }
+}
+
+/// Shared by the standalone CLI (`bastion companion care`) and the daemon's
+/// `POST /companion/care` (via `tui::CompanionHandle::care`) — one place
+/// that maps the wire string to the enum, including the `"rest"` alias for
+/// `Sleep` (Fase 3.6's clap alias mirrors this exact match).
+pub(super) fn parse_care_action(action: &str) -> Result<CareAction> {
+    match action {
+        "water" => Ok(CareAction::Water),
+        "feed" => Ok(CareAction::Feed),
+        "play" => Ok(CareAction::Play),
+        "sleep" | "rest" => Ok(CareAction::Sleep),
+        _ => bail!("unknown companion care action '{action}'"),
+    }
+}
+
+/// Default portrait when no custom pet pack is loaded (`pet_path` is
+/// `None`) — a small ASCII Keeper face, independent of the TUI's
+/// ratatui-coupled `glyph_face`/`native_sprite` renderers (`visual.rs`),
+/// which build styled `Span`s for a terminal frame, not plain strings for
+/// JSON.
+fn default_web_frame() -> (String, super::CompanionFrame) {
+    let rows: Vec<String> = [" .-\"\"\"-. ", "/  ^   ^ \\", "|    -    |", " '-.....-' "]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let width = rows.iter().map(|row| row.width()).max().unwrap_or(0);
+    ("Keeper".to_string(), super::CompanionFrame { rows, width })
 }
 
 fn state_path() -> PathBuf {
@@ -766,6 +865,41 @@ mod tests {
         assert!(panel.contains("FOOD █░░░░  25%"));
         assert!(panel.contains("REST ░░░░░   0%"));
         assert!(panel.contains("no capabilities unlocked"));
+    }
+
+    #[test]
+    fn parses_care_actions_including_the_rest_alias() {
+        assert_eq!(parse_care_action("water").unwrap(), CareAction::Water);
+        assert_eq!(parse_care_action("feed").unwrap(), CareAction::Feed);
+        assert_eq!(parse_care_action("play").unwrap(), CareAction::Play);
+        assert_eq!(parse_care_action("sleep").unwrap(), CareAction::Sleep);
+        assert_eq!(parse_care_action("rest").unwrap(), CareAction::Sleep);
+        assert!(parse_care_action("nap").is_err());
+    }
+
+    #[test]
+    fn snapshot_reports_needs_cues_and_a_default_frame() {
+        let state = CompanionState {
+            game_enabled: true,
+            xp: 15,
+            successful_turns: 4,
+            active_since_water_secs: WATER_DUE_SECS,
+            active_since_food_secs: FOOD_DUE_SECS * 3 / 4,
+            ..CompanionState::default()
+        };
+        let snapshot = state.snapshot();
+        assert!(snapshot.game_enabled);
+        assert_eq!(snapshot.level, 2);
+        assert_eq!(snapshot.xp, 15);
+        assert_eq!(snapshot.successful_turns, 4);
+        assert_eq!(snapshot.needs.water, 0);
+        assert_eq!(snapshot.needs.food, 25);
+        assert_eq!(snapshot.needs.play, 100);
+        assert_eq!(snapshot.needs.rest, 100);
+        assert_eq!(snapshot.cues, vec!["water"]);
+        assert_eq!(snapshot.pack_name, "Keeper");
+        assert!(!snapshot.frame.rows.is_empty());
+        assert!(snapshot.frame.width > 0 && snapshot.frame.width <= MAX_FRAME_WIDTH);
     }
 
     #[test]

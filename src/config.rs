@@ -85,6 +85,24 @@ pub struct BastionConfig {
     /// `NullAuthResolver` keeps resolving everything `Ok`, unchanged).
     #[serde(default)]
     pub auth: AuthConfig,
+    /// A4.5: optional `[routing]` table — model per call-site class
+    /// (`chat_turn`, `pursue_task`, `cabinet`, `reflection`, `compaction`).
+    /// The declarative base the config store's `routing.rules` override
+    /// overlays; see `crate::routing` for resolution and which classes the
+    /// agent can actually apply today. Absent entirely = `#[serde(default)]`
+    /// empty map — byte-identical behavior for every existing deployment.
+    #[serde(default)]
+    pub routing: RoutingConfig,
+}
+
+/// A4.5: the `[routing]` table, keyed by call-site class name. Kept as a
+/// plain string map at parse time (unknown keys must not fail the whole
+/// config load); `crate::routing::RoutingTable::resolve` validates class
+/// names and drops unknown/blank entries with a warning.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RoutingConfig {
+    #[serde(flatten)]
+    pub rules: HashMap<String, String>,
 }
 
 /// M4-07: one configured `[auth.<profile>]` entry — a REFERENCE to a
@@ -197,6 +215,10 @@ pub struct BackendSelection {
     pub task_runtime: Option<String>,
 }
 
+/// Legacy (pre-A4-U) location of the `/backend` selection file. Runtime
+/// persistence moved to `config_store` (key `backend.selected`); this path
+/// is only used at startup to migrate an existing file once (`main.rs`
+/// renames it `*.imported` after import).
 pub fn backend_selection_path(cfg: &BastionConfig) -> PathBuf {
     Path::new(&cfg.session.db_path)
         .parent()
@@ -205,11 +227,16 @@ pub fn backend_selection_path(cfg: &BastionConfig) -> PathBuf {
         .join("backend-selection.json")
 }
 
+/// Legacy (pre-A4-U) reader — no daemon path reads this anymore (startup
+/// reads `config_store` after migration). Kept only so an operator/tooling
+/// can still inspect a not-yet-migrated file.
 pub fn load_backend_selection(cfg: &BastionConfig) -> Option<BackendSelection> {
     let raw = std::fs::read_to_string(backend_selection_path(cfg)).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
+/// Legacy (pre-A4-U) writer — retired from the `/backend` command path,
+/// which now writes through `config_store::ConfigStore::apply`.
 pub fn save_backend_selection(path: &Path, selection: &BackendSelection) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
@@ -418,6 +445,10 @@ struct ModelSelection {
     model: String,
 }
 
+/// Legacy (pre-A4-U) location of the `/model` selection file. Runtime
+/// persistence moved to `config_store` (key `model.selected`); this path is
+/// only used at startup to migrate an existing file once (`main.rs` renames
+/// it `*.imported` after import).
 pub fn model_selection_path(cfg: &BastionConfig) -> PathBuf {
     Path::new(&cfg.session.db_path)
         .parent()
@@ -426,12 +457,17 @@ pub fn model_selection_path(cfg: &BastionConfig) -> PathBuf {
         .join("model-selection.json")
 }
 
+/// Legacy (pre-A4-U) reader — no daemon path reads this anymore (startup
+/// reads `config_store` after migration). Kept only so an operator/tooling
+/// can still inspect a not-yet-migrated file.
 pub fn load_model_selection(cfg: &BastionConfig) -> Option<String> {
     let raw = std::fs::read_to_string(model_selection_path(cfg)).ok()?;
     let selection: ModelSelection = serde_json::from_str(&raw).ok()?;
     (!selection.model.trim().is_empty()).then_some(selection.model)
 }
 
+/// Legacy (pre-A4-U) writer — retired from the `/model` command path, which
+/// now writes through `config_store::ConfigStore::apply`.
 pub fn save_model_selection(path: &Path, model: &str) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
@@ -701,6 +737,9 @@ mod tests {
             cfg.mcp.servers["memupalace"].url,
             "http://127.0.0.1:8001/mcp"
         );
+        // A4.5: `[routing]` is optional — absent parses to an empty map
+        // (this repo's bastion.toml doesn't declare one).
+        assert!(cfg.routing.rules.is_empty());
     }
 
     // ── SEC-01 age_pubkey validation tests ───────────────────────────────────

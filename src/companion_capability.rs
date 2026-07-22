@@ -6,14 +6,25 @@
 use async_trait::async_trait;
 use bastion_runtime::capability::{Capability, InvokeCtx};
 use serde_json::{json, Value};
+use tokio::sync::broadcast;
+
+use crate::tui::CompanionHandle;
 
 pub struct CompanionEventCapability {
     schema: Value,
+    // Fase A5 S5: the daemon's shared companion handle — same one `POST
+    // /companion/care` (src/loadout.rs) mutates through, so this capability
+    // (invoked in-process, agent-side) no longer independently
+    // load()/save()s companion.json on every call.
+    companion: CompanionHandle,
+    events_tx: broadcast::Sender<String>,
 }
 
 impl CompanionEventCapability {
-    pub fn new() -> Self {
+    pub fn new(companion: CompanionHandle, events_tx: broadcast::Sender<String>) -> Self {
         Self {
+            companion,
+            events_tx,
             schema: json!({
                 "type": "object",
                 "properties": {
@@ -33,12 +44,6 @@ impl CompanionEventCapability {
                 "additionalProperties": false
             }),
         }
-    }
-}
-
-impl Default for CompanionEventCapability {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -66,7 +71,9 @@ impl Capability for CompanionEventCapability {
             .and_then(Value::as_str)
             .filter(|source| !source.trim().is_empty() && source.len() <= 32)
             .ok_or_else(|| anyhow::anyhow!("source must contain 1-32 characters"))?;
-        let message = crate::tui::companion_event(event, source)?;
+        let message = self
+            .companion
+            .record_event(event, source, &self.events_tx)?;
         Ok(json!({ "recorded": true, "message": message }))
     }
 
@@ -90,6 +97,7 @@ mod tests {
     }
 
     fn schema_value() -> Value {
-        CompanionEventCapability::new().schema
+        let (events_tx, _) = broadcast::channel(1);
+        CompanionEventCapability::new(CompanionHandle::load(false), events_tx).schema
     }
 }

@@ -10,6 +10,198 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **TUI config-applied notice + companion event HTTP forwarding (A4-U/A5 S6)**:
+  closes the two gaps S1-S5 left open — the TUI never reacted to a
+  `config.applied` from elsewhere, and `bastion companion event` always
+  wrote `companion.json` directly even with a daemon (and its own
+  `CompanionEventCapability`) already running as the single writer.
+  - TUI (`run_app`'s `AppMsg::SseEvent` arm, `src/tui.rs`): a `config.applied`
+    frame whose `key` is `model.selected`, `backend.selected`,
+    `model.fallbacks`, or `routing.rules` now surfaces a one-line notice in
+    the transcript (`"config updated from <origin>: <key>"`), reusing the
+    same `Line::System` mechanism other inline confirmations use. No new
+    cache to invalidate: `/model`, `/backend`, `/models`, and `/routing` all
+    read the daemon fresh over HTTP on every invocation, so the notice is
+    the whole fix. Pure parsing helper `config_applied_notice` mirrors
+    `is_companion_updated_event`'s shape (`event`-or-`type`, tolerant of
+    malformed/foreign frames).
+  - `POST /companion/event` (owner-token, `src/loadout.rs`) `{event,
+    source}` — same `session-start | activity | session-stop` kinds and
+    `^[A-Za-z0-9._-]+$` (1-32 char) source validation
+    `CompanionEventCapability`'s schema already enforces. Routes through the
+    SAME `CompanionHandle::record_event` the capability uses, persists,
+    broadcasts `companion.updated`, and answers with the updated snapshot
+    plus the recorded-event message (the same due-cue-aware text the
+    direct-file path always returned).
+  - `bastion companion event` (CLI) is now async and mirrors
+    `companion_care`'s S5 forward-then-fallback pattern: detects a reachable
+    local daemon (`runtime_ready`/`is_local_url`/`local_bootstrap_token`)
+    and forwards over HTTP with the local bootstrap token, falling back to
+    the direct file read/write on any failure (stderr warning, never a hard
+    error). This closes the S5 gap note below — the CLI and
+    `CompanionEventCapability` no longer race on `companion.json` while a
+    daemon is running.
+
+- **Companion/buddy on the web, shared daemon state (A5 S5)**: the TUI's
+  tamagotchi-style companion gets a web view with the daemon as the single
+  writer of `companion.json` while it's running.
+  - `src/tui/companion.rs`: `CompanionState::snapshot()` — the one place
+    level/XP/need-percent/due-cue formulas are computed, reused by both the
+    TUI's own `/pet stats` panel and the new HTTP route; `parse_care_action`
+    pulled out of the old inline matches (shared by the CLI and the HTTP
+    handler, `"rest"` still an alias for `sleep`).
+  - `src/tui.rs`: `CompanionHandle` — an `Arc<Mutex<CompanionState>>`
+    wrapper that is the daemon's single in-process writer, shared between
+    `POST /companion/care` (`src/loadout.rs`) and
+    `CompanionEventCapability`'s hook-triggered session events
+    (`src/companion_capability.rs`) instead of each independently
+    load()/save()-ing the file. Every mutation broadcasts
+    `companion.updated` (`event/type`, `reason` — `care`/`event`/
+    `level_up`, `level`, `xp`) on `/events`.
+  - `GET /companion` (owner-token): `{game_enabled, level, xp,
+    successful_turns, needs: {water, food, play, rest}, cues, frame:
+    {rows, width}, pack_name}` — `frame` is a static, markup-stripped
+    representative portrait (the pack's idle `guard` frame, or a small
+    built-in ASCII face when no custom pet pack is loaded); the TUI keeps
+    the full tick-animated experience, this is intentionally simpler.
+  - `POST /companion/care` (owner-token) `{action}` (`water`/`feed`/
+    `play`/`sleep`, `rest` accepted as an alias) — applies care through
+    `CompanionHandle`, persists, broadcasts, and answers with the updated
+    snapshot.
+  - Standalone CLI (`bastion companion care`, always its own short-lived
+    process): now async — detects a reachable local daemon with the same
+    `runtime_ready`/`is_local_url`/`local_bootstrap_token` mechanism the
+    interactive chat client uses to auto-connect, and forwards the action
+    over HTTP with the local bootstrap token when one is running instead of
+    writing the file out from under it; falls back to the direct file
+    read/write (pre-A5 behavior) on any HTTP failure, with a stderr
+    warning. `bastion companion event` had no HTTP counterpart yet at this
+    slice (no `POST /companion/event` route) — a documented residual race
+    with `CompanionEventCapability` when both were used at once, closed in
+    S6 above.
+  - The interactive TUI (a separate OS process from the daemon — it talks
+    HTTP/SSE, never shares memory) reloads its own `CompanionState` from
+    disk when an SSE frame carries `companion.updated`, narrowing but not
+    closing a residual two-writer race on `companion.json` — documented in
+    code, cosmetic-only state (XP/care timers).
+  - Web: a "Buddy" sidebar view — monospace pet frame, four need bars,
+    Water/Feed/Play/Sleep care buttons (optimistic refresh from the
+    daemon's own response), level/XP, a friendly explanation when
+    `game_enabled` is `false`, live refresh on `companion.updated`.
+
+- **LLM routing by call-site class (A4.5 S4)**: route model choice by
+  deterministic call-site class — `chat_turn`, `pursue_task`, `cabinet`,
+  `reflection`, `compaction` — never semantic classification.
+  - `src/routing.rs`: `RouteClass` + `RoutingTable` — effective rule per
+    class is the config-store `routing.rules` override else the new
+    optional `[routing]` bastion.toml table else nothing. Honest v1: a
+    class is `supported` only when the agent can reach a knob on the
+    pinned core rev — `chat_turn` (hot `SharedProvider` swap, the `/model`
+    mechanism) and `reflection` (Reflector model resolved at startup, so
+    next-restart). `pursue_task`/`cabinet`/`compaction` have no
+    agent-reachable model knob yet (external-runtime `SessionSpec` has no
+    model field; Cabinet and compaction run on the loop's own provider
+    inside core) — rules for them are validated, persisted and reported
+    `supported: false`, with the required core seam documented in code.
+  - `GET /routing` (owner-token): all five classes, always — effective
+    model, source (`override`/`toml`/null), `supported`.
+  - New proposal kind `routing_config { rules }` (web proposes, console
+    approves): class names validated against the enum, model ids must be
+    non-empty but are never gated on the catalog (custom ids route by
+    prefix, like `/model`). Approve persists the whole map as the
+    `routing.rules` override (origin `web`) and applies the supported
+    knobs — `chat_turn` hot-swaps live with the same connectivity guard as
+    `model_config`; `reflection` lands on the next restart.
+  - Startup reads the table: a `chat_turn` rule outranks `default_model`
+    when constructing the loop provider; a `reflection` rule outranks
+    `[reflector].model`. Both degrade with a warning (never abort boot)
+    when the rule's provider is disconnected.
+  - Web: a "Routing" matrix inside the Models view — one row per class
+    with a model dropdown from the catalog, a clear button, source/draft
+    chips; unsupported classes rendered disabled with the honest tooltip.
+    Stages `routing_config`; pending proposals show the console-approve
+    instruction; re-fetches on `config.applied`.
+
+### Changed
+
+- `config.applied` SSE frames now carry BOTH `"event"` and `"type"` fields
+  (repo convention is `"event"`; `"type"` kept for existing consumers —
+  the web app already checked both).
+- `GET /providers` items now include `display_name` and `env_key`
+  (null for local/subscription rows) from the daemon's own provider
+  whitelist; the web app's mirrored `PROVIDER_META` table is deleted and
+  the views consume the new fields.
+
+- **Provider manager web UI (A4 S3)**: the web app grows real Providers and
+  Models views on top of the S2 endpoints — both stage-only, mirroring the
+  Personas pattern (web proposes, console approves).
+  - **Providers** (replaces the Connect command wrapper; `#/connect` deep
+    links redirect): one card per `GET /providers` item — kind chip (API
+    key / Subscription / Local), connection state with source label, catalog
+    model count. Disconnected API-key providers get an inline "add key" flow
+    that stages a `secret_set` proposal: password input, value dropped from
+    component state before the POST resolves, never echoed anywhere;
+    the card then shows the pending proposal id with the console-approve
+    instruction and the restart-expiry caveat. Subscription CLIs point at
+    console `/connect`.
+  - **Models** (replaces the `/model` command wrapper): the merged catalog
+    grouped by provider, the effective default badged, the fallback ladder
+    numbered with add/remove/reorder (client-capped at 16). Edits build a
+    draft; staging sends only the changed halves as a `model_config`
+    proposal. Pending model proposals list with the approve instruction.
+  - **Audit strip** (shared component on both views): recent
+    `GET /config/overrides` rows (key, origin, relative time) — the single
+    audited write path made visible.
+  - Both views re-fetch on the `config.change_requested` and
+    `config.applied` SSE frames, so an approval on the console updates the
+    page live. Backends stays a command wrapper by design.
+- **Provider manager core (A4 S2)**: the daemon now knows its own model
+  catalog and provider status.
+  - `src/model_catalog.rs`: a curated static table of current model ids per
+    provider kind (anthropic/openai/gemini/groq/openrouter/ollama),
+    classified by the SAME prefix rules the provider registry routes with,
+    merged with whatever bastion.toml / config-store overrides actually name
+    so custom ids always appear.
+  - `GET /models` (owner-token): the merged catalog grouped by provider
+    kind, plus the EFFECTIVE `default_model`/`fallback_models`
+    (config-store override else bastion.toml).
+  - `GET /providers` (owner-token): per-provider connection status —
+    booleans only, never key material. API-key providers report `source:
+    "env" | "secrets_dir" | null` via the same secret resolvers the daemon
+    boots with; `[auth.*]` subscription CLIs are live-probed by exit code
+    (like `/status`); ollama reports `kind: "local"` with `connected` =
+    "some effective model routes to it" (no network probe from a GET).
+- **New proposal kinds (web proposes, console approves)**:
+  - `model_config { default_model?, fallback_models? }` — apply writes
+    through the unified config store (origin `web`, actor = approving
+    owner); the default model hot-swaps the live provider exactly like
+    `/model`; the fallback ladder is persisted under the new
+    `model.fallbacks` key and loaded at the next startup (the running
+    loop's ladder is construction-time — hot swap is a bastion-core seam).
+  - `secret_set { provider_id, env_key }` — provider API keys by
+    REFERENCE. The value is never written to the proposal table: the web
+    POST pens it in memory keyed by proposal id; console approve writes
+    `BASTION_SECRETS_DIR/<ENV_KEY>` (0600) and drops it. If the daemon
+    restarted in between, approve fails with "re-submit from the web".
+    Env keys are validated against `^[A-Z][A-Z0-9_]{2,63}$` AND the known
+    provider env-key whitelist; the audit trail records only
+    `secret.set:<ENV_KEY> = {"set": true}`.
+
+- **Unified config store (A4-U S1)**: runtime config overrides (`/model`,
+  `/backend`) now funnel through one audited write path — an append-only
+  `config_overrides` SQLite table (key, JSON value, origin
+  `console|web|channel|migration`, actor, timestamp) in the session DB. The
+  current value of a key is its latest row; every prior row is retained as
+  audit history. Each successful apply broadcasts a `config.applied` event
+  on `/events`, so every surface hears about changes live. `bastion.toml`
+  stays the declarative base; store overrides overlay it at startup exactly
+  like the retired `.bastion/model-selection.json` /
+  `backend-selection.json` files did — existing files are imported once
+  (origin `migration`) and renamed `*.imported`.
+- `GET /config/overrides`: the effective override overlay (latest row per
+  key, with origin and applied-at provenance), owner-token authenticated
+  like `/loadout` and `/proposals`.
+
 - **Control Plane**: an embedded, external-facing HTTP API (`/v1/tasks*`) that
   lets an outside orchestrator (e.g. Paperclip) create, list, and drive
   Bastion's durable `Pursue` tasks — pause/resume/cancel/steer — without

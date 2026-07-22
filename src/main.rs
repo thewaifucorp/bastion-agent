@@ -519,9 +519,11 @@ async fn main() -> anyhow::Result<()> {
         let output = match action {
             CompanionAction::Status => bastion::tui::companion_status(),
             CompanionAction::Event { kind, source } => {
-                bastion::tui::companion_event(kind.as_str(), source)?
+                bastion::tui::companion_event(kind.as_str(), source).await?
             }
-            CompanionAction::Care { action } => bastion::tui::companion_care(action.as_str())?,
+            CompanionAction::Care { action } => {
+                bastion::tui::companion_care(action.as_str()).await?
+            }
         };
         println!("{output}");
         return Ok(());
@@ -597,6 +599,27 @@ async fn main() -> anyhow::Result<()> {
     ));
     proposal_store.init_schema().await?;
 
+    // A4-U S1: unified config-override store — the single write path for
+    // runtime config mutations (`model.selected` / `backend.selected`), with
+    // append-only audit. Same fail-closed init tier and same DB file as the
+    // proposal store above. Legacy `.bastion/*-selection.json` files are
+    // imported once (origin `migration`) and renamed `*.imported` so the
+    // retired writers can never race the store again.
+    let config_store = bastion::config_store::ConfigStore::new(db_path.clone());
+    config_store.init_schema().await?;
+    config_store
+        .migrate_legacy_file(
+            bastion::config_store::KEY_MODEL_SELECTED,
+            &bastion::config::model_selection_path(&cfg),
+        )
+        .await?;
+    config_store
+        .migrate_legacy_file(
+            bastion::config_store::KEY_BACKEND_SELECTED,
+            &bastion::config::backend_selection_path(&cfg),
+        )
+        .await?;
+
     // US External Control Plane and SDK, Phase 4: same fail-closed tier —
     // `POST /v1/webhook-subscriptions` and every mutation route's event
     // emission depend on these two tables existing.
@@ -655,12 +678,68 @@ async fn main() -> anyhow::Result<()> {
     let mcp_for_product = mcp_client.clone();
 
     // The reviewable TOML default can be overridden by a local `/model` choice
-    // saved beside the persistent session database. This makes an interactive
+    // persisted in the unified config store (A4-U — previously the
+    // `model-selection.json` file, migrated above). This makes an interactive
     // provider switch survive a daemon restart without rewriting bastion.toml.
-    let default_model = bastion::config::load_model_selection(&cfg)
+    let default_model = config_store
+        .latest(bastion::config_store::KEY_MODEL_SELECTED)
+        .await?
+        .as_deref()
+        .and_then(bastion::config_store::model_from_value_json)
         .unwrap_or_else(|| cfg.agent.default_model.clone());
-    let provider: bastion_providers::SharedProvider =
-        Arc::new(RwLock::new(resolve_provider(&default_model)?));
+    // A4.5: the effective routing table (config-store `routing.rules`
+    // override else bastion.toml `[routing]`). A `chat_turn` rule outranks
+    // `default_model` for the loop's provider — the same knob `/model`
+    // hot-swaps. Defensive by design: a rule whose provider can't be
+    // constructed here (key gone since it was approved) logs and falls back
+    // to the default model instead of failing startup.
+    let routing_table = bastion::routing::load_table(&config_store, &cfg.routing.rules).await;
+    let boot_provider = match routing_table.model_for(bastion::routing::RouteClass::ChatTurn) {
+        Some(model) => {
+            // Same connectivity guard as `proposals::apply_model_config`:
+            // some provider constructors PANIC on a missing env key — probe
+            // first so a disconnected rule degrades instead of aborting.
+            let kind = bastion_providers::registry::resolve_provider_kind(model);
+            let connected = bastion::model_catalog::env_key_for_provider(kind)
+                .is_none_or(|env_key| std::env::var(env_key).is_ok_and(|v| !v.is_empty()));
+            let resolved = if connected {
+                resolve_provider(model)
+            } else {
+                Err(anyhow::anyhow!("provider '{kind}' is not connected"))
+            };
+            match resolved {
+                Ok(p) => {
+                    tracing::info!(event = "routing_chat_turn_applied", model = %model);
+                    Some(p)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        event = "routing_chat_turn_failed",
+                        model = %model,
+                        error = %e,
+                        "chat_turn routing rule unusable — falling back to the default model",
+                    );
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+    let provider: bastion_providers::SharedProvider = Arc::new(RwLock::new(match boot_provider {
+        Some(p) => p,
+        None => resolve_provider(&default_model)?,
+    }));
+    // A4 S2: the fallback ladder gets the same overlay treatment as
+    // `default_model` above — an approved `model_config` proposal persists
+    // `model.fallbacks` in the config store, and it is read HERE (the ladder
+    // is passed to `AgentLoop::new` at construction, so a persisted change
+    // takes effect on the next restart — see `proposals::apply`).
+    let fallback_models = config_store
+        .latest(bastion::config_store::KEY_MODEL_FALLBACKS)
+        .await?
+        .as_deref()
+        .and_then(bastion::config_store::fallback_models_from_value_json)
+        .unwrap_or_else(|| cfg.agent.fallback_models.clone());
 
     let daily_budget = cfg.agent.daily_budget_usd;
 
@@ -677,6 +756,10 @@ async fn main() -> anyhow::Result<()> {
     // turn/persona/cabinet events on the same stream `/events` serves. For
     // non-daemon commands nothing ever subscribes and every send is a no-op.
     let (events_tx, _) = tokio::sync::broadcast::channel::<String>(128);
+    // A4-U S1: from here on every successful `ConfigStore::apply` broadcasts
+    // a `config.applied` event on the same stream `/events` serves (startup
+    // migration/reads above ran before any subscriber could exist).
+    let config_store = config_store.with_events(events_tx.clone());
     let responder: Arc<dyn bastion_runtime::agent::ports::Responder> =
         Arc::new(bastion::observability::ObservedResponder::new(
             Arc::new(bastion_personas::persona::responder::PersonaResponder::new(
@@ -753,7 +836,9 @@ async fn main() -> anyhow::Result<()> {
         responder,
         memory.clone(),
         Some(std::sync::Arc::new(goals)),
-        cfg.agent.fallback_models.clone(),
+        // Effective ladder: config-store `model.fallbacks` override else
+        // bastion.toml (computed above, beside `default_model`).
+        fallback_models,
         std::sync::Arc::new(bastion_runtime::capability::SqliteApprovalGate::new(
             &db_path,
         )),
@@ -773,8 +858,19 @@ async fn main() -> anyhow::Result<()> {
     // BIG-1 (Gap 2): one McpToolAdapter per connected MCP tool, into the SAME
     // registry instance the loop owns (moved verbatim out of `AgentLoop::new`).
     bastion_mcp::registry_setup::register_mcp_tools(&mut agent.capability_registry, &mcp_client);
+    // A5 S5 (S6 adds `POST /companion/event`): the daemon's single
+    // in-process writer for companion.json — shared by
+    // `CompanionEventCapability` (registered right below) and, later,
+    // `POST /companion/care` + `POST /companion/event` (`loadout::router`,
+    // wired in `daemon_loop`) via the clone threaded through the
+    // `daemon_loop(...)` call below. See `tui::CompanionHandle`'s doc
+    // comment for what this does and does not make race-free.
+    let companion_handle = bastion::tui::CompanionHandle::load(false);
     agent.capability_registry.register(Arc::new(
-        bastion::companion_capability::CompanionEventCapability::new(),
+        bastion::companion_capability::CompanionEventCapability::new(
+            companion_handle.clone(),
+            events_tx.clone(),
+        ),
     ))?;
     // US-204: governed browser (read-only HTTP backend; interaction/screenshot
     // via CDP is backlog). needs_approval=true, so every web reach crosses the
@@ -797,14 +893,19 @@ async fn main() -> anyhow::Result<()> {
 
     let mut backend_profile = bastion::config::backend_profile_from_config(&cfg.backend);
     // Fase 2.2: an interactive `/backend use <id>` choice persisted by a
-    // PRIOR run (`.bastion/backend-selection.json`, beside the session DB)
-    // overlays bastion.toml/env at every subsequent startup — user choice
-    // wins over the installer's env-var default, exactly like
-    // `load_model_selection` already does for `/model`. Reuses
-    // `backend_profile_from_config` (not a bespoke mapping here) so the
-    // "model"/"runtime:<id>" grammar and the empty-auth-string-to-None fix
-    // stay single-sourced.
-    if let Some(selection) = bastion::config::load_backend_selection(&cfg) {
+    // PRIOR run (the unified config store's `backend.selected` key — A4-U,
+    // previously `.bastion/backend-selection.json`, migrated above) overlays
+    // bastion.toml/env at every subsequent startup — user choice wins over
+    // the installer's env-var default, exactly like the `model.selected`
+    // read already does for `/model`. Reuses `backend_profile_from_config`
+    // (not a bespoke mapping here) so the "model"/"runtime:<id>" grammar and
+    // the empty-auth-string-to-None fix stay single-sourced.
+    if let Some(selection) = config_store
+        .latest(bastion::config_store::KEY_BACKEND_SELECTED)
+        .await?
+        .as_deref()
+        .and_then(bastion::config_store::backend_selection_from_value_json)
+    {
         backend_profile =
             bastion::config::backend_profile_from_config(&bastion::config::BackendConfig {
                 conversation: Some(selection.conversation.clone()),
@@ -950,7 +1051,10 @@ async fn main() -> anyhow::Result<()> {
                 control_plane_webhook_subscription_store,
                 control_plane_webhook_delivery_store,
                 proposal_store,
+                config_store,
+                provider.clone(),
                 events_tx,
+                companion_handle,
             )
             .await?;
         }
@@ -1174,13 +1278,46 @@ async fn daemon_loop(
     // /proposals route (built into the loadout router below) and the
     // console `/proposal` cockpit.
     proposal_store: Arc<bastion::proposals::SqliteProposalStore>,
+    // A4-U S1: the unified config-override store `/model` and `/backend`
+    // write through (audit + `config.applied` SSE) and
+    // `GET /config/overrides` reads from. Already carries the `events_tx`
+    // sender (attached in `main()`), so every apply here propagates live.
+    config_store: bastion::config_store::ConfigStore,
+    // A4 S2: the SAME live provider handle the loop runs on (`main()` keeps
+    // a clone) — an approved `model_config` proposal hot-swaps it exactly
+    // like `/model` does.
+    provider: bastion_providers::SharedProvider,
     // Observability: SSE broadcast channel, created in `main()` so the
     // `ObservedResponder` decorator (built there, before this call) shares
     // the exact stream `/events` serves — see `bastion::observability`.
     events_tx: tokio::sync::broadcast::Sender<String>,
+    // A5 S5 (S6 adds `POST /companion/event`): the SAME shared handle
+    // `CompanionEventCapability` mutates through (registered on
+    // `agent.capability_registry` in `main()`, before this call) —
+    // `POST /companion/care` / `POST /companion/event` below wire the
+    // other end.
+    companion_handle: bastion::tui::CompanionHandle,
 ) -> anyhow::Result<()> {
     use bastion::agent::command::{CommandResources, CommandResult};
     use tokio::io::{AsyncBufReadExt, BufReader};
+
+    // A4 S2: staged `secret_set` values live ONLY in this in-memory pen
+    // between the web POST and the console approve (see
+    // `proposals::PendingSecretValues`) — shared by the loadout router
+    // (which fills it) and the `/proposal` cockpit (which drains it).
+    let pending_secret_values = bastion::proposals::PendingSecretValues::default();
+    // Resources an approved proposal's apply step may need. `actor` is
+    // stamped per-approve by the cockpit with the approving owner.
+    let proposal_apply_resources = bastion::proposals::ApplyResources {
+        config_store: Some(config_store.clone()),
+        provider: Some(provider.clone()),
+        pending_secrets: pending_secret_values.clone(),
+        secrets_dir: std::env::var("BASTION_SECRETS_DIR")
+            .ok()
+            .filter(|d| !d.trim().is_empty())
+            .map(std::path::PathBuf::from),
+        actor: None,
+    };
 
     // Observability frontend: the one lifecycle observer every adaptive
     // cycle/delegation in this daemon emits through — SSE (`/events`) +
@@ -1242,19 +1379,17 @@ async fn daemon_loop(
     // original `self.registry` field's always-present behavior.
     let mut command_resources = CommandResources {
         registry: registry_for_product.clone(),
+        // A4-U S1: `/model` persists through the unified config store (key
+        // `model.selected`) instead of the legacy model-selection.json —
+        // same store both `/backend` dispatch arms below write through.
         model_selection: Some(bastion::agent::command::ModelSelection {
-            path: bastion::config::model_selection_path(cfg),
+            store: config_store.clone(),
             default_model: cfg.agent.default_model.clone(),
         }),
         auth: cfg.auth.clone(),
         updates: Some(updates.clone()),
         ..Default::default()
     };
-
-    // Fase 2.3/2.4: `.bastion/backend-selection.json` — the persistence path
-    // both dispatch arms below pass into `backend_command::handle` (mirrors
-    // `command_resources.model_selection.path` for `/model`).
-    let backend_selection_path = bastion::config::backend_selection_path(cfg);
 
     // CR-07: create AgentHandle + inbound receiver BEFORE the select! loop.
     // Channels (Telegram, webhook) hold clones of `handle` and send messages into `inbound_rx`.
@@ -1578,7 +1713,26 @@ async fn daemon_loop(
                 owner_map.clone(),
                 jwt_secret.clone(),
                 proposal_store.clone(),
+                config_store.clone(),
+                // A4 S2: bastion.toml model config — the base `GET /models`
+                // overlays with the config store's effective overrides.
+                bastion::loadout::ModelDefaults {
+                    default_model: cfg.agent.default_model.clone(),
+                    fallback_models: cfg.agent.fallback_models.clone(),
+                },
+                // A4 S2: `[auth.*]` for `GET /providers`' subscription rows.
+                cfg.auth.clone(),
+                pending_secret_values.clone(),
+                // A4.5: `[routing]` — the declarative base GET /routing
+                // overlays with the store's `routing.rules` override.
+                cfg.routing.rules.clone(),
                 events_tx.clone(),
+                // A5 S5 (S6 adds `POST /companion/event`): same handle
+                // `CompanionEventCapability` mutates through — `GET
+                // /companion`, `POST /companion/care`,
+                // `POST /companion/event`, and the hook-bridge capability
+                // all share one in-process writer.
+                companion_handle,
             ));
             // US External Control Plane and SDK: `/v1/*` routes, built over
             // their own `ControlPlaneState` and merged into the webhook app
@@ -1953,16 +2107,57 @@ async fn daemon_loop(
         // LEARN-05 gap fix: an explicit [reflector].model must actually select the
         // Reflector's provider, not just be threaded through inertly. Unset/empty falls
         // back to the exact same default-agent provider instance (safe pre-fix behavior).
-        let reflector_provider = bastion_providers::registry::resolve_reflector_provider(
-            cfg.reflector.model.as_deref(),
+        //
+        // A4.5: the routing table's `reflection` class outranks [reflector].model —
+        // this startup read IS the class's knob (the spawned Reflector holds its
+        // provider privately, so a runtime `routing_config` approval lands on the
+        // NEXT restart — documented on GET /routing as supported, not hot).
+        let routing_table = bastion::routing::load_table(&config_store, &cfg.routing.rules).await;
+        let reflector_model: Option<String> = routing_table
+            .model_for(bastion::routing::RouteClass::Reflection)
+            .map(str::to_string)
+            // Same connectivity probe as the chat_turn boot read: provider
+            // constructors may PANIC on a missing env key, and a stale
+            // routing rule must never abort the daemon — degrade to
+            // [reflector].model / the agent provider instead.
+            .filter(|model| {
+                let kind = bastion_providers::registry::resolve_provider_kind(model);
+                let connected = bastion::model_catalog::env_key_for_provider(kind)
+                    .is_none_or(|env_key| std::env::var(env_key).is_ok_and(|v| !v.is_empty()));
+                if !connected {
+                    tracing::warn!(
+                        event = "routing_reflection_disconnected",
+                        model = %model,
+                        "reflection routing rule names a disconnected provider — ignored",
+                    );
+                }
+                connected
+            })
+            .or_else(|| cfg.reflector.model.clone());
+        // Defensive like the chat_turn boot read: a reflection rule whose
+        // provider can't be constructed must not take the daemon down —
+        // warn and fall back to the agent's own provider (pre-rule behavior).
+        let reflector_provider = match bastion_providers::registry::resolve_reflector_provider(
+            reflector_model.as_deref(),
             &cfg.agent.default_model,
             agent.provider.clone(),
-        )?;
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    event = "routing_reflection_failed",
+                    model = ?reflector_model,
+                    error = %e,
+                    "reflection model unusable — Reflector falls back to the agent provider",
+                );
+                agent.provider.clone()
+            }
+        };
 
         let generator: Arc<dyn bastion_cognition::learn::CandidateGenerator> =
             Arc::new(bastion_cognition::learn::LlmCandidateGenerator::new(
                 reflector_provider,
-                cfg.reflector.model.clone(),
+                reflector_model,
                 cfg.reflector.allow_cloud,
             ));
 
@@ -2037,8 +2232,9 @@ async fn daemon_loop(
                             match bastion::agent::backend_command::handle(
                                 agent,
                                 backend_arg,
-                                &backend_selection_path,
+                                &config_store,
                                 &cfg.auth,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
                             )
                             .await
                             {
@@ -2089,6 +2285,7 @@ async fn daemon_loop(
                                 &proposal_store,
                                 prop_arg,
                                 bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                                &proposal_apply_resources,
                             )
                             .await
                             {
@@ -2312,8 +2509,9 @@ async fn daemon_loop(
                     match bastion::agent::backend_command::handle(
                         agent,
                         backend_arg,
-                        &backend_selection_path,
+                        &config_store,
                         &cfg.auth,
+                        &req.owner,
                     )
                     .await
                     {
