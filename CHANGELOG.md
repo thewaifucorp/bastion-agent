@@ -28,6 +28,12 @@ for how that differs from the library crates it depends on).
   SDK field-for-field, zero runtime dependencies (stdlib only), now covered
   by CI (`pytest sdk/python/tests/`, 24 tests).
 - Threat model doc: [`docs/en/control-plane-security.md`](docs/en/control-plane-security.md).
+- **Web app (`GET /app`)**: a bundled Vite/React app — vigília (live persona
+  lanterns + event ledger), tarefas (durable tasks with attempt verdicts and
+  pause/resume/steer/cancel), chat (the console's turn over `/webhook`), and
+  config, in the site's arcade-terminal visual identity. Embedded into the
+  binary at compile time when `web/dist` exists (releases and the Docker
+  image build it; a binary without it answers `/app` with build guidance).
 - **Observability frontend**: `GET /ui` serves an embedded, offline-capable
   dashboard — live persona lanterns and a turn/task ledger over `/events`,
   plus the durable-task table with pause/resume/steer/cancel over `/v1`.

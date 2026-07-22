@@ -1,0 +1,23 @@
+{
+  "name": "bastion-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Bastion's bundled web app — built to web/dist and embedded into the daemon binary (served at /app).",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.6.0",
+    "typescript": "^5.8.0",
+    "vite": "^7.0.0"
+  }
+}

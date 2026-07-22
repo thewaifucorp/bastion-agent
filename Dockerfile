@@ -1,5 +1,14 @@
 # syntax=docker/dockerfile:1
 
+# Web app first: build.rs embeds web/dist into the binary when present, so
+# this stage must finish before cargo build runs in the builder stage.
+FROM node:22-bookworm-slim AS webbuilder
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
 FROM rust:bookworm AS builder
 
 RUN apt-get update \
@@ -13,8 +22,11 @@ COPY Cargo.toml Cargo.lock ./
 RUN cargo fetch --locked
 
 COPY src ./src
+COPY build.rs ./build.rs
 # routes.rs embeds the frozen OpenAPI contract via include_str!.
 COPY docs/en/contracts ./docs/en/contracts
+# build.rs embeds the web app when web/dist exists (see webbuilder above).
+COPY --from=webbuilder /web/dist ./web/dist
 # Keep source builds usable on developer machines with limited RAM. CI or
 # high-core builders can override this with --build-arg CARGO_BUILD_JOBS=N.
 ARG CARGO_BUILD_JOBS=2

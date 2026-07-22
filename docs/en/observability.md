@@ -1,13 +1,31 @@
 # Observability
 
-Bastion ships a small, self-contained web dashboard and a real-time event
-vocabulary so you can watch the daemon think and work: which personas are
-speaking, which durable `Pursue` tasks are running, how their attempts are
-verified, and steer/pause/cancel them — visually, without leaving the
-browser. It is the same information the TUI and the [Control
-Plane](control-plane-security.md) expose, on one page.
+Bastion ships a bundled web app and a real-time event vocabulary so you can
+watch the daemon think and work: which personas are speaking, which durable
+`Pursue` tasks are running, how their attempts are verified, and
+steer/pause/cancel them — visually, without leaving the browser. It is the
+same information the TUI and the [Control
+Plane](control-plane-security.md) expose.
 
-## The dashboard (`GET /ui`)
+## The web app (`GET /app`)
+
+The full experience: a Vite/React app (`web/`) served by the daemon itself,
+with four tabs (keyboard `1`–`4`) — **vigília** (the live ledger and persona
+lanterns), **tarefas** (durable-task table, attempt verdicts,
+pause/resume/steer/cancel), **chat** (the same turn the console runs, over
+`POST /webhook`), and **config** (the two tokens). Same trust model as
+`/ui` below: the shell is static and unauthenticated, every byte of data is
+fetched with per-request tokens, and the CSP pins all connections to this
+daemon.
+
+The app is embedded into the binary at compile time (`build.rs` picks up
+`web/dist` when it exists — releases and the Docker image build it first).
+A binary built without it still mounts `/app` and answers with build
+instructions; `/ui` below is always available as the zero-build fallback.
+Local development: `npm run dev` in `web/` proxies `/v1`, `/events` and
+`/webhook` to a running daemon (or the mock).
+
+## The fallback dashboard (`GET /ui`)
 
 Open `http://<daemon>/ui`. The page is served by the daemon itself
 (embedded in the binary — no external assets, works offline) and is an

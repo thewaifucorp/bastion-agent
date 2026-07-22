@@ -47,6 +47,17 @@ jobs:
       # channels-extra pulls native-tls -> openssl-sys; match the Dockerfile.
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
 
+      # Web app BEFORE cargo: build.rs embeds web/dist into the binary when
+      # present, so the released binary ships GET /app populated.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build web app
+        run: npm ci --no-audit --no-fund && npm run build
+        working-directory: web
+
       # Host binary matches the Dockerfile feature set (no voice: that runs in
       # the container, not on the host that runs the TUI).
       - name: Build release binary

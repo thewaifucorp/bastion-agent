@@ -24,6 +24,23 @@ jobs:
       - run: cargo test
       - run: bash tests/test-installer.sh
 
+  # Observability frontend A2: typecheck + build the web app. The rust job
+  # deliberately does NOT depend on this — build.rs treats a missing
+  # web/dist as a supported state.
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+
   python-sdk:
     runs-on: ubuntu-latest
     steps:

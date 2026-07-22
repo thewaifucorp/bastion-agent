@@ -3,4 +3,8 @@
 !Cargo.toml
 !Cargo.lock
 !src/**
+!build.rs
 !docs/en/contracts/**
+!web/**
+web/node_modules
+web/dist

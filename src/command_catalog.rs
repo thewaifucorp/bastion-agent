@@ -151,6 +151,13 @@ pub const CATALOG: &[CommandSpec] = &[
         aliases: &[],
     },
     CommandSpec {
+        name: "/proposal",
+        usage: "/proposal list | show <id> | approve <id> | reject <id>",
+        desc: "review and apply configuration changes staged from the web app (console only)",
+        scope: Scope::ConsoleOnly,
+        aliases: &[],
+    },
+    CommandSpec {
         name: "/stop",
         usage: "/stop",
         desc: "shut down the daemon",
@@ -319,6 +326,8 @@ mod tests {
         "/schedule",
         // Observability frontend: Control Plane credential cockpit.
         "/credential",
+        // Observability A3: staged configuration proposals.
+        "/proposal",
     ];
 
     const OLD_REMOTE_ALLOWED: &[&str] = &[
