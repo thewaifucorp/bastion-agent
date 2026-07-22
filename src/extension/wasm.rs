@@ -184,6 +184,7 @@ mod tests {
         InvokeCtx {
             owner: owner.to_string(),
             privacy_tier: Some(bastion_memory::PrivacyTier::LocalOnly),
+            allowed_tools: None,
         }
     }
 

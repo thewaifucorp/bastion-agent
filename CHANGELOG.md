@@ -10,6 +10,74 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **Structured persona contract v2 form (C0-P4)**: `web/src/views/Personas.tsx`
+  replaces the raw-textarea-only editor with the structured form as the
+  PRIMARY way to edit a persona, built from C0-P3's parsed `GET
+  /personas/{slug}` `contract`.
+  - Fields: name, description, objectives/goals/skills as editable
+    add/remove/reorder string lists, an operating scope textarea, a
+    privacy-tier select (`local-only`/`cloud-ok`), a weight number input,
+    and a tools control that's an explicit two-way toggle — "unrestricted"
+    (omits `tools` entirely, contract-v2's `None`) vs. "allowlist" (a
+    checklist sourced from `GET /loadout`'s `tools[]`, plus a free-typed
+    custom-capability input, since custom ids are legal and the allowlist
+    must be non-empty once chosen).
+  - On save the form ASSEMBLES the full SOUL.md: a hand-built YAML
+    frontmatter (name, description, `bastion:{privacy_tier, weight}`,
+    objectives, goals, tools, scope, skills — string scalars double-quoted
+    JSON-escaped, which is valid YAML, rather than a bare-word heuristic)
+    followed by `---` and the ORIGINAL markdown body recovered from the
+    persona's current raw content by mirroring bastion-core's `parse_soul`
+    split (strip leading `---`, split at the closing `\n---`, trim leading
+    whitespace) — the form edits the frontmatter only, the persona's prose
+    is never touched.
+  - Client-side validation mirrors `PersonaFront::validate()` (objectives/
+    goals non-empty, scope present, a chosen allowlist non-empty) with
+    inline field errors shown after the first submit attempt; a 400 from
+    `POST /proposals` (C0-P3's `{"problems": [...]}`) is now carried on
+    `ApiError.problems` and rendered as the same banner.
+  - A legacy persona (parses, but `validate()` problems non-empty) shows an
+    "upgrade this persona to contract v2" banner listing what's missing,
+    still editable through the same form. An unparseable persona (`contract:
+    null`) forces a raw-SOUL.md fallback mode (the structured toggle is
+    disabled — there's nothing to seed fields from) so it's still fixable.
+    A manual "raw"/"structured" toggle also stays available as an advanced
+    escape hatch for any persona.
+  - `web/src/api.ts`: `PersonaContract`/`PersonaReadResponse` types for the
+    C0-P3 response shape; `ApiError` gained an optional `problems?:
+    string[]` populated from a 400 body's `problems` array.
+  - Pending-proposal staging UX (the `/proposal approve <id>` note) and the
+    `configTick`-driven refresh on `config.change_requested`/
+    `config.applied` (wired in `web/src/App.tsx`, matching Providers/Models)
+    are unchanged from C0-P3/earlier.
+
+- **Agent-side persona contract v2 validation (C0-P3)**: the web PROPOSES a
+  `persona_edit`, but nothing wrote a SOUL.md that fails to parse or
+  declares an incomplete contract-v2 (empty `objectives`/`goals`/`scope`, or
+  an explicit-but-empty `tools` allowlist) until now — both the web POST and
+  the console's approve accepted anything under the size cap.
+  - `src/proposals.rs`: `validate_persona_contract(content: &str) ->
+    Result<(), Vec<String>>` — the ONE shared gate, built on the pinned
+    core's `bastion_personas::persona::parse_soul` +
+    `PersonaFront::validate()`. `apply()`'s `PersonaEdit` branch now calls it
+    before writing (and before the backup copy): a parse or validate failure
+    bails with every problem listed, joined readably, and nothing is
+    written.
+  - `src/loadout.rs` `proposals_create_handler`'s `persona_edit` arm calls
+    the same helper and answers `400` with `{"problems": [...]}` on failure
+    — the web gets immediate feedback instead of only discovering the
+    rejection when the console tries (and fails) to approve.
+  - `GET /personas/{slug}` (`persona_read_handler` / the new pure
+    `persona_read_body` helper) now also returns the parsed structured
+    contract: `{slug, content, contract: {name, description, objectives,
+    goals, tools, scope, skills, privacy_tier, weight} | null, problems:
+    string[]}`. A successful parse always populates `contract` (even a
+    legacy SOUL.md missing every v2 field) with `validate()`'s problems
+    listed alongside it, prompting the P4 web form to offer an upgrade
+    rather than silently accepting it; an unparseable file still answers
+    `200` with the raw `content`, `contract: null`, and the parse error as
+    `problems`' one entry — never a `500`.
+
 - **TUI config-applied notice + companion event HTTP forwarding (A4-U/A5 S6)**:
   closes the two gaps S1-S5 left open — the TUI never reacted to a
   `config.applied` from elsewhere, and `bastion companion event` always

@@ -132,6 +132,65 @@ async fn personas_list_handler(
     Json(serde_json::json!({ "items": slugs })).into_response()
 }
 
+/// C0-P3: `PersonaFront` → the JSON shape `GET /personas/{slug}` reports
+/// under `contract` (the P4 web form's field source). `privacy_tier`
+/// serializes through `PersonaFront`'s own `kebab-case` `Serialize` (e.g.
+/// `"cloud-ok"`, `"local-only"`) rather than a hand-rolled string, so the two
+/// never drift; `tools` stays `null` for an absent/unrestricted allowlist and
+/// an array (possibly empty) otherwise — the same `Option<Vec<String>>`
+/// shape the contract itself uses, not collapsed to `[]`.
+fn persona_front_to_json(front: &bastion_personas::persona::PersonaFront) -> serde_json::Value {
+    let privacy_tier = serde_json::to_value(front.bastion.privacy_tier)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    serde_json::json!({
+        "name": front.name,
+        "description": front.description,
+        "objectives": front.objectives,
+        "goals": front.goals,
+        "tools": front.tools,
+        "scope": front.scope,
+        "skills": front.skills,
+        "privacy_tier": privacy_tier,
+        "weight": front.bastion.weight,
+    })
+}
+
+/// Pure body-builder for `GET /personas/{slug}` (C0-P3) — no I/O, so this is
+/// the piece unit tests exercise directly instead of routing a real request
+/// through `read_persona`'s hardcoded `personas_root()` ("."), which would
+/// otherwise mean mutating the test process's CWD (fragile under parallel
+/// `cargo test`) just to exercise the parse/validate branches.
+///
+/// Never 500s on an unparseable existing SOUL.md: `contract` is `null` and
+/// `problems` carries the parse error as its one entry, but the caller still
+/// answers 200 with the raw `content` — the editor needs that content to fix
+/// the file, so this route must never treat "doesn't parse yet" as a read
+/// failure. A parse that succeeds but fails `validate()` (e.g. a legacy
+/// persona missing every v2 field) ALSO keeps `contract` populated —
+/// `problems` lists what's missing, prompting the web to offer an upgrade
+/// rather than blocking the read.
+fn persona_read_body(slug: &str, content: String) -> serde_json::Value {
+    let (contract, problems) = match bastion_personas::persona::parse_soul(&content) {
+        Ok((front, _body)) => {
+            let problems = front.validate().err().unwrap_or_default();
+            (persona_front_to_json(&front), problems)
+        }
+        Err(e) => (serde_json::Value::Null, vec![format!("{e}")]),
+    };
+    serde_json::json!({
+        "slug": slug,
+        "content": content,
+        "contract": contract,
+        "problems": problems,
+    })
+}
+
+/// `GET /personas/{slug}`: raw `content` (unchanged — the editor always
+/// needs the exact bytes to show/fix) PLUS the parsed contract-v2 structure
+/// (C0-P3), built by [`persona_read_body`], so the P4 web form can render
+/// fields instead of a raw textarea.
 async fn persona_read_handler(
     State(state): State<LoadoutState>,
     headers: HeaderMap,
@@ -141,9 +200,7 @@ async fn persona_read_handler(
         return *resp;
     }
     match proposals::read_persona(&proposals::personas_root(), &slug).await {
-        Ok(Some(content)) => {
-            Json(serde_json::json!({ "slug": slug, "content": content })).into_response()
-        }
+        Ok(Some(content)) => Json(persona_read_body(&slug, content)).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, "no such persona").into_response(),
         Err(_) => (StatusCode::BAD_REQUEST, "invalid persona slug").into_response(),
     }
@@ -522,6 +579,17 @@ async fn proposals_create_handler(
             }
             if content.len() > proposals::MAX_CONTENT_BYTES {
                 return (StatusCode::PAYLOAD_TOO_LARGE, "content too large").into_response();
+            }
+            // C0-P3: same gate `apply()` re-checks at approve — run here too
+            // so the web gets immediate 400 feedback with the actual
+            // problems, instead of only discovering an invalid contract when
+            // the console tries (and fails) to approve it.
+            if let Err(problems) = proposals::validate_persona_contract(&content) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "problems": problems })),
+                )
+                    .into_response();
             }
             (ProposalPayload::PersonaEdit { slug, content }, None)
         }
@@ -1019,6 +1087,133 @@ mod tests {
         assert_eq!(p["status"], "pending");
         assert_eq!(p["payload"]["kind"], "model_config");
         assert_eq!(p["payload"]["default_model"], "llama3.2");
+    }
+
+    // ---- C0-P3: persona contract v2 validation (create + GET shape) -----
+
+    const V2_FULL_SOUL: &str = "---\n\
+        name: Guardian\n\
+        description: Full contract v2 persona\n\
+        bastion:\n\
+        \x20 privacy_tier: local-only\n\
+        \x20 weight: 0.8\n\
+        skills:\n\
+        \x20 - budgeting\n\
+        objectives:\n\
+        \x20 - keep the household's finances honest\n\
+        goals:\n\
+        \x20 - never let a bill go unpaid\n\
+        tools:\n\
+        \x20 - memory_search\n\
+        \x20 - goal_create\n\
+        scope: household finance only\n\
+        ---\n\
+        You are Guardian.";
+
+    const LEGACY_SOUL: &str = "---\n\
+        name: Legacy\n\
+        bastion:\n\
+        \x20 privacy_tier: cloud-ok\n\
+        \x20 weight: 0.5\n\
+        ---\n\
+        You are Legacy.";
+
+    #[tokio::test]
+    async fn persona_edit_proposal_rejects_an_invalid_contract_with_400_and_problems() {
+        let owner_map = OwnerMap::from_pairs(&[("tok-alice", "alice")]);
+        let (_f, app, _pending) = sample_router(owner_map).await;
+
+        let (status, body) = post_json(
+            app,
+            "/proposals",
+            "tok-alice",
+            serde_json::json!({
+                "kind": "persona_edit",
+                "slug": "legacy",
+                "content": LEGACY_SOUL,
+            }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        let problems = body["problems"].as_array().expect("problems array");
+        assert!(!problems.is_empty());
+        assert!(problems
+            .iter()
+            .any(|p| p.as_str().unwrap().contains("objectives")));
+    }
+
+    #[tokio::test]
+    async fn persona_edit_proposal_accepts_a_full_v2_contract() {
+        let owner_map = OwnerMap::from_pairs(&[("tok-alice", "alice")]);
+        let (_f, app, _pending) = sample_router(owner_map).await;
+
+        let (status, p) = post_json(
+            app,
+            "/proposals",
+            "tok-alice",
+            serde_json::json!({
+                "kind": "persona_edit",
+                "slug": "guardian",
+                "content": V2_FULL_SOUL,
+            }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::CREATED);
+        assert_eq!(p["payload"]["kind"], "persona_edit");
+    }
+
+    #[test]
+    fn persona_read_body_reports_the_parsed_contract_for_a_valid_v2_soul() {
+        let body = persona_read_body("guardian", V2_FULL_SOUL.to_string());
+        assert_eq!(body["slug"], "guardian");
+        assert_eq!(body["content"], V2_FULL_SOUL);
+        assert_eq!(body["problems"], serde_json::json!([]));
+        let contract = &body["contract"];
+        assert_eq!(contract["name"], "Guardian");
+        assert_eq!(contract["privacy_tier"], "local-only");
+        // f32 -> f64 widening does not land on the exact `0.8` literal, so
+        // compare with the same tolerance bastion-core's own soul.rs tests
+        // use for `bastion.weight`.
+        assert!((contract["weight"].as_f64().unwrap() - 0.8).abs() < 1e-5);
+        assert_eq!(
+            contract["objectives"],
+            serde_json::json!(["keep the household's finances honest"])
+        );
+        assert_eq!(
+            contract["tools"],
+            serde_json::json!(["memory_search", "goal_create"])
+        );
+        assert_eq!(contract["scope"], "household finance only");
+    }
+
+    #[test]
+    fn persona_read_body_populates_contract_and_problems_for_a_legacy_soul() {
+        let body = persona_read_body("legacy", LEGACY_SOUL.to_string());
+        // Legacy SOUL.md still PARSES (v2 fields are `#[serde(default)]`) —
+        // `contract` is populated so the web can render what's there, but
+        // `problems` surfaces every missing v2 field so the UI can prompt
+        // an upgrade instead of silently accepting an incomplete contract.
+        assert_eq!(body["contract"]["name"], "Legacy");
+        let problems: Vec<&str> = body["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p.as_str().unwrap())
+            .collect();
+        assert!(problems.iter().any(|p| p.contains("objectives")));
+        assert!(problems.iter().any(|p| p.contains("goals")));
+        assert!(problems.iter().any(|p| p.contains("scope")));
+    }
+
+    #[test]
+    fn persona_read_body_returns_null_contract_for_unparseable_content() {
+        let body = persona_read_body("broken", "not a soul file at all".to_string());
+        assert_eq!(body["contract"], serde_json::Value::Null);
+        let problems = body["problems"].as_array().unwrap();
+        assert_eq!(problems.len(), 1);
+        // The raw content is still returned — the editor needs it to fix
+        // the file, even though it couldn't be parsed.
+        assert_eq!(body["content"], "not a soul file at all");
     }
 
     // ---- A4.5: /routing + routing_config proposals ----------------------

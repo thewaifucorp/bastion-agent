@@ -72,6 +72,7 @@ fn make_registry(name: &str) -> PersonaRegistry {
             tier: PrivacyTier::CloudOk,
             weight: 0.8,
             skills: vec![],
+            ..Default::default()
         },
     );
     PersonaRegistry::new_from_map(personas)
@@ -173,6 +174,7 @@ fn cloudok_ctx(owner: &str) -> bastion_runtime::capability::InvokeCtx {
     bastion_runtime::capability::InvokeCtx {
         owner: owner.to_string(),
         privacy_tier: Some(PrivacyTier::CloudOk),
+        allowed_tools: None,
     }
 }
 
@@ -728,6 +730,7 @@ async fn cloud_ok_persona_tool_loop_passes_egress_gate() {
             tier: PrivacyTier::CloudOk,
             weight: 0.9,
             skills: vec![],
+            ..Default::default()
         },
     );
     let registry = PersonaRegistry::new_from_map(personas);

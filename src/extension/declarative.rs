@@ -172,6 +172,7 @@ mod tests {
                 &bastion_runtime::capability::InvokeCtx {
                     owner: "alice".to_string(),
                     privacy_tier: Some(bastion_memory::PrivacyTier::LocalOnly),
+                    allowed_tools: None,
                 },
             )
             .await

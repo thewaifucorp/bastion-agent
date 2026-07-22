@@ -276,6 +276,7 @@ fn make_registry() -> PersonaRegistry {
             tier: PrivacyTier::CloudOk,
             weight: 0.8,
             skills: vec![],
+            ..Default::default()
         },
     );
     PersonaRegistry::new_from_map(personas)

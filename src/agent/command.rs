@@ -616,6 +616,7 @@ mod tests {
                     tier: PrivacyTier::CloudOk,
                     weight: 0.5,
                     skills: vec![],
+                    ..Default::default()
                 },
             );
         }

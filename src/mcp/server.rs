@@ -281,6 +281,7 @@ impl ServerHandler for BastionMcpServer {
             let ctx = bastion_runtime::capability::InvokeCtx {
                 owner: perms.owner_id,
                 privacy_tier: Some(perms.privacy_tier),
+                allowed_tools: None,
             };
 
             // Phase 5: the 5 Control Plane tools live in a SEPARATE registry

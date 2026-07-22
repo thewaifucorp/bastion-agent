@@ -103,6 +103,23 @@ pub struct Proposal {
     pub resolved_at: Option<i64>,
 }
 
+/// C0-P3: persona contract v2 gate, shared by proposal CREATE
+/// (`loadout.rs::proposals_create_handler`) and APPLY (this module's
+/// [`apply`]) — one place decides whether a `persona_edit` `content` string
+/// is acceptable, so the two call sites can never drift.
+///
+/// Parses `content` with `bastion_personas::persona::parse_soul`; a parse
+/// failure is reported as a single-element problem list (the error's
+/// `Display`). A successful parse is then run through
+/// `PersonaFront::validate()` — its `Vec<String>` of contract-v2 problems
+/// (empty objectives/goals/scope, an explicit-but-empty `tools` allowlist)
+/// passes straight through. `Ok(())` means both parse and validate passed.
+pub fn validate_persona_contract(content: &str) -> Result<(), Vec<String>> {
+    let (front, _body) = bastion_personas::persona::parse_soul(content)
+        .map_err(|e| vec![format!("SOUL.md did not parse: {e}")])?;
+    front.validate()
+}
+
 /// One path segment, no traversal — same discipline as `extension/ui.rs`.
 pub fn is_safe_slug(slug: &str) -> bool {
     !slug.is_empty()
@@ -392,6 +409,17 @@ pub async fn apply(
             }
             if content.len() > MAX_CONTENT_BYTES {
                 anyhow::bail!("persona content exceeds {MAX_CONTENT_BYTES} bytes");
+            }
+            // C0-P3: the v2 contract gate — same helper CREATE already ran,
+            // re-checked here (defense in depth, same discipline as the A4
+            // S2 kinds' apply-time re-validation below) so approve can never
+            // write a SOUL.md that fails to parse or fails contract-v2
+            // completeness, regardless of how the pending row got created.
+            if let Err(problems) = validate_persona_contract(content) {
+                anyhow::bail!(
+                    "persona contract invalid, not written:\n- {}",
+                    problems.join("\n- ")
+                );
             }
             let dir = root.join("personas").join(slug);
             let soul = dir.join("SOUL.md");
@@ -757,10 +785,25 @@ mod tests {
         (f, s)
     }
 
+    /// A full, contract-v2-valid SOUL.md — `apply()` now parses+validates
+    /// before writing (C0-P3), so every test that exercises a real write
+    /// needs a payload that clears both gates.
     fn edit(slug: &str) -> ProposalPayload {
         ProposalPayload::PersonaEdit {
             slug: slug.into(),
-            content: "---\nname: ada\n---\nbe rigorous".into(),
+            content: "---\n\
+                      name: ada\n\
+                      bastion:\n\
+                      \x20 privacy_tier: cloud-ok\n\
+                      \x20 weight: 0.5\n\
+                      objectives:\n\
+                      \x20 - be rigorous\n\
+                      goals:\n\
+                      \x20 - ship correct code\n\
+                      scope: general engineering\n\
+                      ---\n\
+                      be rigorous"
+                .into(),
         }
     }
 
@@ -835,6 +878,103 @@ mod tests {
             content: "x".into(),
         };
         assert!(apply_bare(dir.path(), &payload).await.is_err());
+    }
+
+    // ---- C0-P3: persona contract v2 gate --------------------------------
+
+    const V2_FULL_SOUL: &str = "---\n\
+        name: Guardian\n\
+        bastion:\n\
+        \x20 privacy_tier: local-only\n\
+        \x20 weight: 0.8\n\
+        objectives:\n\
+        \x20 - keep things honest\n\
+        goals:\n\
+        \x20 - never miss a deadline\n\
+        tools:\n\
+        \x20 - memory_search\n\
+        scope: household finance only\n\
+        ---\n\
+        You are Guardian.";
+
+    const LEGACY_SOUL: &str = "---\n\
+        name: Legacy\n\
+        bastion:\n\
+        \x20 privacy_tier: cloud-ok\n\
+        \x20 weight: 0.5\n\
+        ---\n\
+        You are Legacy.";
+
+    #[test]
+    fn validate_persona_contract_accepts_a_full_v2_soul() {
+        assert!(validate_persona_contract(V2_FULL_SOUL).is_ok());
+    }
+
+    #[test]
+    fn validate_persona_contract_rejects_missing_objectives_goals_scope() {
+        let problems =
+            validate_persona_contract(LEGACY_SOUL).expect_err("legacy SOUL must fail validate");
+        assert!(
+            problems.iter().any(|p| p.contains("objectives")),
+            "{problems:?}"
+        );
+        assert!(problems.iter().any(|p| p.contains("goals")), "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("scope")), "{problems:?}");
+    }
+
+    #[test]
+    fn validate_persona_contract_flags_explicit_empty_tools_allowlist() {
+        let soul = "---\n\
+            name: Empty\n\
+            bastion:\n\
+            \x20 privacy_tier: cloud-ok\n\
+            \x20 weight: 0.5\n\
+            objectives:\n\
+            \x20 - something\n\
+            goals:\n\
+            \x20 - something\n\
+            tools: []\n\
+            scope: somewhere\n\
+            ---\n\
+            Body.";
+        let problems = validate_persona_contract(soul).expect_err("empty tools must be flagged");
+        assert!(problems.iter().any(|p| p.contains("tools")), "{problems:?}");
+    }
+
+    #[test]
+    fn validate_persona_contract_reports_a_parse_error_as_a_single_problem() {
+        let problems = validate_persona_contract("not a soul file at all")
+            .expect_err("unparseable content must be rejected");
+        assert_eq!(problems.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn apply_refuses_to_write_an_invalid_persona_contract() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let payload = ProposalPayload::PersonaEdit {
+            slug: "legacy".into(),
+            content: LEGACY_SOUL.into(),
+        };
+        let err = apply_bare(root, &payload).await.unwrap_err();
+        assert!(
+            err.to_string().contains("persona contract invalid"),
+            "{err}"
+        );
+        // Refused BEFORE any write — no directory, no file.
+        assert!(!root.join("personas/legacy/SOUL.md").exists());
+    }
+
+    #[tokio::test]
+    async fn apply_refuses_to_write_an_unparseable_persona_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let payload = ProposalPayload::PersonaEdit {
+            slug: "broken".into(),
+            content: "not a soul file at all".into(),
+        };
+        assert!(apply_bare(root, &payload).await.is_err());
+        assert!(!root.join("personas/broken/SOUL.md").exists());
     }
 
     // ---- A4 S2: model_config / secret_set ------------------------------
