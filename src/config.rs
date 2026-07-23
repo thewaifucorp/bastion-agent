@@ -715,7 +715,10 @@ pub fn apply_data_dir_defaults() {
         return;
     };
     let data_dir = data_dir.trim_end_matches('/');
-    set_env_default("BASTION__SESSION__DB_PATH", &format!("{data_dir}/bastion.db"));
+    set_env_default(
+        "BASTION__SESSION__DB_PATH",
+        &format!("{data_dir}/bastion.db"),
+    );
     set_env_default(
         "BASTION__LOGGING__LOG_PATH",
         &format!("{data_dir}/bastion.log"),

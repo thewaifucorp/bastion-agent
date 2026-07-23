@@ -151,6 +151,13 @@ pub const CATALOG: &[CommandSpec] = &[
         aliases: &[],
     },
     CommandSpec {
+        name: "/extension",
+        usage: "/extension install <path> | list | revoke <id>",
+        desc: "install/list/revoke extension packs (personas, skills, declarative capabilities)",
+        scope: Scope::ConsoleOnly,
+        aliases: &[],
+    },
+    CommandSpec {
         name: "/proposal",
         usage: "/proposal list | show <id> | approve <id> | reject <id>",
         desc: "review and apply configuration changes staged from the web app (console only)",
@@ -328,6 +335,8 @@ mod tests {
         "/credential",
         // Observability A3: staged configuration proposals.
         "/proposal",
+        // Extension pack cockpit: install/list/revoke via ExtensionHost.
+        "/extension",
     ];
 
     const OLD_REMOTE_ALLOWED: &[&str] = &[
@@ -374,6 +383,7 @@ mod tests {
             "/connect-app-composio",
             "/pet",
             "/theme",
+            "/extension",
         ] {
             assert!(
                 !is_remote_allowed(name),

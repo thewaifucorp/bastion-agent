@@ -31,6 +31,21 @@ Useful modes:
 ./installer.sh --dir /opt/bastion   # explicit checkout/install path
 ```
 
+## Extension packs that need a host CLI (e.g. git)
+
+`bastion/git-capability` (from `bastion-extensions`' `software-sdlc` pack)
+wraps the `git` binary — the default `runtime` image doesn't include it, to
+keep every deployment that doesn't use that pack lean. Build the
+`runtime-devtools` stage instead when you plan to install a pack with a
+CLI-backed capability:
+
+```bash
+docker build --target runtime-devtools -t bastion:devtools .
+```
+
+CI and the published release images both build the plain `runtime` stage —
+`runtime-devtools` is opt-in only, never the default.
+
 ## Updating a running installation
 
 Check the official GitHub Release from the host:

@@ -2008,6 +2008,14 @@ async fn daemon_loop(
         });
     }
 
+    // Extension pack cockpit (`/extension install|list|revoke`): in-memory
+    // `ExtensionHost` (install/upgrade/rollback/revoke, atomic, zero-orphan —
+    // `src/extension/host.rs`), console-only like `/credential`. v1 has no
+    // sqlite-backed loadout — a daemon restart loses the installed set, same
+    // disclosed limitation as `bastion-extensions`' own README documents;
+    // persistence is a follow-up, not this cut's scope.
+    let mut extension_host = bastion::extension::ExtensionHost::new();
+
     // US-205: durable personal scheduler. Fires arbitrary authorized intents
     // (one-shot/recurring) through the SAME mode selection an interactive
     // message gets — Pursue enqueues + drives a task, Respond/Act run a turn
@@ -2274,6 +2282,28 @@ async fn daemon_loop(
                             match bastion::agent::credential_command::handle(
                                 &control_plane_credential_store,
                                 cred_arg,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                            )
+                            .await
+                            {
+                                Ok(msg) => println!("{msg}"),
+                                Err(e) => println!("Erro no comando: {e}"),
+                            }
+                            continue;
+                        }
+                        // Extension pack cockpit — console only (installing a
+                        // pack is a trusted-host operation, same tier as
+                        // /credential; no remote channel reaches it).
+                        if first_token == "/extension" {
+                            let ext_arg = trimmed.split_once(' ').map(|x| x.1);
+                            let personas_dir = bastion::config::personas_dir();
+                            let bastion_toml_path = std::env::var("BASTION_CONFIG")
+                                .unwrap_or_else(|_| "bastion.toml".to_owned());
+                            match bastion::agent::extension_command::handle(
+                                &mut extension_host,
+                                &personas_dir,
+                                &bastion_toml_path,
+                                ext_arg,
                                 bastion_runtime::agent::loop_::DEFAULT_OWNER,
                             )
                             .await

@@ -51,3 +51,17 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=5 \
 
 ENTRYPOINT ["/usr/local/bin/bastion"]
 CMD ["daemon"]
+
+# Optional variant for operators who install the `bastion-extensions`
+# `software-sdlc` pack (or anything else registering `bastion/git-capability`):
+# `runtime` above has no `git` binary. Build with
+# `docker build --target runtime-devtools .` — CI/release both pin
+# `--target runtime` explicitly, so this stage is opt-in only, never the
+# default. `git status`/`diff`/etc need no identity config; this image adds
+# nothing else beyond `runtime`.
+FROM runtime AS runtime-devtools
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+USER bastion:bastion

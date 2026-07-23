@@ -29,13 +29,17 @@
 //!   serving + the one mediated `CapabilityRegistry` bridge a served UI may
 //!   use, gated by that extension's own declared `PermissionSet`.
 
+pub mod cli_capability;
 pub mod declarative;
 pub mod facade;
 pub mod host;
+pub mod mcp_reconciler;
 pub mod review;
 pub mod subprocess;
 pub mod ui;
 pub mod wasm;
 
+pub use cli_capability::CliCapability;
 pub use facade::{ExtensionInstance, HostFacade};
 pub use host::{ExtensionHost, Loadout};
+pub use mcp_reconciler::{parse_mcp_dependencies, reconcile_mcp_dependencies, McpDependency};
