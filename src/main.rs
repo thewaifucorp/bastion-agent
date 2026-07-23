@@ -2002,6 +2002,14 @@ async fn daemon_loop(
         });
     }
 
+    // Extension pack cockpit (`/extension install|list|revoke`): in-memory
+    // `ExtensionHost` (install/upgrade/rollback/revoke, atomic, zero-orphan —
+    // `src/extension/host.rs`), console-only like `/credential`. v1 has no
+    // sqlite-backed loadout — a daemon restart loses the installed set, same
+    // disclosed limitation as `bastion-extensions`' own README documents;
+    // persistence is a follow-up, not this cut's scope.
+    let mut extension_host = bastion::extension::ExtensionHost::new();
+
     // US-205: durable personal scheduler. Fires arbitrary authorized intents
     // (one-shot/recurring) through the SAME mode selection an interactive
     // message gets — Pursue enqueues + drives a task, Respond/Act run a turn
@@ -2268,6 +2276,28 @@ async fn daemon_loop(
                             match bastion::agent::credential_command::handle(
                                 &control_plane_credential_store,
                                 cred_arg,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                            )
+                            .await
+                            {
+                                Ok(msg) => println!("{msg}"),
+                                Err(e) => println!("Erro no comando: {e}"),
+                            }
+                            continue;
+                        }
+                        // Extension pack cockpit — console only (installing a
+                        // pack is a trusted-host operation, same tier as
+                        // /credential; no remote channel reaches it).
+                        if first_token == "/extension" {
+                            let ext_arg = trimmed.split_once(' ').map(|x| x.1);
+                            // TODO: switch to `bastion::config::personas_dir()`
+                            // once PR #11 (BASTION_DATA_DIR/BASTION_PERSONAS_DIR)
+                            // merges — kept as the literal "." here so this PR
+                            // builds independently against main.
+                            match bastion::agent::extension_command::handle(
+                                &mut extension_host,
+                                ".",
+                                ext_arg,
                                 bastion_runtime::agent::loop_::DEFAULT_OWNER,
                             )
                             .await
