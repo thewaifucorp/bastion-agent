@@ -8,6 +8,31 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+### Added
+
+- **Extension pack cockpit**: `ExtensionHost` (install/upgrade/rollback/revoke,
+  already implemented in `src/extension/host.rs`) is now actually wired into
+  the daemon — console-only `/extension install <path> | list | revoke <id>`,
+  same tier as `/credential`. v1 activates `Declarative`-kind members with
+  empty `provides` (e.g. `bastion/context7-mcp`); copies a pack's personas
+  into the operator's persona directory and its skills alongside (noting
+  `SkillsLoader::load_all` isn't wired into `main()` yet, a pre-existing gap
+  this surfaces). Rejects path traversal/absolute paths in a pack's
+  `personas`/`skills` names and refuses to follow symlinks while copying —
+  both names come from the pack author, not the operator, and were
+  previously joined into filesystem paths unchecked.
+- **`CliCapability`** (`src/extension/cli_capability.rs`): a generic
+  mechanism wrapping an existing, already-authenticated host CLI binary as a
+  workspace-confined capability (subcommand allowlist, no shell, no OAuth/REST
+  client to build) — reusable across future CLI-backed capabilities, not
+  bespoke per tool. `CliCapability::git` is the first instance, wired as the
+  one `native_crate` mapping `/extension install` recognizes
+  (`bastion/git-capability`): `init/status/diff/add/commit/branch/log` only,
+  no push/remote/fetch/clone. `Dockerfile` gained an opt-in
+  `runtime-devtools` stage (git installed) for operators who use it — CI and
+  release images both pin `--target runtime` explicitly, so the default image
+  is unaffected.
+
 ## [0.2.2] — 2026-07-22
 
 ### Added

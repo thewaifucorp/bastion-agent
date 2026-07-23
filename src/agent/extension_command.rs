@@ -21,10 +21,12 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use bastion_extension_protocol::{ExtensionKind, ExtensionManifest, PackManifest, PermissionSet};
+use bastion_extension_protocol::{
+    Entrypoint, ExtensionError, ExtensionKind, ExtensionManifest, PackManifest, PermissionSet,
+};
 
 use crate::extension::declarative::DeclarativeExtension;
-use crate::extension::{ExtensionHost, ExtensionInstance};
+use crate::extension::{CliCapability, ExtensionHost, ExtensionInstance, HostFacade};
 
 /// Handle `/extension <sub> [args]`.
 pub async fn handle(
@@ -113,6 +115,13 @@ async fn install(host: &mut ExtensionHost, personas_dir: &str, owner: &str, path
     report.trim_end().to_string()
 }
 
+/// `bastion/git-capability`'s `crate_name` — the one `native_crate` mapping
+/// this install flow recognizes today. A second native_crate consumer would
+/// warrant a real registry (`crate_name` -> constructor); with exactly one,
+/// a hardcoded match is honest about the actual state of the mechanism
+/// (`docs/en/...` should say so too — see the pack's own README note).
+const GIT_CAPABILITY_CRATE_NAME: &str = "bastion/git-capability";
+
 async fn install_one_extension(
     host: &mut ExtensionHost,
     owner: &str,
@@ -122,6 +131,16 @@ async fn install_one_extension(
     let Some(manifest) = manifests.get(ext_id) else {
         return format!("  ! {ext_id}: referenced by pack but no matching extension.toml found\n");
     };
+
+    if let Entrypoint::NativeCrate { crate_name } = &manifest.entrypoint {
+        if crate_name == GIT_CAPABILITY_CRATE_NAME {
+            return install_git_capability(host, owner, manifest).await;
+        }
+        return format!(
+            "  - {ext_id}: skipped — native_crate '{crate_name}' has no known mapping in this \
+             build (only {GIT_CAPABILITY_CRATE_NAME} is wired today)\n"
+        );
+    }
     if manifest.kind != ExtensionKind::Declarative {
         return format!(
             "  - {ext_id}: skipped — requires mechanism {:?}, which bastion-agent doesn't wire \
@@ -140,6 +159,56 @@ async fn install_one_extension(
     match host.install(instance, owner, &PermissionSet::none()).await {
         Ok(()) => format!("  + {ext_id}: installed\n"),
         Err(e) => format!("  ! {ext_id}: install failed — {e}\n"),
+    }
+}
+
+/// `CliCapability::git`, wrapped as the ONE `ExtensionInstance` this install
+/// flow builds for `native_crate` today. Workspace defaults to the daemon's
+/// current working directory — there is no separate "project workspace"
+/// config concept yet; document this plainly rather than pretending it's
+/// configurable.
+struct GitCliExtension {
+    manifest: ExtensionManifest,
+    workspace: std::path::PathBuf,
+}
+
+#[async_trait::async_trait]
+impl ExtensionInstance for GitCliExtension {
+    fn manifest(&self) -> &ExtensionManifest {
+        &self.manifest
+    }
+
+    async fn activate(&self, facade: &mut HostFacade<'_>) -> Result<(), ExtensionError> {
+        facade.register_capability(Arc::new(CliCapability::git(self.workspace.clone())))?;
+        Ok(())
+    }
+
+    async fn deactivate(&self, facade: &mut HostFacade<'_>) -> Result<(), ExtensionError> {
+        facade.deregister_capability("git");
+        Ok(())
+    }
+}
+
+async fn install_git_capability(
+    host: &mut ExtensionHost,
+    owner: &str,
+    manifest: &ExtensionManifest,
+) -> String {
+    let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let instance: Arc<dyn ExtensionInstance> = Arc::new(GitCliExtension {
+        manifest: manifest.clone(),
+        workspace: workspace.clone(),
+    });
+    let ceiling = PermissionSet {
+        capabilities: vec!["git".to_string()],
+        ..PermissionSet::none()
+    };
+    match host.install(instance, owner, &ceiling).await {
+        Ok(()) => format!(
+            "  + {GIT_CAPABILITY_CRATE_NAME}: installed (workspace: {})\n",
+            workspace.display()
+        ),
+        Err(e) => format!("  ! {GIT_CAPABILITY_CRATE_NAME}: install failed — {e}\n"),
     }
 }
 
@@ -383,10 +452,61 @@ mod tests {
         .await;
 
         assert!(
-            report.contains("acme/native-thing: skipped — requires mechanism NativeCrate"),
+            report.contains("acme/native-thing: skipped — native_crate 'acme/native-thing' has \
+                              no known mapping"),
             "{report}"
         );
         assert!(!host.is_installed("acme/native-thing"));
+    }
+
+    #[tokio::test]
+    async fn install_wires_git_capability_native_crate_by_name() {
+        let pack_root = TempDir::new().unwrap();
+        write_pack(
+            pack_root.path(),
+            r#"
+                id = "thewaifucorp/software-sdlc"
+                version = "1.0.0"
+                extensions = [["bastion/git-capability", "*"]]
+                skills = []
+                personas = []
+
+                [defaults]
+                enabled_extensions = []
+            "#,
+            &[],
+            &[(
+                "git-capability",
+                r#"
+                    id = "bastion/git-capability"
+                    version = "1.0.0"
+                    kind = "native_crate"
+                    compat = "*"
+                    provides = [{ kind = "capability", name = "git" }]
+                    requires = []
+                    secrets = []
+                    migrations = []
+
+                    [permissions]
+                    capabilities = ["git"]
+
+                    [entrypoint]
+                    kind = "native_crate"
+                    crate_name = "bastion/git-capability"
+
+                    [signature]
+                    publisher = "test"
+                    algorithm = "ed25519"
+                    value = "dGVzdA=="
+                "#,
+            )],
+        );
+
+        let mut host = ExtensionHost::new();
+        let report = install(&mut host, ".", "alice", pack_root.path().to_str().unwrap()).await;
+
+        assert!(report.contains("bastion/git-capability: installed"), "{report}");
+        assert!(host.is_installed("bastion/git-capability"));
     }
 
     #[tokio::test]

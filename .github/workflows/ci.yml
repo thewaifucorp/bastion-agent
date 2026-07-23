@@ -57,7 +57,11 @@ jobs:
       - uses: actions/checkout@v4
       - run: ./installer.sh --prepare-only --non-interactive
       - run: docker compose config --quiet
-      - run: docker build --tag bastion-ci .
+      # Explicit --target: the Dockerfile gained a `runtime-devtools` stage
+      # after `runtime` (git-capability's optional git binary) — `docker
+      # build` defaults to the LAST stage, which would silently switch this
+      # build to the devtools variant without this pin.
+      - run: docker build --target runtime --tag bastion-ci .
 
   # Decision #18 (corporate-name scrub) — this repo is public; a leaked
   # proprietary name in a doc, comment, or config file is as much a leak as
