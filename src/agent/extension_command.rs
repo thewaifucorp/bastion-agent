@@ -173,10 +173,12 @@ async fn install_one_extension(
     }
     let instance: Arc<dyn ExtensionInstance> =
         Arc::new(DeclarativeExtension::new(manifest.clone(), vec![]));
-    report.push_str(&match host.install(instance, owner, &PermissionSet::none()).await {
-        Ok(()) => format!("  + {ext_id}: installed\n"),
-        Err(e) => format!("  ! {ext_id}: install failed — {e}\n"),
-    });
+    report.push_str(
+        &match host.install(instance, owner, &PermissionSet::none()).await {
+            Ok(()) => format!("  + {ext_id}: installed\n"),
+            Err(e) => format!("  ! {ext_id}: install failed — {e}\n"),
+        },
+    );
     report
 }
 
@@ -195,9 +197,9 @@ async fn reconcile_one_extension_mcp_deps(
         return String::new();
     }
     match crate::extension::reconcile_mcp_dependencies(&deps, bastion_toml_path).await {
-        Ok(added) if added.is_empty() => format!(
-            "  = {ext_id}: mcp dependencies already present in {bastion_toml_path}\n"
-        ),
+        Ok(added) if added.is_empty() => {
+            format!("  = {ext_id}: mcp dependencies already present in {bastion_toml_path}\n")
+        }
         Ok(added) => format!(
             "  + {ext_id}: added [mcp.servers.{}] to {bastion_toml_path} (restart the daemon to \
              activate)\n",
@@ -504,8 +506,10 @@ mod tests {
         .await;
 
         assert!(
-            report.contains("acme/native-thing: skipped — native_crate 'acme/native-thing' has \
-                              no known mapping"),
+            report.contains(
+                "acme/native-thing: skipped — native_crate 'acme/native-thing' has \
+                              no known mapping"
+            ),
             "{report}"
         );
         assert!(!host.is_installed("acme/native-thing"));
@@ -564,7 +568,10 @@ mod tests {
         )
         .await;
 
-        assert!(report.contains("bastion/git-capability: installed"), "{report}");
+        assert!(
+            report.contains("bastion/git-capability: installed"),
+            "{report}"
+        );
         assert!(host.is_installed("bastion/git-capability"));
     }
 
@@ -576,7 +583,11 @@ mod tests {
         // the statement that creates it, before this test ever reads it.
         let bastion_toml_dir = TempDir::new().unwrap();
         let bastion_toml = bastion_toml_dir.path().join("bastion.toml");
-        std::fs::write(&bastion_toml, "[session]\ndb_path = \".bastion/sessions.db\"\n").unwrap();
+        std::fs::write(
+            &bastion_toml,
+            "[session]\ndb_path = \".bastion/sessions.db\"\n",
+        )
+        .unwrap();
 
         write_pack(
             pack_root.path(),
@@ -632,11 +643,11 @@ mod tests {
         )
         .await;
 
+        assert!(report.contains("added [mcp.servers.context7]"), "{report}");
         assert!(
-            report.contains("added [mcp.servers.context7]"),
+            report.contains("bastion/context7-mcp: installed"),
             "{report}"
         );
-        assert!(report.contains("bastion/context7-mcp: installed"), "{report}");
 
         let contents = std::fs::read_to_string(&bastion_toml).unwrap();
         assert!(contents.contains("[mcp.servers.context7]"));
@@ -727,7 +738,10 @@ mod tests {
             pack_root.path().to_str().unwrap(),
         )
         .await;
-        assert_eq!(list(&host), "installed extensions:\n  acme/noop-mcp  v1.0.0");
+        assert_eq!(
+            list(&host),
+            "installed extensions:\n  acme/noop-mcp  v1.0.0"
+        );
 
         let out = handle(
             &mut host,

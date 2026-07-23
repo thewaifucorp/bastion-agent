@@ -71,9 +71,9 @@ pub async fn reconcile_mcp_dependencies(
     if !mcp_table.contains_key("servers") {
         mcp_table["servers"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
-    let servers = mcp_table["servers"]
-        .as_table_mut()
-        .ok_or_else(|| anyhow::anyhow!("'[mcp.servers]' in '{bastion_toml_path}' is not a table"))?;
+    let servers = mcp_table["servers"].as_table_mut().ok_or_else(|| {
+        anyhow::anyhow!("'[mcp.servers]' in '{bastion_toml_path}' is not a table")
+    })?;
 
     let mut added = Vec::new();
     for dep in deps {
@@ -137,17 +137,18 @@ mod tests {
     #[tokio::test]
     async fn reconcile_adds_missing_server_and_is_idempotent() {
         let file = NamedTempFile::new().unwrap();
-        tokio::fs::write(file.path(), "[session]\ndb_path = \".bastion/sessions.db\"\n")
-            .await
-            .unwrap();
-        let path = file.path().to_str().unwrap();
-
-        let added = reconcile_mcp_dependencies(
-            &[dep("context7", "https://mcp.context7.com/mcp")],
-            path,
+        tokio::fs::write(
+            file.path(),
+            "[session]\ndb_path = \".bastion/sessions.db\"\n",
         )
         .await
         .unwrap();
+        let path = file.path().to_str().unwrap();
+
+        let added =
+            reconcile_mcp_dependencies(&[dep("context7", "https://mcp.context7.com/mcp")], path)
+                .await
+                .unwrap();
         assert_eq!(added, vec!["context7".to_string()]);
 
         let contents = tokio::fs::read_to_string(path).await.unwrap();
@@ -155,18 +156,13 @@ mod tests {
         assert!(contents.contains("https://mcp.context7.com/mcp"));
 
         // Second run: already present, no duplicate, nothing reported added.
-        let added_again = reconcile_mcp_dependencies(
-            &[dep("context7", "https://mcp.context7.com/mcp")],
-            path,
-        )
-        .await
-        .unwrap();
+        let added_again =
+            reconcile_mcp_dependencies(&[dep("context7", "https://mcp.context7.com/mcp")], path)
+                .await
+                .unwrap();
         assert!(added_again.is_empty());
         let contents_again = tokio::fs::read_to_string(path).await.unwrap();
-        assert_eq!(
-            contents_again.matches("[mcp.servers.context7]").count(),
-            1
-        );
+        assert_eq!(contents_again.matches("[mcp.servers.context7]").count(), 1);
     }
 
     #[tokio::test]
@@ -182,7 +178,10 @@ mod tests {
             reconcile_mcp_dependencies(&[dep("context7", "https://mcp.context7.com/mcp")], path)
                 .await
                 .unwrap();
-        assert!(added.is_empty(), "existing entry must not be reported as added");
+        assert!(
+            added.is_empty(),
+            "existing entry must not be reported as added"
+        );
 
         let contents = tokio::fs::read_to_string(path).await.unwrap();
         assert!(contents.contains("https://operator-override.example"));

@@ -279,7 +279,9 @@ mod tests {
                 &ctx(),
             )
             .await;
-        let err = result.expect_err("unlisted flag must be rejected").to_string();
+        let err = result
+            .expect_err("unlisted flag must be rejected")
+            .to_string();
         assert!(err.contains("not allowed"), "{err}");
         assert!(!std::path::Path::new("/tmp/should-not-be-written").exists());
     }
