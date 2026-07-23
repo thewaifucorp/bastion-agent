@@ -12,6 +12,7 @@ Welcome. These guides describe the code in this repository—not an older hosted
 ## Learn the product
 
 - [Architecture](architecture.md) — runtime, channels, MCP services, storage, and extension boundaries.
+- [Extensions](extensions.md) — install a persona/skill/capability pack from the [`bastion-extensions`](https://github.com/thewaifucorp/bastion-extensions) catalog.
 - [Personas](personas.md) — organize agent behavior with personas.
 - [Observability](observability.md) — the `/ui` dashboard, `/events` vocabulary, and `/credential`.
 - [Terminal companion](companion.md) — themes, animated pets, care, progression, and extension packs.

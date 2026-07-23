@@ -82,7 +82,7 @@ Bastion can run with configured model providers or external agent runtimes, incl
 
 Skills are useful because they add real capability. That is exactly why they must be reviewed as code.
 
-Bastion’s extension host supports declarative packages, WASM, and subprocesses while keeping authority in the runtime. An extension can be installed without being granted a blank check to access your files, money, network, or identities.
+Bastion’s extension host supports declarative packages, WASM, subprocesses, and CLI-wrapped capabilities while keeping authority in the runtime. An extension can be installed without being granted a blank check to access your files, money, network, or identities. Install one from the console (`/extension install <path>`) — see the [Extensions guide](docs/en/extensions.md) and the official catalog, [`bastion-extensions`](https://github.com/thewaifucorp/bastion-extensions).
 
 ### 📈 Improvement that stays accountable
 
@@ -117,7 +117,7 @@ you ──► channel / CLI / mobile
 | **Cross-life reprioritization** | Goals, personas, proactive nudges, and Cabinet deliberation help surface conflicts before one part of life quietly consumes the rest. |
 | **Approval-gated improvement** | Reusable patterns can be distilled into skill candidates, but the system does not silently auto-apply them. |
 | **Adaptive Execution** | Every request runs as **Respond**, **Act**, or **Pursue**—only durable objectives persist a resumable, owner-scoped task you can inspect, steer, and cancel. See the [guide](docs/en/adaptive-execution.md). |
-| **Portable agent state** | Export/import the agent’s identity, memories, goals, personas, and configuration with the built-in CLI. |
+| **Portable agent state** | Export/import the agent’s identity, memories, goals, personas, and configuration with the built-in CLI. For a whole running instance, set `BASTION_DATA_DIR` to one directory — session, tasks, memory, personas, companion, and secrets all default under it, so one volume mount is the entire backup/move story. See [Configuration](docs/en/configuration.md#portable-state-bastion_data_dir). |
 | **Local-first deployment shape** | The provided Compose stack isolates local Python sidecars from internet egress while the core handles only the connections it needs. |
 | **MCP-native composition** | Connect MCP services, or compile the optional `bastion mcp-stdio` surface to let another local agent drive Bastion. |
 | **A Life OS with a pulse** | The RGB terminal companion changes with onboarding, guard, build, and Cabinet work; optional game mode turns healthy breaks and completed work into cosmetic progression. |
