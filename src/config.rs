@@ -702,6 +702,46 @@ pub async fn append_mesh_peer(
     Ok(())
 }
 
+/// Fills in per-field env vars from `BASTION_DATA_DIR` when they are not
+/// already set individually — an explicit, granular var (`BASTION__SESSION__DB_PATH`,
+/// `BASTION_SECRETS_DIR`, etc.) always wins; `BASTION_DATA_DIR` only supplies
+/// defaults for whatever wasn't set. No-op when `BASTION_DATA_DIR` is unset —
+/// every existing deployment is unaffected. Must run before `load_config`
+/// (which reads `BASTION__SESSION__DB_PATH`/`BASTION__LOGGING__LOG_PATH` via
+/// `config::Environment`) and before anything reads `BASTION_SECRETS_DIR`,
+/// `BASTION_PERSONAS_DIR`, or `BASTION_COMPANION_PATH` directly.
+pub fn apply_data_dir_defaults() {
+    let Ok(data_dir) = std::env::var("BASTION_DATA_DIR") else {
+        return;
+    };
+    let data_dir = data_dir.trim_end_matches('/');
+    set_env_default("BASTION__SESSION__DB_PATH", &format!("{data_dir}/bastion.db"));
+    set_env_default(
+        "BASTION__LOGGING__LOG_PATH",
+        &format!("{data_dir}/bastion.log"),
+    );
+    set_env_default("BASTION_SECRETS_DIR", &format!("{data_dir}/secrets"));
+    set_env_default("BASTION_PERSONAS_DIR", &format!("{data_dir}/personas"));
+    set_env_default(
+        "BASTION_COMPANION_PATH",
+        &format!("{data_dir}/companion.json"),
+    );
+}
+
+fn set_env_default(key: &str, value: &str) {
+    if std::env::var_os(key).is_none() {
+        std::env::set_var(key, value);
+    }
+}
+
+/// Directory `PersonaRegistry::load_dir` reads from — `BASTION_PERSONAS_DIR`
+/// when set (directly, or defaulted by `apply_data_dir_defaults` from
+/// `BASTION_DATA_DIR`), falling back to `"."` (today's behavior, unaffected
+/// when neither is set).
+pub fn personas_dir() -> String {
+    std::env::var("BASTION_PERSONAS_DIR").unwrap_or_else(|_| ".".to_string())
+}
+
 /// Load BastionConfig from a TOML file, with env var overrides.
 ///
 /// Env var naming convention (config-rs separator "__"):
@@ -721,6 +761,74 @@ pub fn load_config(path: &str) -> anyhow::Result<BastionConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `BASTION_DATA_DIR`/`BASTION_PERSONAS_DIR`/etc are process-global —
+    /// serialize the tests below the same way `tests/boot_local_and_hosted.rs`
+    /// serializes its own env-var-injecting tests.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    const DATA_DIR_ENV_KEYS: [&str; 6] = [
+        "BASTION_DATA_DIR",
+        "BASTION__SESSION__DB_PATH",
+        "BASTION__LOGGING__LOG_PATH",
+        "BASTION_SECRETS_DIR",
+        "BASTION_PERSONAS_DIR",
+        "BASTION_COMPANION_PATH",
+    ];
+
+    #[test]
+    fn apply_data_dir_defaults_fills_unset_vars_but_never_overrides_explicit() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        for key in DATA_DIR_ENV_KEYS {
+            std::env::remove_var(key);
+        }
+
+        // Explicit override set BEFORE the data-dir defaults — must win.
+        std::env::set_var("BASTION_SECRETS_DIR", "/explicit/secrets");
+        std::env::set_var("BASTION_DATA_DIR", "/data");
+
+        apply_data_dir_defaults();
+
+        assert_eq!(
+            std::env::var("BASTION__SESSION__DB_PATH").unwrap(),
+            "/data/bastion.db"
+        );
+        assert_eq!(
+            std::env::var("BASTION__LOGGING__LOG_PATH").unwrap(),
+            "/data/bastion.log"
+        );
+        assert_eq!(
+            std::env::var("BASTION_SECRETS_DIR").unwrap(),
+            "/explicit/secrets",
+            "explicit override must win over the BASTION_DATA_DIR default"
+        );
+        assert_eq!(
+            std::env::var("BASTION_PERSONAS_DIR").unwrap(),
+            "/data/personas"
+        );
+        assert_eq!(
+            std::env::var("BASTION_COMPANION_PATH").unwrap(),
+            "/data/companion.json"
+        );
+        assert_eq!(personas_dir(), "/data/personas");
+
+        for key in DATA_DIR_ENV_KEYS {
+            std::env::remove_var(key);
+        }
+    }
+
+    #[test]
+    fn apply_data_dir_defaults_is_noop_without_data_dir() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        for key in DATA_DIR_ENV_KEYS {
+            std::env::remove_var(key);
+        }
+
+        apply_data_dir_defaults();
+
+        assert!(std::env::var("BASTION_PERSONAS_DIR").is_err());
+        assert_eq!(personas_dir(), ".");
+    }
 
     #[test]
     fn load_config_from_bastion_toml() {
