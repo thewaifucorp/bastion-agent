@@ -35,6 +35,15 @@ pub struct CliCapability {
     description: String,
     binary: String,
     allowed_subcommands: Vec<String>,
+    /// `(subcommand, flag)` pairs explicitly permitted to look like a flag
+    /// (start with `-`). SECURITY: everything else starting with `-` is
+    /// rejected before a subprocess is ever spawned — an allowlisted
+    /// subcommand is not itself permission to pass ANY flag to it. Without
+    /// this, a caller could smuggle e.g. `git log --output=/etc/cron.d/evil`
+    /// (git's `--output` writes to an arbitrary path, escaping the
+    /// workspace confinement entirely) through a subcommand that's
+    /// otherwise perfectly safe.
+    allowed_flags: Vec<(String, String)>,
     needs_approval: bool,
     /// Confinement root — every invocation runs with this as `current_dir`,
     /// regardless of anything the caller passes in `args`.
@@ -48,6 +57,7 @@ impl CliCapability {
         description: impl Into<String>,
         binary: impl Into<String>,
         allowed_subcommands: Vec<String>,
+        allowed_flags: Vec<(String, String)>,
         needs_approval: bool,
         workspace: impl Into<PathBuf>,
     ) -> Self {
@@ -61,7 +71,9 @@ impl CliCapability {
                 "args": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Extra arguments appended after the subcommand"
+                    "description": "Extra arguments appended after the subcommand — any \
+                                     '-'-prefixed value must be in this capability's flag \
+                                     allowlist for that subcommand, or invoke() rejects it"
                 }
             },
             "required": ["subcommand"],
@@ -72,16 +84,26 @@ impl CliCapability {
             description: description.into(),
             binary: binary.into(),
             allowed_subcommands,
+            allowed_flags,
             needs_approval,
             workspace: workspace.into(),
             schema,
         }
     }
 
+    fn flag_is_allowed(&self, subcommand: &str, flag: &str) -> bool {
+        self.allowed_flags
+            .iter()
+            .any(|(sc, f)| sc == subcommand && f == flag)
+    }
+
     /// Preset for `bastion-extensions`' `software-sdlc` pack's
     /// `git-capability`: workspace-confined local Git, read/write but never
     /// reaching a remote (no push/remote/fetch/clone — deliberately absent
-    /// from the allowlist, not merely undocumented).
+    /// from the allowlist, not merely undocumented). `-m`/`--message` on
+    /// `commit` is the ONLY flag this preset allows anywhere — every other
+    /// flag (including genuinely dangerous ones like `log --output=<path>`)
+    /// is rejected.
     pub fn git(workspace: impl Into<PathBuf>) -> Self {
         Self::new(
             "git",
@@ -96,6 +118,10 @@ impl CliCapability {
                 "commit".to_string(),
                 "branch".to_string(),
                 "log".to_string(),
+            ],
+            vec![
+                ("commit".to_string(), "-m".to_string()),
+                ("commit".to_string(), "--message".to_string()),
             ],
             false,
             workspace,
@@ -155,6 +181,21 @@ impl Capability for CliCapability {
                     .collect()
             })
             .unwrap_or_default();
+
+        // SECURITY: an allowlisted subcommand is not permission to pass ANY
+        // flag to it — reject anything '-'-prefixed unless this instance's
+        // allowlist names it for exactly this subcommand. Closes argv
+        // flag-smuggling (e.g. `git log --output=/etc/cron.d/evil` writing
+        // outside the workspace via a subcommand that's otherwise safe).
+        for arg in &extra_args {
+            if arg.starts_with('-') && !self.flag_is_allowed(subcommand, arg) {
+                anyhow::bail!(
+                    "{} arg '{arg}' looks like a flag and is not allowed for subcommand \
+                     '{subcommand}'",
+                    self.binary
+                );
+            }
+        }
 
         let mut argv = vec![subcommand.to_string()];
         argv.extend(extra_args);
@@ -223,6 +264,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_unlisted_flag_even_on_an_allowed_subcommand() {
+        let workspace = TempDir::new().unwrap();
+        let cap = CliCapability::git(workspace.path());
+        cap.invoke(json!({"subcommand": "init"}), &ctx())
+            .await
+            .unwrap();
+
+        // `git log --output=<path>` writes to an arbitrary filesystem path —
+        // exactly the argv flag-smuggling vector the allowlist exists to close.
+        let result = cap
+            .invoke(
+                json!({"subcommand": "log", "args": ["--output=/tmp/should-not-be-written"]}),
+                &ctx(),
+            )
+            .await;
+        let err = result.expect_err("unlisted flag must be rejected").to_string();
+        assert!(err.contains("not allowed"), "{err}");
+        assert!(!std::path::Path::new("/tmp/should-not-be-written").exists());
+    }
+
+    #[tokio::test]
+    async fn allows_the_one_allowlisted_commit_message_flag() {
+        let workspace = TempDir::new().unwrap();
+        let cap = CliCapability::git(workspace.path());
+        cap.invoke(json!({"subcommand": "init"}), &ctx())
+            .await
+            .unwrap();
+        // Commit identity isn't something this capability's allowlist covers
+        // (no `-c`/`config` subcommand) — CI runners don't have one set
+        // globally, so this test configures it directly, outside the
+        // capability under test, exactly like a real deployment's operator
+        // would before ever installing git-capability.
+        Command::new("git")
+            .current_dir(workspace.path())
+            .args(["config", "user.email", "test@example.com"])
+            .output()
+            .await
+            .unwrap();
+        Command::new("git")
+            .current_dir(workspace.path())
+            .args(["config", "user.name", "Test"])
+            .output()
+            .await
+            .unwrap();
+        std::fs::write(workspace.path().join("f.txt"), "x").unwrap();
+        cap.invoke(json!({"subcommand": "add", "args": ["f.txt"]}), &ctx())
+            .await
+            .unwrap();
+
+        let result = cap
+            .invoke(
+                json!({"subcommand": "commit", "args": ["-m", "test commit"]}),
+                &ctx(),
+            )
+            .await;
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[tokio::test]
     async fn rejects_missing_subcommand() {
         let workspace = TempDir::new().unwrap();
         let cap = CliCapability::git(workspace.path());
@@ -248,6 +348,7 @@ mod tests {
             "d",
             "some-tool",
             vec!["mutate".to_string()],
+            vec![],
             true,
             ".",
         );
