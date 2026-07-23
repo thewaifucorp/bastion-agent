@@ -32,6 +32,7 @@ use crate::extension::{CliCapability, ExtensionHost, ExtensionInstance, HostFaca
 pub async fn handle(
     host: &mut ExtensionHost,
     personas_dir: &str,
+    bastion_toml_path: &str,
     arg: Option<&str>,
     owner: &str,
 ) -> anyhow::Result<String> {
@@ -42,7 +43,7 @@ pub async fn handle(
     };
     match sub {
         "" | "list" => Ok(list(host)),
-        "install" => Ok(install(host, personas_dir, owner, rest).await),
+        "install" => Ok(install(host, personas_dir, bastion_toml_path, owner, rest).await),
         "revoke" => Ok(revoke(host, rest).await),
         other => Ok(format!(
             "unknown /extension subcommand '{other}'. Use: install <path> | list | revoke <id>"
@@ -62,7 +63,13 @@ fn list(host: &ExtensionHost) -> String {
     out.trim_end().to_string()
 }
 
-async fn install(host: &mut ExtensionHost, personas_dir: &str, owner: &str, path: &str) -> String {
+async fn install(
+    host: &mut ExtensionHost,
+    personas_dir: &str,
+    bastion_toml_path: &str,
+    owner: &str,
+    path: &str,
+) -> String {
     if path.is_empty() {
         return "usage: /extension install <path>".to_string();
     }
@@ -109,7 +116,9 @@ async fn install(host: &mut ExtensionHost, personas_dir: &str, owner: &str, path
 
     let manifests = load_extension_manifests(&pack_dir.join("extensions"));
     for (ext_id, _version_req) in &pack.extensions {
-        report.push_str(&install_one_extension(host, owner, &manifests, ext_id).await);
+        report.push_str(
+            &install_one_extension(host, owner, &manifests, bastion_toml_path, ext_id).await,
+        );
     }
 
     report.trim_end().to_string()
@@ -125,40 +134,78 @@ const GIT_CAPABILITY_CRATE_NAME: &str = "bastion/git-capability";
 async fn install_one_extension(
     host: &mut ExtensionHost,
     owner: &str,
-    manifests: &HashMap<String, ExtensionManifest>,
+    manifests: &HashMap<String, (ExtensionManifest, String)>,
+    bastion_toml_path: &str,
     ext_id: &str,
 ) -> String {
-    let Some(manifest) = manifests.get(ext_id) else {
+    let Some((manifest, raw)) = manifests.get(ext_id) else {
         return format!("  ! {ext_id}: referenced by pack but no matching extension.toml found\n");
     };
 
+    let mut report = String::new();
+    report.push_str(&reconcile_one_extension_mcp_deps(raw, bastion_toml_path, ext_id).await);
+
     if let Entrypoint::NativeCrate { crate_name } = &manifest.entrypoint {
         if crate_name == GIT_CAPABILITY_CRATE_NAME {
-            return install_git_capability(host, owner, manifest).await;
+            report.push_str(&install_git_capability(host, owner, manifest).await);
+            return report;
         }
-        return format!(
+        report.push_str(&format!(
             "  - {ext_id}: skipped — native_crate '{crate_name}' has no known mapping in this \
              build (only {GIT_CAPABILITY_CRATE_NAME} is wired today)\n"
-        );
+        ));
+        return report;
     }
     if manifest.kind != ExtensionKind::Declarative {
-        return format!(
+        report.push_str(&format!(
             "  - {ext_id}: skipped — requires mechanism {:?}, which bastion-agent doesn't wire \
              into a pack install yet (tracked separately)\n",
             manifest.kind
-        );
+        ));
+        return report;
     }
     if !manifest.provides.is_empty() {
-        return format!(
+        report.push_str(&format!(
             "  - {ext_id}: skipped — declarative extension with non-empty `provides` needs \
              artifact-data loading, not implemented yet\n"
-        );
+        ));
+        return report;
     }
     let instance: Arc<dyn ExtensionInstance> =
         Arc::new(DeclarativeExtension::new(manifest.clone(), vec![]));
-    match host.install(instance, owner, &PermissionSet::none()).await {
+    report.push_str(&match host.install(instance, owner, &PermissionSet::none()).await {
         Ok(()) => format!("  + {ext_id}: installed\n"),
         Err(e) => format!("  ! {ext_id}: install failed — {e}\n"),
+    });
+    report
+}
+
+/// Reconciles whatever `[[mcp_dependencies]]` `raw` declares into
+/// `bastion_toml_path`'s `[mcp.servers.*]` — orthogonal to `kind`/`provides`
+/// (a manifest can be `declarative` with no capability of its own AND still
+/// carry an MCP dependency, e.g. `bastion/context7-mcp`). A manifest with no
+/// `mcp_dependencies` produces an empty report line (nothing to reconcile).
+async fn reconcile_one_extension_mcp_deps(
+    raw: &str,
+    bastion_toml_path: &str,
+    ext_id: &str,
+) -> String {
+    let deps = crate::extension::parse_mcp_dependencies(raw);
+    if deps.is_empty() {
+        return String::new();
+    }
+    match crate::extension::reconcile_mcp_dependencies(&deps, bastion_toml_path).await {
+        Ok(added) if added.is_empty() => format!(
+            "  = {ext_id}: mcp dependencies already present in {bastion_toml_path}\n"
+        ),
+        Ok(added) => format!(
+            "  + {ext_id}: added [mcp.servers.{}] to {bastion_toml_path} (restart the daemon to \
+             activate)\n",
+            added.join("], [mcp.servers.")
+        ),
+        Err(e) => format!(
+            "  ! {ext_id}: failed to reconcile mcp dependencies into {bastion_toml_path} — {e}\n"
+        ),
     }
 }
 
@@ -273,7 +320,10 @@ fn copy_pack_members(
     CopyResults { ok, failed }
 }
 
-fn load_extension_manifests(dir: &Path) -> HashMap<String, ExtensionManifest> {
+/// Keyed by manifest id, each value carries the parsed `ExtensionManifest`
+/// AND the raw TOML text — the latter so `mcp_dependencies` (not part of
+/// `ExtensionManifest`'s own fields) can still be recovered per extension.
+fn load_extension_manifests(dir: &Path) -> HashMap<String, (ExtensionManifest, String)> {
     let mut out = HashMap::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
         return out;
@@ -284,7 +334,7 @@ fn load_extension_manifests(dir: &Path) -> HashMap<String, ExtensionManifest> {
             continue;
         };
         if let Ok(manifest) = toml::from_str::<ExtensionManifest>(&raw) {
-            out.insert(manifest.id.clone(), manifest);
+            out.insert(manifest.id.clone(), (manifest, raw));
         }
     }
     out
@@ -387,6 +437,7 @@ mod tests {
         let report = install(
             &mut host,
             personas_dest.path().to_str().unwrap(),
+            "/nonexistent/bastion.toml",
             "alice",
             pack_root.path().to_str().unwrap(),
         )
@@ -446,6 +497,7 @@ mod tests {
         let report = install(
             &mut host,
             personas_dest.path().to_str().unwrap(),
+            "/nonexistent/bastion.toml",
             "alice",
             pack_root.path().to_str().unwrap(),
         )
@@ -503,17 +555,124 @@ mod tests {
         );
 
         let mut host = ExtensionHost::new();
-        let report = install(&mut host, ".", "alice", pack_root.path().to_str().unwrap()).await;
+        let report = install(
+            &mut host,
+            ".",
+            "/nonexistent/bastion.toml",
+            "alice",
+            pack_root.path().to_str().unwrap(),
+        )
+        .await;
 
         assert!(report.contains("bastion/git-capability: installed"), "{report}");
         assert!(host.is_installed("bastion/git-capability"));
     }
 
     #[tokio::test]
+    async fn install_reconciles_mcp_dependencies_for_a_provides_nothing_extension() {
+        let pack_root = TempDir::new().unwrap();
+        // Bound separately (not `TempDir::new().unwrap().path().join(...)`) —
+        // an unbound TempDir drops (deleting the directory) at the end of
+        // the statement that creates it, before this test ever reads it.
+        let bastion_toml_dir = TempDir::new().unwrap();
+        let bastion_toml = bastion_toml_dir.path().join("bastion.toml");
+        std::fs::write(&bastion_toml, "[session]\ndb_path = \".bastion/sessions.db\"\n").unwrap();
+
+        write_pack(
+            pack_root.path(),
+            r#"
+                id = "thewaifucorp/software-sdlc"
+                version = "1.0.0"
+                extensions = [["bastion/context7-mcp", "*"]]
+                skills = []
+                personas = []
+
+                [defaults]
+                enabled_extensions = []
+            "#,
+            &[],
+            &[(
+                "context7-mcp",
+                r#"
+                    id = "bastion/context7-mcp"
+                    version = "1.0.0"
+                    kind = "declarative"
+                    compat = "*"
+                    provides = []
+                    requires = []
+                    secrets = []
+                    migrations = []
+
+                    [[mcp_dependencies]]
+                    name = "context7"
+                    endpoint = "https://mcp.context7.com/mcp"
+                    read_only = true
+
+                    [permissions]
+
+                    [entrypoint]
+                    kind = "declarative"
+                    artifact_path = "context7.json"
+
+                    [signature]
+                    publisher = "test"
+                    algorithm = "ed25519"
+                    value = "dGVzdA=="
+                "#,
+            )],
+        );
+
+        let mut host = ExtensionHost::new();
+        let report = install(
+            &mut host,
+            ".",
+            bastion_toml.to_str().unwrap(),
+            "alice",
+            pack_root.path().to_str().unwrap(),
+        )
+        .await;
+
+        assert!(
+            report.contains("added [mcp.servers.context7]"),
+            "{report}"
+        );
+        assert!(report.contains("bastion/context7-mcp: installed"), "{report}");
+
+        let contents = std::fs::read_to_string(&bastion_toml).unwrap();
+        assert!(contents.contains("[mcp.servers.context7]"));
+        assert!(contents.contains("https://mcp.context7.com/mcp"));
+
+        // Re-installing (e.g. a second pack member reusing the same server)
+        // must not duplicate the entry.
+        let mut host2 = ExtensionHost::new();
+        let report2 = install(
+            &mut host2,
+            ".",
+            bastion_toml.to_str().unwrap(),
+            "alice",
+            pack_root.path().to_str().unwrap(),
+        )
+        .await;
+        assert!(
+            report2.contains("mcp dependencies already present"),
+            "{report2}"
+        );
+        let contents2 = std::fs::read_to_string(&bastion_toml).unwrap();
+        assert_eq!(contents2.matches("[mcp.servers.context7]").count(), 1);
+    }
+
+    #[tokio::test]
     async fn install_reports_missing_pack_toml_clearly() {
         let empty = TempDir::new().unwrap();
         let mut host = ExtensionHost::new();
-        let report = install(&mut host, ".", "alice", empty.path().to_str().unwrap()).await;
+        let report = install(
+            &mut host,
+            ".",
+            "/nonexistent/bastion.toml",
+            "alice",
+            empty.path().to_str().unwrap(),
+        )
+        .await;
         assert!(report.starts_with("cannot read"), "{report}");
     }
 
@@ -560,12 +719,25 @@ mod tests {
         );
 
         let mut host = ExtensionHost::new();
-        install(&mut host, ".", "alice", pack_root.path().to_str().unwrap()).await;
+        install(
+            &mut host,
+            ".",
+            "/nonexistent/bastion.toml",
+            "alice",
+            pack_root.path().to_str().unwrap(),
+        )
+        .await;
         assert_eq!(list(&host), "installed extensions:\n  acme/noop-mcp  v1.0.0");
 
-        let out = handle(&mut host, ".", Some("revoke acme/noop-mcp"), "alice")
-            .await
-            .unwrap();
+        let out = handle(
+            &mut host,
+            ".",
+            "/nonexistent/bastion.toml",
+            Some("revoke acme/noop-mcp"),
+            "alice",
+        )
+        .await
+        .unwrap();
         assert_eq!(out, "extension acme/noop-mcp revoked.");
         assert_eq!(list(&host), "no extensions installed.");
     }
@@ -609,6 +781,7 @@ mod tests {
         let report = install(
             &mut host,
             personas_dest.path().to_str().unwrap(),
+            "/nonexistent/bastion.toml",
             "alice",
             pack_root.path().to_str().unwrap(),
         )

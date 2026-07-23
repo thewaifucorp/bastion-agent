@@ -2294,9 +2294,12 @@ async fn daemon_loop(
                             // once PR #11 (BASTION_DATA_DIR/BASTION_PERSONAS_DIR)
                             // merges — kept as the literal "." here so this PR
                             // builds independently against main.
+                            let bastion_toml_path = std::env::var("BASTION_CONFIG")
+                                .unwrap_or_else(|_| "bastion.toml".to_owned());
                             match bastion::agent::extension_command::handle(
                                 &mut extension_host,
                                 ".",
+                                &bastion_toml_path,
                                 ext_arg,
                                 bastion_runtime::agent::loop_::DEFAULT_OWNER,
                             )
