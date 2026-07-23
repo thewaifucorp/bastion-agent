@@ -158,8 +158,25 @@ struct CopyResults {
     failed: Vec<(String, String)>,
 }
 
+/// A pack's own `personas`/`skills` name list is untrusted input (the pack
+/// author, not the operator) — reject anything that isn't a single plain
+/// path segment before it ever reaches a `Path::join`. Blocks `..`,
+/// separators (`/`, `\`), and absolute paths, which would otherwise let a
+/// malicious pack write outside both the source pack directory and the
+/// operator's persona/skills directory.
+fn is_safe_member_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !Path::new(name).is_absolute()
+}
+
 /// Copies each named subdirectory of `src_root` to `dest_of(name)`, best
-/// effort per member — one failure never blocks the others.
+/// effort per member — one failure never blocks the others. Rejects any
+/// name that isn't a safe single path segment (see `is_safe_member_name`)
+/// before ever joining it into a path.
 fn copy_pack_members(
     src_root: &Path,
     names: &[String],
@@ -169,6 +186,14 @@ fn copy_pack_members(
     let mut failed = Vec::new();
     if src_root.is_dir() {
         for name in names {
+            if !is_safe_member_name(name) {
+                failed.push((
+                    name.clone(),
+                    "unsafe member name (must be a single path segment, no '..' or separators)"
+                        .to_string(),
+                ));
+                continue;
+            }
             let src = src_root.join(name);
             match copy_dir(&src, &dest_of(name)) {
                 Ok(()) => ok.push(name.clone()),
@@ -200,7 +225,18 @@ fn copy_dir(src: &Path, dest: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dest)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
+        // `file_type()` on a `DirEntry` does NOT follow symlinks (unlike
+        // `Path::metadata`) — a symlinked entry reports `is_symlink() ==
+        // true` here, not the type of whatever it points to. A pack could
+        // otherwise ship a symlink pointing outside its own directory and
+        // have it silently followed by `copy_dir`'s recursion/`fs::copy`.
         let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            return Err(std::io::Error::other(format!(
+                "refusing to follow symlink in pack content: {}",
+                entry.path().display()
+            )));
+        }
         let dest_path = dest.join(entry.file_name());
         if file_type.is_dir() {
             copy_dir(&entry.path(), &dest_path)?;
@@ -412,5 +448,73 @@ mod tests {
             .unwrap();
         assert_eq!(out, "extension acme/noop-mcp revoked.");
         assert_eq!(list(&host), "no extensions installed.");
+    }
+
+    #[test]
+    fn is_safe_member_name_rejects_traversal_and_absolute_paths() {
+        assert!(is_safe_member_name("tech-lead"));
+        assert!(!is_safe_member_name(".."));
+        assert!(!is_safe_member_name("../../etc/cron.d/evil"));
+        assert!(!is_safe_member_name("a/../../b"));
+        assert!(!is_safe_member_name("a/b"));
+        assert!(!is_safe_member_name("a\\b"));
+        assert!(!is_safe_member_name("/etc/passwd"));
+        assert!(!is_safe_member_name(""));
+        assert!(!is_safe_member_name("."));
+    }
+
+    #[tokio::test]
+    async fn install_rejects_path_traversal_in_persona_name_without_touching_disk() {
+        let pack_root = TempDir::new().unwrap();
+        let personas_dest = TempDir::new().unwrap();
+        let outside_marker = personas_dest.path().parent().unwrap().join("pwned");
+
+        write_pack(
+            pack_root.path(),
+            r#"
+                id = "acme/evil-pack"
+                version = "1.0.0"
+                extensions = []
+                skills = []
+                personas = ["../pwned"]
+
+                [defaults]
+                enabled_extensions = []
+            "#,
+            &[("../pwned", "---\nname: pwned\n---\nbody")],
+            &[],
+        );
+
+        let mut host = ExtensionHost::new();
+        let report = install(
+            &mut host,
+            personas_dest.path().to_str().unwrap(),
+            "alice",
+            pack_root.path().to_str().unwrap(),
+        )
+        .await;
+
+        assert!(report.contains("unsafe member name"), "{report}");
+        assert!(
+            !outside_marker.exists(),
+            "path traversal must never write outside the destination root"
+        );
+    }
+
+    #[test]
+    fn copy_dir_refuses_to_follow_symlinks() {
+        let src = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "top secret").unwrap();
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), src.path().join("escape")).unwrap();
+        #[cfg(not(unix))]
+        return; // symlink construction is unix-specific; nothing to assert elsewhere.
+
+        let result = copy_dir(src.path(), &dest.path().join("copied"));
+        assert!(result.is_err(), "copy_dir must refuse a symlinked entry");
+        assert!(!dest.path().join("copied/escape/secret.txt").exists());
     }
 }
