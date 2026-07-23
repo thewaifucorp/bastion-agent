@@ -32,6 +32,17 @@ for how that differs from the library crates it depends on).
   `runtime-devtools` stage (git installed) for operators who use it — CI and
   release images both pin `--target runtime` explicitly, so the default image
   is unaffected.
+- **`BASTION_DATA_DIR` portable state root**: a single env var that defaults
+  `session.db_path`, `logging.log_path`, `BASTION_PERSONAS_DIR`,
+  `BASTION_COMPANION_PATH`, and `BASTION_SECRETS_DIR` under one directory,
+  unless the more specific variable is already set (explicit always wins).
+  `PersonaRegistry` no longer hardcodes `.` as its load directory — it reads
+  `BASTION_PERSONAS_DIR` (via `bastion::config::personas_dir()`), falling
+  back to `.` unchanged when unset. Companion's `state_path()` reads
+  `BASTION_COMPANION_PATH` first, falling back to
+  `~/.config/bastion/companion.json` unchanged when unset. Fully
+  backward-compatible: omitting `BASTION_DATA_DIR` changes nothing. See
+  [Configuration — Portable state](docs/en/configuration.md#portable-state-bastion_data_dir).
 
 ## [0.2.2] — 2026-07-22
 

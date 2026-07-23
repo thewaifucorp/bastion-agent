@@ -494,6 +494,11 @@ fn import_host_credentials(project_dir: &std::path::Path, yes: bool) -> anyhow::
 async fn main() -> anyhow::Result<()> {
     // Load .env (if present) before any std::env::var read. Real shell env wins.
     dotenvy::dotenv().ok();
+    // BASTION_DATA_DIR: fills in BASTION__SESSION__DB_PATH/BASTION__LOGGING__LOG_PATH/
+    // BASTION_SECRETS_DIR/BASTION_PERSONAS_DIR/BASTION_COMPANION_PATH defaults for
+    // whichever of those aren't already set — must run before any of them is read
+    // (config load, personas dir, companion state path all read theirs below).
+    bastion::config::apply_data_dir_defaults();
 
     let cli = Cli::parse();
     let command = cli.command.unwrap_or_else(default_chat_command);
@@ -743,8 +748,9 @@ async fn main() -> anyhow::Result<()> {
 
     let daily_budget = cfg.agent.daily_budget_usd;
 
-    // Init persona registry (load from "./personas/" directory; empty if missing — PERS-07)
-    let registry = PersonaRegistry::load_dir(".").await?;
+    // Init persona registry (load from BASTION_PERSONAS_DIR, defaulting to "./personas/";
+    // empty if missing — PERS-07)
+    let registry = PersonaRegistry::load_dir(&bastion::config::personas_dir()).await?;
     // M2 (P1 `Responder`): `registry` moves into `PersonaResponder` below — the
     // kernel no longer holds `AgentLoop.registry`. Several product-level
     // consumers (BastionMcpServer's resources, .af export/import) still need a
@@ -2290,15 +2296,12 @@ async fn daemon_loop(
                         // /credential; no remote channel reaches it).
                         if first_token == "/extension" {
                             let ext_arg = trimmed.split_once(' ').map(|x| x.1);
-                            // TODO: switch to `bastion::config::personas_dir()`
-                            // once PR #11 (BASTION_DATA_DIR/BASTION_PERSONAS_DIR)
-                            // merges — kept as the literal "." here so this PR
-                            // builds independently against main.
+                            let personas_dir = bastion::config::personas_dir();
                             let bastion_toml_path = std::env::var("BASTION_CONFIG")
                                 .unwrap_or_else(|_| "bastion.toml".to_owned());
                             match bastion::agent::extension_command::handle(
                                 &mut extension_host,
-                                ".",
+                                &personas_dir,
                                 &bastion_toml_path,
                                 ext_arg,
                                 bastion_runtime::agent::loop_::DEFAULT_OWNER,
@@ -2754,7 +2757,8 @@ async fn daemon_loop(
             // behind a swappable handle; changing that shape is a kernel
             // contract change this cycle does not make).
             _ = lifecycle.reload.notified() => {
-                match bastion_personas::persona::PersonaRegistry::load_dir(".").await {
+                let personas_dir = bastion::config::personas_dir();
+                match bastion_personas::persona::PersonaRegistry::load_dir(&personas_dir).await {
                     Ok(fresh) => {
                         command_resources.registry = fresh;
                         tracing::info!(

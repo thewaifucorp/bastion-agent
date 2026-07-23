@@ -687,6 +687,9 @@ fn default_web_frame() -> (String, super::CompanionFrame) {
 }
 
 fn state_path() -> PathBuf {
+    if let Ok(path) = std::env::var("BASTION_COMPANION_PATH") {
+        return PathBuf::from(path);
+    }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home)
         .join(".config")
@@ -940,5 +943,17 @@ mod tests {
             70
         );
         assert_eq!(state.xp, 42);
+    }
+
+    /// `BASTION_COMPANION_PATH` is process-global — serialize against any
+    /// other test in this module that might set it.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn state_path_respects_bastion_companion_path_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("BASTION_COMPANION_PATH", "/data/companion.json");
+        assert_eq!(state_path(), PathBuf::from("/data/companion.json"));
+        std::env::remove_var("BASTION_COMPANION_PATH");
     }
 }
