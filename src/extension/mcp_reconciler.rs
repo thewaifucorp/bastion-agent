@@ -25,6 +25,17 @@ pub struct McpDependency {
     #[serde(default)]
     #[allow(dead_code)]
     pub read_only: bool,
+    /// Written verbatim into the reconciled `[mcp.servers.<name>]` entry's
+    /// own `auth_token` key, which `bastion_mcp::McpClient::connect_from_config`
+    /// already reads and sends as `Authorization: Bearer <token>` (resolving
+    /// a `${ENV_VAR}` reference itself — see bastion-mcp's `client.rs`). This
+    /// is a pack-author-declared reference to an env var name, e.g.
+    /// `"${FINANCIALDATASETS_API_KEY}"` — never the operator's actual secret
+    /// value, which stays in their own environment. `None` (the default)
+    /// reconciles a server entry with no auth, same as before this field
+    /// existed.
+    #[serde(default)]
+    pub auth_token: Option<String>,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -83,6 +94,9 @@ pub async fn reconcile_mcp_dependencies(
         let mut entry = toml_edit::Table::new();
         entry["url"] = value(dep.endpoint.clone());
         entry["label"] = value(dep.name.clone());
+        if let Some(token) = &dep.auth_token {
+            entry["auth_token"] = value(token.clone());
+        }
         servers.insert(&dep.name, toml_edit::Item::Table(entry));
         added.push(dep.name.clone());
     }
@@ -112,6 +126,14 @@ mod tests {
             name: name.to_string(),
             endpoint: endpoint.to_string(),
             read_only: true,
+            auth_token: None,
+        }
+    }
+
+    fn dep_with_auth(name: &str, endpoint: &str, auth_token: &str) -> McpDependency {
+        McpDependency {
+            auth_token: Some(auth_token.to_string()),
+            ..dep(name, endpoint)
         }
     }
 
@@ -132,6 +154,28 @@ mod tests {
     #[test]
     fn parse_mcp_dependencies_empty_when_absent() {
         assert!(parse_mcp_dependencies(r#"id = "acme/thing""#).is_empty());
+    }
+
+    #[test]
+    fn parse_mcp_dependencies_reads_auth_token_when_present() {
+        let raw = r#"
+            id = "bastion/financialdatasets-mcp"
+
+            [[mcp_dependencies]]
+            name = "financialdatasets"
+            endpoint = "https://mcp.financialdatasets.ai/"
+            read_only = true
+            auth_token = "${FINANCIALDATASETS_API_KEY}"
+        "#;
+        let deps = parse_mcp_dependencies(raw);
+        assert_eq!(
+            deps,
+            vec![dep_with_auth(
+                "financialdatasets",
+                "https://mcp.financialdatasets.ai/",
+                "${FINANCIALDATASETS_API_KEY}"
+            )]
+        );
     }
 
     #[tokio::test]
@@ -163,6 +207,56 @@ mod tests {
         assert!(added_again.is_empty());
         let contents_again = tokio::fs::read_to_string(path).await.unwrap();
         assert_eq!(contents_again.matches("[mcp.servers.context7]").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn reconcile_writes_auth_token_when_dependency_declares_one() {
+        let file = NamedTempFile::new().unwrap();
+        tokio::fs::write(
+            file.path(),
+            "[session]\ndb_path = \".bastion/sessions.db\"\n",
+        )
+        .await
+        .unwrap();
+        let path = file.path().to_str().unwrap();
+
+        let added = reconcile_mcp_dependencies(
+            &[dep_with_auth(
+                "financialdatasets",
+                "https://mcp.financialdatasets.ai/",
+                "${FINANCIALDATASETS_API_KEY}",
+            )],
+            path,
+        )
+        .await
+        .unwrap();
+        assert_eq!(added, vec!["financialdatasets".to_string()]);
+
+        let contents = tokio::fs::read_to_string(path).await.unwrap();
+        assert!(contents.contains("[mcp.servers.financialdatasets]"));
+        assert!(contents.contains(r#"auth_token = "${FINANCIALDATASETS_API_KEY}""#));
+    }
+
+    #[tokio::test]
+    async fn reconcile_omits_auth_token_key_entirely_when_dependency_has_none() {
+        let file = NamedTempFile::new().unwrap();
+        tokio::fs::write(
+            file.path(),
+            "[session]\ndb_path = \".bastion/sessions.db\"\n",
+        )
+        .await
+        .unwrap();
+        let path = file.path().to_str().unwrap();
+
+        reconcile_mcp_dependencies(&[dep("context7", "https://mcp.context7.com/mcp")], path)
+            .await
+            .unwrap();
+
+        let contents = tokio::fs::read_to_string(path).await.unwrap();
+        assert!(
+            !contents.contains("auth_token"),
+            "a dependency with no auth_token must not gain one out of thin air"
+        );
     }
 
     #[tokio::test]
