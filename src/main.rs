@@ -2418,6 +2418,26 @@ async fn daemon_loop(
                             }
                             continue;
                         }
+                        // Backlog M4 (hedge-fund-committee): 2-stage Cabinet
+                        // composition (signal gate -> conditional debate ->
+                        // Risk Manager -> Portfolio Manager) — console only,
+                        // same trusted-host tier as /extension above.
+                        if first_token == "/committee" {
+                            let committee_arg = trimmed.split_once(' ').map(|x| x.1);
+                            match bastion::agent::committee::handle(
+                                &registry_for_product,
+                                provider.clone(),
+                                &mut agent.capability_registry,
+                                committee_arg,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                            )
+                            .await
+                            {
+                                Ok(report) => println!("{report}"),
+                                Err(e) => println!("Erro no comando: {e}"),
+                            }
+                            continue;
+                        }
                         // Observability A3: staged-proposal cockpit — console
                         // only; the web can only ever stage, never apply.
                         if first_token == "/proposal" {
