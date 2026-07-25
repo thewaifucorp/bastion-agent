@@ -2266,7 +2266,7 @@ async fn daemon_loop(
                         let prompt = pending_console_prompt
                             .take()
                             .expect("checked Some in this arm's guard");
-                        let personas_dir = bastion::config::personas_dir();
+                        let personas_dir = bastion::config::personas_install_dir();
                         let bastion_toml_path = std::env::var("BASTION_CONFIG")
                             .unwrap_or_else(|_| "bastion.toml".to_owned());
                         if s.trim().starts_with('/') {
@@ -2369,7 +2369,7 @@ async fn daemon_loop(
                         // /credential; no remote channel reaches it).
                         if first_token == "/extension" {
                             let ext_arg = trimmed.split_once(' ').map(|x| x.1);
-                            let personas_dir = bastion::config::personas_dir();
+                            let personas_dir = bastion::config::personas_install_dir();
                             let bastion_toml_path = std::env::var("BASTION_CONFIG")
                                 .unwrap_or_else(|_| "bastion.toml".to_owned());
                             match bastion::agent::extension_command::handle(
