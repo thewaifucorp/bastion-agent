@@ -18,16 +18,32 @@
 use serde_json::Value;
 
 const EXTERNAL_REF_KEY: &str = "control_plane_external_ref";
+const PROJECT_KEY: &str = "control_plane_project";
 const STEER_KEY: &str = "steer";
 
-/// Set `external_ref` on a **brand-new** case's `business_state` (never
-/// called on an existing case — creation only, so there is no prior value to
-/// preserve here; `steer_note` is what handles append-without-clobber on an
-/// existing one).
-pub fn new_business_state(external_ref: Option<&str>) -> Value {
-    match external_ref {
-        Some(r) => Value::Array(vec![serde_json::json!({ EXTERNAL_REF_KEY: r })]),
-        None => Value::Null,
+/// Set `external_ref`/`project` on a **brand-new** case's `business_state`
+/// (never called on an existing case — creation only, so there is no prior
+/// value to preserve here; `steer_note` is what handles append-without-
+/// clobber on an existing one).
+///
+/// `project` is `bastion-core`'s `TaskCase` has no `project` concept and is
+/// deliberately not modified to add one — this is how a task ends up
+/// filterable by the creating credential's `project` tag
+/// (`control_plane::credential::AuthenticatedCredential.project`) without
+/// touching the kernel: the same host-owned-opaque-JSON convention
+/// `external_ref` already established.
+pub fn new_business_state(external_ref: Option<&str>, project: Option<&str>) -> Value {
+    let mut notes = Vec::new();
+    if let Some(r) = external_ref {
+        notes.push(serde_json::json!({ EXTERNAL_REF_KEY: r }));
+    }
+    if let Some(p) = project {
+        notes.push(serde_json::json!({ PROJECT_KEY: p }));
+    }
+    if notes.is_empty() {
+        Value::Null
+    } else {
+        Value::Array(notes)
     }
 }
 
@@ -41,6 +57,18 @@ pub fn external_ref(business_state: &Value) -> Option<String> {
     let array = business_state.as_array()?;
     array.iter().find_map(|note| {
         note.get(EXTERNAL_REF_KEY)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    })
+}
+
+/// Read `project` back out of a case's `business_state` — same tolerance
+/// rules as [`external_ref`], and safe to call alongside it (they're
+/// different tagged objects in the same notes array).
+pub fn project(business_state: &Value) -> Option<String> {
+    let array = business_state.as_array()?;
+    array.iter().find_map(|note| {
+        note.get(PROJECT_KEY)
             .and_then(Value::as_str)
             .map(str::to_owned)
     })
@@ -65,12 +93,12 @@ mod tests {
 
     #[test]
     fn new_business_state_none_is_null() {
-        assert_eq!(new_business_state(None), Value::Null);
+        assert_eq!(new_business_state(None, None), Value::Null);
     }
 
     #[test]
     fn external_ref_round_trips_through_new_business_state() {
-        let state = new_business_state(Some("paperclip-issue-42"));
+        let state = new_business_state(Some("paperclip-issue-42"), None);
         assert_eq!(external_ref(&state).as_deref(), Some("paperclip-issue-42"));
     }
 
@@ -80,8 +108,27 @@ mod tests {
     }
 
     #[test]
+    fn project_round_trips_through_new_business_state() {
+        let state = new_business_state(None, Some("acme"));
+        assert_eq!(project(&state).as_deref(), Some("acme"));
+        assert_eq!(external_ref(&state), None);
+    }
+
+    #[test]
+    fn external_ref_and_project_coexist_independently() {
+        let state = new_business_state(Some("paperclip-issue-42"), Some("acme"));
+        assert_eq!(external_ref(&state).as_deref(), Some("paperclip-issue-42"));
+        assert_eq!(project(&state).as_deref(), Some("acme"));
+    }
+
+    #[test]
+    fn project_absent_on_untouched_null_state() {
+        assert_eq!(project(&Value::Null), None);
+    }
+
+    #[test]
     fn external_ref_survives_a_steer_note_appended_afterward() {
-        let created = new_business_state(Some("paperclip-issue-42"));
+        let created = new_business_state(Some("paperclip-issue-42"), None);
         let steered = append_steer_note(created, "focus on the auth bug first");
         assert_eq!(
             external_ref(&steered).as_deref(),
@@ -110,7 +157,7 @@ mod tests {
 
     #[test]
     fn multiple_steer_notes_accumulate_in_order() {
-        let mut state = new_business_state(None);
+        let mut state = new_business_state(None, None);
         state = append_steer_note(state, "first");
         state = append_steer_note(state, "second");
         let array = state.as_array().unwrap();

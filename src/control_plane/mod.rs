@@ -41,6 +41,7 @@ pub mod dto;
 #[cfg(feature = "mcp-server")]
 pub mod mcp_tools;
 pub mod pagination;
+pub mod rate_limit;
 pub mod routes;
 pub mod scope;
 pub mod translate;

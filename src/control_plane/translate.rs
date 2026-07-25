@@ -320,9 +320,10 @@ mod tests {
     #[test]
     fn task_resource_recovers_external_ref_from_business_state() {
         let mut case = sample_case();
-        case.business_state = OpaqueState(super::super::business_state::new_business_state(Some(
-            "paperclip-issue-42",
-        )));
+        case.business_state = OpaqueState(super::super::business_state::new_business_state(
+            Some("paperclip-issue-42"),
+            None,
+        ));
         let dto = task_resource(&case, vec![]);
         assert_eq!(dto.external_ref.as_deref(), Some("paperclip-issue-42"));
     }

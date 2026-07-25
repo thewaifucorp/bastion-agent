@@ -167,14 +167,23 @@ pub(crate) async fn emit_event(
     .await;
 }
 
-/// List `owner`'s tasks, optionally filtered by status, cursor-paginated.
-/// `attempts` is always empty on every item (see `routes.rs`'s original doc
-/// comment on `list_tasks` for why — avoids an N+1 fan-out).
+/// List `owner`'s tasks, optionally filtered by status and/or project,
+/// cursor-paginated. `attempts` is always empty on every item (see
+/// `routes.rs`'s original doc comment on `list_tasks` for why — avoids an
+/// N+1 fan-out).
+///
+/// `project` narrows visibility WITHIN the owner's tasks — it is not a
+/// substitute for owner isolation. `None` (the credential has no project
+/// tag) sees every task the owner can see, same as before this filter
+/// existed; `Some(p)` sees only tasks created by a credential tagged with
+/// that same `p` (`business_state::project`, since `bastion-core`'s
+/// `TaskCase` has no `project` field of its own — see `business_state.rs`).
 pub async fn list_tasks(
     state: &CoreOpsState,
     owner: &str,
     status_filter: Option<&str>,
     cursor: Option<&str>,
+    project_filter: Option<&str>,
 ) -> Result<TaskListResponse, CoreOpError> {
     let cases = state
         .task_store
@@ -185,19 +194,25 @@ pub async fn list_tasks(
             CoreOpError::Internal
         })?;
 
-    let filtered: Vec<_> = match status_filter {
-        Some(status_filter) => cases
-            .into_iter()
-            .filter(|c| {
+    let filtered: Vec<_> = cases
+        .into_iter()
+        .filter(|c| match status_filter {
+            Some(status_filter) => {
                 let status_str = serde_json::to_value(translate::task_status(c.status))
                     .ok()
                     .and_then(|v| v.as_str().map(str::to_owned))
                     .unwrap_or_default();
                 status_str.eq_ignore_ascii_case(status_filter)
-            })
-            .collect(),
-        None => cases,
-    };
+            }
+            None => true,
+        })
+        .filter(|c| match project_filter {
+            Some(project_filter) => {
+                business_state::project(&c.business_state.0).as_deref() == Some(project_filter)
+            }
+            None => true,
+        })
+        .collect();
 
     let (page, next_cursor) = paginate(
         filtered,
@@ -307,6 +322,7 @@ pub async fn create_task(
     owner: &str,
     idempotency_key: &str,
     req: CreateTaskRequest,
+    project: Option<&str>,
 ) -> Result<CreateTaskOutcome, CoreOpError> {
     if idempotency_key.trim().is_empty() {
         return Err(CoreOpError::InvalidInput(
@@ -389,6 +405,7 @@ pub async fn create_task(
         correlation: CorrelationIds::default(),
         business_state: OpaqueState(business_state::new_business_state(
             req.external_ref.as_deref(),
+            project,
         )),
         created_at: now,
         updated_at: now,

@@ -107,6 +107,12 @@ pub fn router(state: ControlPlaneState) -> Router {
             post(create_webhook_subscription),
         )
         .route("/v1/openapi.yaml", get(get_openapi_spec))
+        // Applied to every /v1/* route, before the ControlPlaneState below —
+        // its own state (RateLimiter) is independent, see rate_limit.rs.
+        .layer(axum::middleware::from_fn_with_state(
+            super::rate_limit::RateLimiter::new(),
+            super::rate_limit::enforce,
+        ))
         .with_state(state)
 }
 
@@ -126,7 +132,7 @@ fn error_response(status: StatusCode, code: &str, message: &str) -> axum::respon
 /// token, just a grep handle between a client-reported error and the daemon
 /// log. Same "no UUID crate dependency" reasoning as
 /// `credential::uuid_like_id`.
-fn uuid_like_request_id() -> String {
+pub(super) fn uuid_like_request_id() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 8];
     rand::thread_rng().fill_bytes(&mut bytes);
@@ -255,6 +261,7 @@ async fn list_tasks(
         &cred.owner_id,
         q.status.as_deref(),
         q.cursor.as_deref(),
+        cred.project.as_deref(),
     )
     .await
     {
@@ -470,7 +477,15 @@ async fn create_task(
         }
     };
 
-    match core_ops::create_task(&state.core(), &cred.owner_id, &idempotency_key, req).await {
+    match core_ops::create_task(
+        &state.core(),
+        &cred.owner_id,
+        &idempotency_key,
+        req,
+        cred.project.as_deref(),
+    )
+    .await
+    {
         Ok(outcome) => {
             let status = if outcome.created {
                 StatusCode::CREATED

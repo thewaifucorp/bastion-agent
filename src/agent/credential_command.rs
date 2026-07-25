@@ -35,8 +35,9 @@ pub async fn handle(
         "issue" => issue(store, owner, rest).await,
         "revoke" => revoke(store, owner, rest).await,
         other => Ok(format!(
-            "unknown /credential subcommand '{other}'. Use: list | issue <label> [scopes] | \
-             revoke <id>  (scopes: comma-separated from {ALL_SCOPE_NAMES}; default {DEFAULT_SCOPES})"
+            "unknown /credential subcommand '{other}'. Use: \
+             list | issue <label> [scopes] [--project <name>] | revoke <id> \
+             (scopes: comma-separated from {ALL_SCOPE_NAMES}; default {DEFAULT_SCOPES})"
         )),
     }
 }
@@ -85,18 +86,40 @@ fn parse_scopes(csv: &str) -> Result<ScopeSet, String> {
     Ok(ScopeSet::new(scopes))
 }
 
+/// Pulls an optional `--project <name>` pair out of the token stream,
+/// wherever it appears (`/credential issue <label> [scopes] [--project
+/// <name>]` is the documented order, but this doesn't require it). Returns
+/// the remaining tokens (label, and optionally scopes) plus the extracted
+/// project name, if any.
+fn extract_project_flag<'a>(tokens: &[&'a str]) -> Result<(Vec<&'a str>, Option<String>), String> {
+    let mut tokens = tokens.to_vec();
+    let Some(idx) = tokens.iter().position(|t| *t == "--project") else {
+        return Ok((tokens, None));
+    };
+    let Some(value) = tokens.get(idx + 1) else {
+        return Err("--project needs a value, e.g. --project acme".to_string());
+    };
+    let project = value.to_string();
+    tokens.drain(idx..=idx + 1);
+    Ok((tokens, Some(project)))
+}
+
 async fn issue(
     store: &Arc<SqliteCredentialStore>,
     owner: &str,
     rest: &str,
 ) -> anyhow::Result<String> {
-    let (label, scopes_csv) = match rest.split_once(char::is_whitespace) {
-        Some((l, s)) => (l, s.trim()),
-        None => (rest, ""),
+    let raw_tokens: Vec<&str> = rest.split_whitespace().collect();
+    let (tokens, project) = match extract_project_flag(&raw_tokens) {
+        Ok(t) => t,
+        Err(msg) => return Ok(msg),
     };
+    let label = tokens.first().copied().unwrap_or("");
+    let scopes_csv = tokens.get(1).copied().unwrap_or("");
     if label.is_empty() {
         return Ok(format!(
-            "usage: /credential issue <label> [scopes]  (default scopes: {DEFAULT_SCOPES})"
+            "usage: /credential issue <label> [scopes] [--project <name>]  \
+             (default scopes: {DEFAULT_SCOPES})"
         ));
     }
     let scopes = match parse_scopes(if scopes_csv.is_empty() {
@@ -109,9 +132,13 @@ async fn issue(
     };
 
     let scope_names: Vec<&str> = scopes.0.iter().map(|s| scope_name(*s)).collect();
-    let (id, token) = store.issue(owner, None, scopes, label).await?;
+    let (id, token) = store.issue(owner, project.as_deref(), scopes, label).await?;
+    let project_line = match &project {
+        Some(p) => format!("\n  project: {p}"),
+        None => String::new(),
+    };
     Ok(format!(
-        "credential issued: {label}\n  id:     {id}\n  scopes: {}\n  token:  {token}\n\
+        "credential issued: {label}\n  id:     {id}\n  scopes: {}{project_line}\n  token:  {token}\n\
          The token is shown ONCE and only its hash is stored — copy it now. \
          Present it as `x-bastion-token` on /v1/* (and in the /ui dashboard).",
         scope_names.join(",")
@@ -215,6 +242,49 @@ mod tests {
             .await
             .unwrap();
         assert!(out.contains("scopes: tasks:read"));
+    }
+
+    #[tokio::test]
+    async fn issue_accepts_project_flag_anywhere_in_the_args() {
+        let (_f, store) = test_store().await;
+
+        let out = handle(
+            &store,
+            Some("issue dashboard tasks:read --project acme"),
+            "alice",
+        )
+        .await
+        .unwrap();
+        assert!(out.contains("project: acme"), "got: {out}");
+
+        // --project before the scopes list must work identically.
+        let out2 = handle(
+            &store,
+            Some("issue dashboard2 --project acme tasks:read"),
+            "alice",
+        )
+        .await
+        .unwrap();
+        assert!(out2.contains("project: acme"), "got: {out2}");
+        assert!(out2.contains("scopes: tasks:read"), "got: {out2}");
+    }
+
+    #[tokio::test]
+    async fn issue_without_project_flag_omits_the_project_line() {
+        let (_f, store) = test_store().await;
+        let out = handle(&store, Some("issue dashboard tasks:read"), "alice")
+            .await
+            .unwrap();
+        assert!(!out.contains("project:"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn issue_rejects_project_flag_with_no_value() {
+        let (_f, store) = test_store().await;
+        let out = handle(&store, Some("issue dashboard --project"), "alice")
+            .await
+            .unwrap();
+        assert!(out.contains("--project needs a value"), "got: {out}");
     }
 
     #[tokio::test]
