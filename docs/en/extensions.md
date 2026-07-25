@@ -41,7 +41,13 @@ differently:
   MCP server they declare gets merged into your `bastion.toml`'s
   `[mcp.servers.*]` — additive, idempotent, never overwrites an entry you
   already have for that server name. **Restart the daemon to activate** a
-  newly-added MCP server; there's no hot-reload yet.
+  newly-added MCP server; there's no hot-reload yet. If the pack's
+  `[[mcp_dependencies]]` entry declares an `auth_token` (a pack author's
+  reference to an env var name, e.g. `"${SOME_API_KEY}"` — never a literal
+  secret), it's written into the new `[mcp.servers.*]` entry too, so a
+  server requiring an API key (e.g. a pack wrapping a paid MCP server) works
+  after install without a manual `bastion.toml` edit — you still need to set
+  the referenced env var yourself.
 - **`native_crate` extensions** only work if this build recognizes the
   specific `crate_name` — today that's exactly one:
   `bastion/git-capability`, a workspace-confined local Git capability
