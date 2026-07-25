@@ -86,6 +86,19 @@ async fn install(
 
     let mut report = format!("installing {} v{}\n", pack.id, pack.version);
 
+    // FUTURE HOOK (backlog: "seletor de persona no /extension install"):
+    // `PackManifest.personas` is a flat `Vec<String>` today — every listed
+    // persona always installs, nothing to choose between. Once a
+    // `bastion-core` change adds an optional-persona-group field (needed by
+    // the hedge-fund-pack's 6-mandatory-plus-13-optional roster, out of
+    // scope here), an interactive install would call
+    // `crate::agent::prompt::ask_choice(&mut stdin, ...)` right here — after
+    // the manifest is parsed, before `copy_pack_members` below runs on
+    // whatever the operator picked — using the same `prompt` module this
+    // task built and unit-tested (`src/agent/prompt.rs`). This function
+    // doesn't take a `stdin` handle yet because there is no real choice to
+    // present; threading it through is a small, mechanical follow-up once
+    // that manifest field exists.
     let personas_copied = copy_pack_members(&pack_dir.join("personas"), &pack.personas, |name| {
         Path::new(personas_dir).join(name)
     });
