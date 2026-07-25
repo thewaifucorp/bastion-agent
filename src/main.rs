@@ -2228,6 +2228,14 @@ async fn daemon_loop(
     // whether stdin is still live and disable that select arm on EOF instead of exiting.
     let mut stdin_open = true;
     let mut sigterm = signal(SignalKind::terminate())?;
+    // Backlog: "mecanismo de prompt interativo no console" — the console
+    // asked something on a previous iteration and is waiting for THIS
+    // iteration's line to be the answer, not a new command or chat message.
+    // See `agent::console_prompt`'s module doc for the full design;
+    // `None` (every iteration before/after a pending prompt) is
+    // byte-identical to the console's behavior before this state existed.
+    let mut pending_console_prompt: Option<bastion::agent::console_prompt::PendingConsolePrompt> =
+        None;
 
     // Loop 3-D: every configured channel above has finished its spawn
     // attempt (success or logged failure) — `/readyz` can now report ready.
@@ -2245,6 +2253,56 @@ async fn daemon_loop(
                         // keep serving channels, proactive nudges, and signals. The daemon exits
                         // only on SIGTERM/Ctrl-C — NOT on stdin EOF (D-01 long-running invariant).
                         stdin_open = false;
+                        // A pending prompt with stdin now closed simply never resolves — the
+                        // daemon keeps running for other channels regardless (same D-01
+                        // invariant); nothing to clean up, `pending_console_prompt` just stays
+                        // Some forever on this now-dead arm.
+                    }
+                    // Checked BEFORE the empty-line/`/`-dispatch guards below: a line answering
+                    // a pending prompt is consumed here, never treated as a new command or chat
+                    // message — including an EMPTY line (a valid "none" reply to a persona-
+                    // selection menu) and a line that happens to start with `/`.
+                    Some(s) if pending_console_prompt.is_some() => {
+                        let prompt = pending_console_prompt
+                            .take()
+                            .expect("checked Some in this arm's guard");
+                        let personas_dir = bastion::config::personas_dir();
+                        let bastion_toml_path = std::env::var("BASTION_CONFIG")
+                            .unwrap_or_else(|_| "bastion.toml".to_owned());
+                        if s.trim().starts_with('/') {
+                            // Decision recorded here (the spec left this open): a new `/`
+                            // command while a prompt is pending resolves the prompt with an
+                            // implicit "none" (matches the required-only, nothing-optional
+                            // outcome) rather than either silently discarding the operator's
+                            // command as garbage input to the prompt, or leaving the prompt
+                            // dangling forever. The typed command itself is NOT dispatched this
+                            // round — the operator re-sends it on the next line.
+                            let msg = bastion::agent::console_prompt::resolve(
+                                prompt,
+                                "none",
+                                &mut extension_host,
+                                &personas_dir,
+                                &bastion_toml_path,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                            )
+                            .await;
+                            println!("{msg}");
+                            println!(
+                                "(pending prompt auto-resolved with 'none' — resend '{}' now)",
+                                s.trim()
+                            );
+                        } else {
+                            let msg = bastion::agent::console_prompt::resolve(
+                                prompt,
+                                &s,
+                                &mut extension_host,
+                                &personas_dir,
+                                &bastion_toml_path,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                            )
+                            .await;
+                            println!("{msg}");
+                        }
                     }
                     Some(s) if s.trim().is_empty() => continue,
                     Some(s) if s.trim().starts_with('/') => {
@@ -2323,7 +2381,26 @@ async fn daemon_loop(
                             )
                             .await
                             {
-                                Ok(msg) => println!("{msg}"),
+                                Ok(bastion::agent::extension_command::HandleOutcome::Done(
+                                    msg,
+                                )) => println!("{msg}"),
+                                Ok(
+                                    bastion::agent::extension_command::HandleOutcome::AwaitingPersonaSelection {
+                                        report,
+                                        pack_dir,
+                                        required,
+                                        optional,
+                                    },
+                                ) => {
+                                    println!("{report}");
+                                    pending_console_prompt = Some(
+                                        bastion::agent::console_prompt::PendingConsolePrompt::ExtensionInstallPersonaSelection {
+                                            pack_dir,
+                                            required,
+                                            optional,
+                                        },
+                                    );
+                                }
                                 Err(e) => println!("Erro no comando: {e}"),
                             }
                             continue;

@@ -1,5 +1,6 @@
 pub mod backend_command;
 pub mod command;
+pub mod console_prompt;
 pub mod credential_command;
 pub mod extension_command;
 pub mod prompt;
