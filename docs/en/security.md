@@ -31,15 +31,20 @@ operations are also reachable as 5 MCP tools, gated by the same scopes. See
 threat model, credential/scope design, and the current "Known gaps" list —
 this section only summarizes what an operator needs to know:
 
-- **No rate limiting yet, on either the HTTP routes or the equivalent MCP
-  tools.** A leaked or over-issued credential can be used at whatever rate
-  the caller sends requests. Owner isolation (below) still bounds the blast
-  radius, but budget accordingly until this closes.
-- **`project` is accepted at credential issuance but not yet enforced as a
-  filter.** A credential's `project` tag is stored and returned, but every
-  read today is scoped by owner only — tagging two credentials with
-  different `project` values does not currently separate what they can see.
-  Don't rely on it for isolation yet; owner is the real boundary.
+- **Rate limiting is live on the HTTP routes, not yet on the equivalent MCP
+  tools.** `/v1/*` enforces a fixed 60 requests/minute per credential
+  (`src/control_plane/rate_limit.rs`) — a leaked or over-issued credential
+  used through an MCP client can still be called at whatever rate the
+  caller sends requests; budget for that gap until it closes.
+- **`project` narrows visibility within one owner's tasks on the HTTP
+  routes; MCP tools don't scope by it yet.** Tag a credential with a
+  `project` at issuance (`/credential issue <label> [scopes] --project
+  <name>`) and it only sees tasks created by a credential with that same
+  tag — but only for `/v1/*`; the equivalent MCP tools (`create_task`/
+  `list_tasks`) resolve auth through a context that has no `project`
+  concept, so MCP-created/listed tasks are never project-scoped yet.
+  Owner is still the real, always-enforced boundary either way — `project`
+  is a refinement on top of it, not a substitute.
 - **Webhook subscriptions can be created but not listed or revoked** via the
   API yet — track what you register out-of-band until that surface exists.
 

@@ -1,6 +1,6 @@
 # Control Plane security model
 
-The Control Plane is a planned external HTTP API (`/v1/tasks*`) that lets an
+The Control Plane is an external HTTP API (`/v1/tasks*`) that lets an
 outside orchestrator (e.g. Paperclip) create and drive Bastion's durable
 `Pursue` tasks without adopting Bastion's internal Rust types. This document
 is the threat model for that surface.
@@ -16,9 +16,9 @@ those routes call is now ALSO reachable as 5 MCP tools
 Phase 5" below) and demonstrated end-to-end by a standalone proof adapter
 (`integrations/paperclip-adapter/`). See
 [`contracts/control-plane-v1.openapi.yaml`](contracts/control-plane-v1.openapi.yaml)
-and "Known gaps" below for what's still genuinely absent (an event stream
-covering all 5 spec event types, credential/subscription self-service, rate
-limiting, a Python SDK).
+and "Known gaps" below for what's still genuinely absent (webhook-
+subscription list/revoke self-service, and MCP-side project scoping and
+rate limiting).
 
 ## What a Control Plane credential is
 
@@ -333,10 +333,25 @@ Two of the original gaps were closed by the observability frontend work
   or any remote channel — issuance stays a trusted-host operation.
   Webhook-subscription management (list/revoke) remains absent.
 
+- ~~`project` is stored but not enforced anywhere~~ — PARTIALLY CLOSED.
+  `create_task`/`list_tasks` on the HTTP `/v1/*` routes now tag/filter by
+  the issuing credential's `project` (`control_plane::business_state`,
+  since `bastion-core`'s `TaskCase` has no `project` field of its own and
+  is deliberately not modified to add one). Owner remains the primary,
+  always-enforced boundary; `project` only narrows within it, and only on
+  HTTP — the equivalent MCP tools resolve auth through `InvokeCtx`, which
+  has no `project` concept, so MCP-created/listed tasks are still never
+  project-scoped.
+- ~~No rate limiting on any route or MCP tool~~ — PARTIALLY CLOSED. `/v1/*`
+  now enforces a fixed 60 requests/minute per credential
+  (`src/control_plane/rate_limit.rs`, a hand-rolled fixed-window limiter,
+  not a new dependency), applied as a router-level layer before any
+  handler runs. Still open: the equivalent MCP tools have no rate limit at
+  all yet.
+
 Still open:
-- `project` is stored but not enforced anywhere, including by every route
-  added so far (`list_tasks`/`create_task` scope by owner only).
-- No rate limiting on any route or MCP tool.
+- Webhook-subscription management (list/revoke) remains absent (create-only).
+- MCP tools have no `project` scoping and no rate limiting (both above).
 
 ## Closed since Phase 5
 - **Python SDK** (was: "spec asked for Python second, only TS shipped") —
