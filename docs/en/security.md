@@ -20,13 +20,28 @@ Bastion is built to make trust, authority, and data egress explicit. It is not a
 5. Review every third-party skill or extension before installing it. Treat it as code, not as a harmless prompt.
 6. Keep model-provider and telemetry choices aligned with the privacy requirements of the conversation data.
 
-## External Control Plane API (planned)
+## External Control Plane API
 
-A separate threat model covers the planned external `/v1/tasks*` Control
-Plane API and its scoped integration credentials — see
-[Control Plane security model](control-plane-security.md). No route from
-that surface is live yet; the document exists to be reviewed ahead of
-implementation.
+The external `/v1/tasks*` Control Plane API is live: an outside orchestrator
+authenticates with a scoped, revocable credential (`bcp_<random>`, bound to
+one owner, optionally tagged with a project) and can create, list, and steer
+`Pursue` tasks without adopting Bastion's internal Rust types. The same
+operations are also reachable as 5 MCP tools, gated by the same scopes. See
+[Control Plane security model](control-plane-security.md) for the full
+threat model, credential/scope design, and the current "Known gaps" list —
+this section only summarizes what an operator needs to know:
+
+- **No rate limiting yet, on either the HTTP routes or the equivalent MCP
+  tools.** A leaked or over-issued credential can be used at whatever rate
+  the caller sends requests. Owner isolation (below) still bounds the blast
+  radius, but budget accordingly until this closes.
+- **`project` is accepted at credential issuance but not yet enforced as a
+  filter.** A credential's `project` tag is stored and returned, but every
+  read today is scoped by owner only — tagging two credentials with
+  different `project` values does not currently separate what they can see.
+  Don't rely on it for isolation yet; owner is the real boundary.
+- **Webhook subscriptions can be created but not listed or revoked** via the
+  API yet — track what you register out-of-band until that surface exists.
 
 ## Incident response
 
