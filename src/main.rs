@@ -1085,6 +1085,9 @@ async fn main() -> anyhow::Result<()> {
                         webhook_delivery_store: control_plane_webhook_delivery_store.clone(),
                     },
                 ));
+            // `McpStdio` is its own process (spawned per stdio client), never
+            // sharing memory with a `Daemon` process — so this limiter has
+            // nothing to share with; it's just this process's own budget.
             let mcp_server = bastion::mcp::server::BastionMcpServer::new(
                 Arc::new(agent.capability_registry.clone()),
                 control_plane_mcp_registry,
@@ -1093,6 +1096,7 @@ async fn main() -> anyhow::Result<()> {
                 goals_for_product.clone(),
                 token_perms,
                 local_owner,
+                bastion::control_plane::rate_limit::RateLimiter::new(),
             );
             let (stdin, stdout) = rmcp::transport::stdio();
             tracing::info!(event = "mcp_stdio_started", "MCP stdio server starting");
@@ -1541,6 +1545,15 @@ async fn daemon_loop(
             let agent_name =
                 std::env::var("BASTION_AGENT_NAME").unwrap_or_else(|_| "bastion".to_string());
 
+            // Backlog: "rate limiting no Control Plane e nas tools MCP" — ONE
+            // instance for this whole daemon process, shared by the `/v1/*`
+            // HTTP layer below and (when `mcp-server` is enabled) the 5
+            // Control Plane MCP tools, so both surfaces count against the
+            // same budget per credential. See `rate_limit.rs`'s module doc
+            // for why this is simpler-not-a-fix (HTTP and MCP tokens are
+            // separate spaces today, so nothing double-spends either way).
+            let rate_limiter = bastion::control_plane::rate_limit::RateLimiter::new();
+
             // Build MCP Streamable HTTP server if enabled.
             // M3-05: compiled only under the `mcp-server` feature; without it,
             // `mcp_routes` is always `None` (and an enabled config is warned about).
@@ -1583,6 +1596,7 @@ async fn daemon_loop(
                     goals,
                     token_perms,
                     local_owner,
+                    rate_limiter.clone(),
                     &cfg.mcp_server.mount_path,
                 );
                 tracing::info!(
@@ -1750,6 +1764,7 @@ async fn daemon_loop(
                     webhook_subscription_store: control_plane_webhook_subscription_store.clone(),
                     webhook_delivery_store: control_plane_webhook_delivery_store.clone(),
                 },
+                rate_limiter.clone(),
             ));
             // Phase 4: background sweep of the durable delivery queue —
             // mirrors how `adaptive::schedule::run_scheduler` is spawned

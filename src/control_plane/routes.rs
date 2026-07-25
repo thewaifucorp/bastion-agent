@@ -97,7 +97,15 @@ impl ControlPlaneState {
 /// `docs/en/control-plane-security.md`'s Phase 2 design note (where this was
 /// first flagged) for the alternative considered and rejected
 /// (`/tasks/{id}/pause`, which would break the frozen contract's paths).
-pub fn router(state: ControlPlaneState) -> Router {
+/// `rate_limiter`: caller-supplied so `main.rs` can construct ONE instance
+/// and share it with `mcp::server::BastionMcpServer` too — the 5 Control
+/// Plane MCP tools get rate-limited the same way. Sharing is correct but not
+/// load-bearing today: HTTP `/v1/*` credentials (`SqliteCredentialStore`,
+/// `bcp_*` tokens) and MCP's own `TokenPermissions` (static config) are
+/// separate token spaces with no overlapping values, so one instance vs. two
+/// behaves identically either way — sharing is simpler, not a fix for a
+/// real double-budget scenario in the CURRENT architecture.
+pub fn router(state: ControlPlaneState, rate_limiter: super::rate_limit::RateLimiter) -> Router {
     Router::new()
         .route("/v1/tasks", get(list_tasks).post(create_task))
         .route("/v1/tasks/{id}", get(get_task).post(task_action))
@@ -110,7 +118,7 @@ pub fn router(state: ControlPlaneState) -> Router {
         // Applied to every /v1/* route, before the ControlPlaneState below —
         // its own state (RateLimiter) is independent, see rate_limit.rs.
         .layer(axum::middleware::from_fn_with_state(
-            super::rate_limit::RateLimiter::new(),
+            rate_limiter,
             super::rate_limit::enforce,
         ))
         .with_state(state)

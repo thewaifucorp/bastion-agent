@@ -11,6 +11,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use bastion::control_plane::credential::SqliteCredentialStore;
+use bastion::control_plane::rate_limit::RateLimiter;
 use bastion::control_plane::routes::{router, ControlPlaneState};
 use bastion::control_plane::scope::{Scope, ScopeSet};
 use bastion::control_plane::webhook_delivery::SqliteWebhookDeliveryStore;
@@ -54,12 +55,15 @@ async fn build_app() -> (
         .await
         .expect("webhook delivery store schema");
 
-    let app = router(ControlPlaneState {
-        task_store: task_store.clone() as Arc<dyn TaskStore>,
-        credential_store: credential_store.clone(),
-        webhook_subscription_store,
-        webhook_delivery_store,
-    });
+    let app = router(
+        ControlPlaneState {
+            task_store: task_store.clone() as Arc<dyn TaskStore>,
+            credential_store: credential_store.clone(),
+            webhook_subscription_store,
+            webhook_delivery_store,
+        },
+        RateLimiter::new(),
+    );
 
     (f, task_store, credential_store, app)
 }
@@ -101,12 +105,15 @@ async fn build_app_with_webhook_stores() -> (
         .await
         .expect("webhook delivery store schema");
 
-    let app = router(ControlPlaneState {
-        task_store: task_store.clone() as Arc<dyn TaskStore>,
-        credential_store: credential_store.clone(),
-        webhook_subscription_store: webhook_subscription_store.clone(),
-        webhook_delivery_store: webhook_delivery_store.clone(),
-    });
+    let app = router(
+        ControlPlaneState {
+            task_store: task_store.clone() as Arc<dyn TaskStore>,
+            credential_store: credential_store.clone(),
+            webhook_subscription_store: webhook_subscription_store.clone(),
+            webhook_delivery_store: webhook_delivery_store.clone(),
+        },
+        RateLimiter::new(),
+    );
 
     (
         f,

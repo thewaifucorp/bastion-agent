@@ -1,12 +1,18 @@
-//! Fixed-window rate limiter for the Control Plane `/v1/*` HTTP routes.
+//! Fixed-window rate limiter, shared between the Control Plane `/v1/*` HTTP
+//! routes and the 5 Control Plane MCP tools (`mcp::server::BastionMcpServer`).
 //!
-//! Backlog: "rate limiting no Control Plane e nas tools MCP" (P0). v1 scope,
-//! agreed before implementation: HTTP routes only (MCP tools are a disclosed
-//! follow-up — see `docs/en/control-plane-security.md`'s "Known gaps"),
-//! keyed by CREDENTIAL, not IP (this is an authenticated API — the
-//! `x-bastion-token` header value itself is a fine key, no need to resolve
-//! it to an `AuthenticatedCredential` first), a single fixed limit with no
-//! configuration surface yet.
+//! Backlog: "rate limiting no Control Plane e nas tools MCP" (P0). Keyed by
+//! CREDENTIAL, not IP (this is an authenticated API — the raw
+//! `x-bastion-token` value itself is a fine key, no need to resolve it to an
+//! `AuthenticatedCredential`/`TokenPermissions` first), a single fixed limit
+//! with no configuration surface yet. One instance is built per `Daemon`
+//! process (see `main.rs`) and shared by both surfaces; `McpStdio` is its
+//! own separate process and gets its own instance — there's nothing to share
+//! across a process boundary. Sharing HTTP and MCP behind one instance is
+//! simpler, not a fix for a real double-budget scenario: `/v1/*` credentials
+//! (`SqliteCredentialStore`, `bcp_*` tokens) and MCP's `TokenPermissions`
+//! (static config) are separate token spaces with no overlapping values
+//! today, so one instance vs. two behaves identically either way.
 //!
 //! Deliberately hand-rolled rather than a `tower_governor`/`governor`
 //! dependency: the v1 requirement (fixed window, in-memory, one key shape)
@@ -60,7 +66,12 @@ impl RateLimiter {
 
     /// `true` = under the limit for `key`'s current window (and the request
     /// counts against it); `false` = this request is over the limit.
-    async fn check(&self, key: &str) -> bool {
+    ///
+    /// `pub(crate)`, not private: shared with `mcp::server::BastionMcpServer`
+    /// (the same instance, constructed once in `main.rs` — see that
+    /// constructor's own doc comment for why sharing one `RateLimiter` is
+    /// harmless either way in the current architecture).
+    pub(crate) async fn check(&self, key: &str) -> bool {
         let mut windows = self.windows.lock().await;
         let now = Instant::now();
         let window = windows.entry(key.to_owned()).or_insert_with(|| Window {
