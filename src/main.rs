@@ -1222,6 +1222,34 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whitelist of "read-only" (command, subcommand) console lines safe to run
+/// while a `PendingConsolePrompt` is active — checked against
+/// `command_catalog.rs`'s own description of each command before being
+/// added here, not just "seems harmless." Deliberately narrow: a command
+/// only belongs on this list if EVERY listed subcommand form genuinely
+/// never mutates state or starts a new multi-step flow of its own (which
+/// would have nowhere to go — only one `PendingConsolePrompt` slot exists
+/// at a time). `/task`, `/schedule`, `/credential`, `/extension`,
+/// `/proposal` all have OTHER subcommands that DO mutate — those forms
+/// fall through to the normal (destructive-looking) `/`-while-pending
+/// handling, only the exact forms matched here are exempted.
+fn is_read_only_while_prompt_pending(line: &str) -> bool {
+    let trimmed = line.trim();
+    let (cmd, rest) = trimmed
+        .split_once(char::is_whitespace)
+        .unwrap_or((trimmed, ""));
+    let rest = rest.trim();
+    match cmd {
+        "/help" | "/logs" | "/connect" => true,
+        "/model" | "/backend" => rest.is_empty(),
+        "/update" => rest.is_empty() || rest == "status",
+        "/task" => rest == "list" || rest.starts_with("inspect "),
+        "/schedule" | "/credential" | "/extension" => rest == "list",
+        "/proposal" => rest == "list" || rest.starts_with("show "),
+        _ => false,
+    }
+}
+
 /// REPL daemon loop: stdin line by line, slash commands, graceful shutdown (D-01).
 /// Five select arms: stdin, pending_rx (proactive), inbound_rx (channel), SIGTERM, Ctrl-C.
 /// All arms serialize through ONE `&mut agent` — single-turn invariant holds (CR-07).
@@ -2262,7 +2290,20 @@ async fn daemon_loop(
                     // a pending prompt is consumed here, never treated as a new command or chat
                     // message — including an EMPTY line (a valid "none" reply to a persona-
                     // selection menu) and a line that happens to start with `/`.
-                    Some(s) if pending_console_prompt.is_some() => {
+                    //
+                    // Exception (2026-07-25): a line that's a known READ-ONLY lookup
+                    // (`/extension list`, `/task list`, etc. — see
+                    // `is_read_only_while_prompt_pending`'s own doc) does NOT match this
+                    // guard at all, so it falls through untouched to the normal `/`-dispatch
+                    // arm below — the pending prompt is never `.take()`n, stays exactly as
+                    // it was, and the operator can still answer it on their next line. Found
+                    // via a real UX walkthrough: without this, "just checking something"
+                    // (e.g. `/extension list` to see what's already installed before
+                    // answering a persona-selection menu) silently threw the menu away.
+                    Some(s)
+                        if pending_console_prompt.is_some()
+                            && !is_read_only_while_prompt_pending(&s) =>
+                    {
                         let prompt = pending_console_prompt
                             .take()
                             .expect("checked Some in this arm's guard");
@@ -2957,6 +2998,59 @@ fn build_token_perms(
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+
+    #[test]
+    fn read_only_while_pending_accepts_exactly_the_listed_forms() {
+        for line in [
+            "/help",
+            "/logs",
+            "/connect",
+            "/connect gemini",
+            "/model",
+            "/backend",
+            "/update",
+            "/update status",
+            "/task list",
+            "/task inspect abc123",
+            "/schedule list",
+            "/credential list",
+            "/extension list",
+            "/proposal list",
+            "/proposal show abc123",
+        ] {
+            assert!(
+                is_read_only_while_prompt_pending(line),
+                "{line} should be treated as read-only"
+            );
+        }
+    }
+
+    #[test]
+    fn read_only_while_pending_rejects_mutating_forms() {
+        for line in [
+            "/model gemini-2.5-flash",
+            "/backend use claude",
+            "/update apply",
+            "/task cancel abc123",
+            "/task pause abc123",
+            "/schedule cancel abc123",
+            "/credential issue foo",
+            "/credential revoke abc123",
+            "/extension install /some/path",
+            "/extension revoke acme/pack",
+            "/proposal approve abc123",
+            "/as some-persona",
+            "/cabinet fundamentalist",
+            "/stop",
+            "/committee something",
+            "chat message, not a command",
+        ] {
+            assert!(
+                !is_read_only_while_prompt_pending(line),
+                "{line} must NOT be treated as read-only"
+            );
+        }
+    }
 
     #[test]
     fn default_control_plane_scopes_matches_pre_existing_read_only_semantics() {
