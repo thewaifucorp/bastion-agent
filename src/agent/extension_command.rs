@@ -31,6 +31,12 @@
 //! installs with EXACTLY the same behavior as before this feature existed —
 //! `install` commits immediately, no prompt, `required` defaults to every
 //! name in `personas`.
+//!
+//! `/extension revoke` reuses the exact same preview/commit split and the
+//! same `PendingConsolePrompt` mechanism (`revoke_preview`/`revoke_commit`,
+//! `HandleOutcome::AwaitingRevokeConfirmation`) — the second real consumer,
+//! validating the mechanism generalizes past the one it was originally
+//! built for.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -43,11 +49,21 @@ use bastion_extension_protocol::{
 use crate::extension::declarative::DeclarativeExtension;
 use crate::extension::{CliCapability, ExtensionHost, ExtensionInstance, HostFacade};
 
-/// Result of `/extension <sub>`. Only `install` can produce
-/// `AwaitingPersonaSelection` (when the pack declares `[personas_selection]`
-/// and has at least one optional persona) — every other subcommand, and
-/// `install` on a pack with nothing optional to choose, always produces
-/// `Done`.
+/// Result of `/extension <sub>`. `install` can produce `AwaitingPersonaSelection`
+/// (when the pack declares `[personas_selection]` and has at least one optional
+/// persona); `revoke` on an id that's actually installed produces
+/// `AwaitingRevokeConfirmation` — everything else (including `revoke` on an
+/// unknown id, and `install` on a pack with nothing optional to choose)
+/// produces `Done`.
+///
+/// `AwaitingRevokeConfirmation` is the SECOND real consumer of
+/// [`crate::agent::console_prompt::PendingConsolePrompt`] (the first being
+/// `AwaitingPersonaSelection`) — deliberately built to validate that the
+/// pending-prompt mechanism generalizes past its original single use case,
+/// per the backlog task's own open question about proving genericity now
+/// vs. later. Revoke is a real, already-existing, already-destructive
+/// action (it deactivates a capability a persona may be relying on) — not a
+/// prompt invented just to have a second consumer.
 #[derive(Debug, PartialEq)]
 pub enum HandleOutcome {
     Done(String),
@@ -56,6 +72,10 @@ pub enum HandleOutcome {
         pack_dir: PathBuf,
         required: Vec<String>,
         optional: Vec<String>,
+    },
+    AwaitingRevokeConfirmation {
+        report: String,
+        id: String,
     },
 }
 
@@ -90,7 +110,7 @@ pub async fn handle(
                 },
             },
         ),
-        "revoke" => Ok(HandleOutcome::Done(revoke(host, rest).await)),
+        "revoke" => Ok(revoke_preview(host, rest)),
         other => Ok(HandleOutcome::Done(format!(
             "unknown /extension subcommand '{other}'. Use: install <path> | list | revoke <id>"
         ))),
@@ -493,14 +513,46 @@ async fn install_git_capability(
     }
 }
 
-async fn revoke(host: &mut ExtensionHost, id: &str) -> String {
+/// Preview phase: an unknown/empty id fails immediately (nothing to confirm).
+/// A real installed id asks for confirmation instead of revoking on the
+/// spot — revoke deactivates a capability that some persona's turn may
+/// currently depend on, so a mistyped id or a slip of the finger shouldn't
+/// be irreversible with zero chance to back out.
+fn revoke_preview(host: &ExtensionHost, id: &str) -> HandleOutcome {
     if id.is_empty() {
-        return "usage: /extension revoke <id>".to_string();
+        return HandleOutcome::Done("usage: /extension revoke <id>".to_string());
     }
+    if !host.is_installed(id) {
+        return HandleOutcome::Done(format!("cannot revoke {id}: not installed"));
+    }
+    HandleOutcome::AwaitingRevokeConfirmation {
+        report: format!("revoke {id}? this deactivates it immediately. reply yes/no (or sim/não)"),
+        id: id.to_string(),
+    }
+}
+
+/// Commit phase: called from [`crate::agent::console_prompt::resolve`] once
+/// the operator's reply is parsed. Only ever invoked after `revoke_preview`
+/// already confirmed `id` is installed — a second check here is still
+/// correct defense (nothing else can uninstall it in between on this
+/// single-threaded REPL loop, but `host.revoke` is the actual source of
+/// truth either way).
+pub(crate) async fn revoke_commit(host: &mut ExtensionHost, id: &str) -> String {
     match host.revoke(id).await {
         Ok(()) => format!("extension {id} revoked."),
         Err(e) => format!("cannot revoke {id}: {e}"),
     }
+}
+
+/// Parses an operator's yes/no reply to a revoke confirmation. Anything that
+/// isn't a recognized affirmative is treated as "no" — same v1 philosophy as
+/// `parse_persona_selection`: a prompt is never re-asked on a bad reply, it
+/// just resolves to the safe (non-destructive) outcome.
+pub(crate) fn parse_revoke_confirmation(reply: &str) -> bool {
+    matches!(
+        reply.trim().to_ascii_lowercase().as_str(),
+        "yes" | "y" | "sim" | "s"
+    )
 }
 
 struct CopyResults {
@@ -1002,11 +1054,44 @@ mod tests {
         )
         .await
         .unwrap();
+        let HandleOutcome::AwaitingRevokeConfirmation { report, id } = out else {
+            panic!("revoking an installed id must ask for confirmation first, not revoke immediately")
+        };
+        assert_eq!(id, "acme/noop-mcp");
+        assert!(report.contains("acme/noop-mcp"), "{report}");
+        // Confirmation not yet given — still installed.
+        assert_eq!(
+            list(&host),
+            "installed extensions:\n  acme/noop-mcp  v1.0.0"
+        );
+
+        let report = revoke_commit(&mut host, &id).await;
+        assert_eq!(report, "extension acme/noop-mcp revoked.");
+        assert_eq!(list(&host), "no extensions installed.");
+    }
+
+    #[tokio::test]
+    async fn revoke_of_unknown_id_fails_immediately_without_asking() {
+        let mut host = ExtensionHost::new();
+        let out = handle(&mut host, ".", "/nonexistent/bastion.toml", Some("revoke nope"), "alice")
+            .await
+            .unwrap();
         assert_eq!(
             out,
-            HandleOutcome::Done("extension acme/noop-mcp revoked.".to_string())
+            HandleOutcome::Done("cannot revoke nope: not installed".to_string())
         );
-        assert_eq!(list(&host), "no extensions installed.");
+    }
+
+    #[test]
+    fn revoke_confirmation_accepts_only_recognized_affirmatives() {
+        assert!(parse_revoke_confirmation("yes"));
+        assert!(parse_revoke_confirmation("Y"));
+        assert!(parse_revoke_confirmation("sim"));
+        assert!(parse_revoke_confirmation(" S "));
+        assert!(!parse_revoke_confirmation("no"));
+        assert!(!parse_revoke_confirmation("nao"));
+        assert!(!parse_revoke_confirmation(""));
+        assert!(!parse_revoke_confirmation("yesplease"));
     }
 
     #[test]

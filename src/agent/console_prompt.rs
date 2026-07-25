@@ -20,12 +20,17 @@
 //! variant without the REPL loop's state type or dispatch site changing
 //! shape — that's the "general, reusable mechanism" part of the request
 //! (Mario: "é o que outros agentes... fazem... temos que melhorar nosso
-//! mecanismo"). First (and so far only) consumer: `/extension install`'s
-//! persona-selection menu (`extension_command.rs`).
+//! mecanismo"). Validated with a SECOND real consumer, not just the one
+//! this was built for: `/extension revoke`'s confirmation prompt
+//! (`ExtensionRevokeConfirmation`) reuses this same enum/dispatch/loop
+//! wiring unchanged — no `main.rs` control-flow shape had to move for it,
+//! only a new arm in the two `match`es (here and in `main.rs`'s dispatch).
 
 use std::path::PathBuf;
 
-use crate::agent::extension_command::{install_commit, parse_persona_selection};
+use crate::agent::extension_command::{
+    install_commit, parse_persona_selection, parse_revoke_confirmation, revoke_commit,
+};
 use crate::extension::ExtensionHost;
 
 /// One console command's mid-flight question, alive between two REPL loop
@@ -36,6 +41,11 @@ pub enum PendingConsolePrompt {
         required: Vec<String>,
         optional: Vec<String>,
     },
+    /// `/extension revoke <id>` on an id that's actually installed asks for
+    /// confirmation before deactivating it — revoke can't be undone by
+    /// replying differently, so a mistyped id or a slip of the finger gets
+    /// one chance to back out.
+    ExtensionRevokeConfirmation { id: String },
 }
 
 /// Resolve a pending prompt against the operator's reply line. A free
@@ -75,6 +85,13 @@ pub async fn resolve(
                 ));
             }
             report
+        }
+        PendingConsolePrompt::ExtensionRevokeConfirmation { id } => {
+            if parse_revoke_confirmation(reply) {
+                revoke_commit(host, &id).await
+            } else {
+                format!("revoke {id} cancelled — not confirmed.")
+            }
         }
     }
 }
@@ -171,5 +188,70 @@ mod tests {
             "{report}"
         );
         assert!(personas_dest.path().join("burry").exists());
+    }
+
+    async fn host_with_noop_installed() -> ExtensionHost {
+        use crate::extension::declarative::DeclarativeExtension;
+        use bastion_extension_protocol::{ExtensionManifest, PermissionSet};
+        use std::sync::Arc;
+
+        let raw = r#"
+            id = "acme/noop-mcp"
+            version = "1.0.0"
+            kind = "declarative"
+            compat = "*"
+            provides = []
+            requires = []
+            secrets = []
+            migrations = []
+
+            [permissions]
+
+            [entrypoint]
+            kind = "declarative"
+            artifact_path = "noop.json"
+
+            [signature]
+            publisher = "test"
+            algorithm = "ed25519"
+            value = "dGVzdA=="
+        "#;
+        let manifest: ExtensionManifest = toml::from_str(raw).unwrap();
+        let mut host = ExtensionHost::new();
+        host.install(
+            Arc::new(DeclarativeExtension::new(manifest, vec![])),
+            "alice",
+            &PermissionSet::none(),
+        )
+        .await
+        .unwrap();
+        host
+    }
+
+    #[tokio::test]
+    async fn resolve_extension_revoke_confirmed_actually_revokes() {
+        let mut host = host_with_noop_installed().await;
+        assert!(host.is_installed("acme/noop-mcp"));
+
+        let prompt = PendingConsolePrompt::ExtensionRevokeConfirmation {
+            id: "acme/noop-mcp".to_string(),
+        };
+        let report = resolve(prompt, "yes", &mut host, ".", "/nonexistent/bastion.toml", "alice").await;
+
+        assert_eq!(report, "extension acme/noop-mcp revoked.");
+        assert!(!host.is_installed("acme/noop-mcp"));
+    }
+
+    #[tokio::test]
+    async fn resolve_extension_revoke_unconfirmed_leaves_it_installed() {
+        let mut host = host_with_noop_installed().await;
+
+        let prompt = PendingConsolePrompt::ExtensionRevokeConfirmation {
+            id: "acme/noop-mcp".to_string(),
+        };
+        let report = resolve(prompt, "not really", &mut host, ".", "/nonexistent/bastion.toml", "alice").await;
+
+        assert!(report.contains("cancelled"), "{report}");
+        assert!(host.is_installed("acme/noop-mcp"));
     }
 }

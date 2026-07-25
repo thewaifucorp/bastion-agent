@@ -2401,6 +2401,19 @@ async fn daemon_loop(
                                         },
                                     );
                                 }
+                                Ok(
+                                    bastion::agent::extension_command::HandleOutcome::AwaitingRevokeConfirmation {
+                                        report,
+                                        id,
+                                    },
+                                ) => {
+                                    println!("{report}");
+                                    pending_console_prompt = Some(
+                                        bastion::agent::console_prompt::PendingConsolePrompt::ExtensionRevokeConfirmation {
+                                            id,
+                                        },
+                                    );
+                                }
                                 Err(e) => println!("Erro no comando: {e}"),
                             }
                             continue;
