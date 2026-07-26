@@ -33,7 +33,9 @@
 //! `PersonaResponder::respond` adds before calling `synth::synthesize`
 //! (which does not gate internally): see the stage-2 synthesis call below.
 
+use crate::agent::committee_store::{self, SignalRecord};
 use bastion_cognition::cabinet::{build_table, orchestrator, synth};
+use bastion_memory::{BeliefDraft, Outcome, PrivacyTier, SharedMemory};
 use bastion_personas::persona::{runner, PersonaRegistry};
 use bastion_providers::SharedProvider;
 use bastion_types::{
@@ -52,6 +54,26 @@ const PORTFOLIO_MANAGER: &str = "portfolio-manager";
 /// deliberately Position-only) — clamped by `orchestrator::MAX_ROUNDS`
 /// regardless.
 const STAGE2_ROUNDS: u8 = 2;
+
+/// M6: content prefix marking the one procedural belief per (owner, persona)
+/// that stands in for "this signal persona's committee track record" — the
+/// thing `reinforce_persona_belief`/`weaken_persona_belief` actually move.
+/// Distinguishes it from any other persona-tagged procedural belief a future
+/// mechanism might store under the same (owner, persona_tag).
+const TRUST_MARKER: &str = "committee persona trust score";
+/// Flat per-graded-outcome adjustment — larger than the background
+/// `procedural_outcome::REINFORCE_DELTA` (0.1) since a `/committee outcome`
+/// call is a rarer, higher-signal, human-graded event, not an automatic
+/// per-turn nudge. Symmetric: the same magnitude rewards or punishes.
+///
+/// Deliberately SMALLER than the belief's starting weight (1.0, set by
+/// `store_procedural_belief`): `weaken_persona_belief` floors at 0.0, and
+/// `retrieve_tagged`'s `weight > 0` gate makes a fully-depleted belief
+/// invisible to `persona_trust_weight` — a delta equal to 1.0 would erase a
+/// persona's trust display after exactly one wrong call, indistinguishable
+/// from never having been graded at all. 0.3 means it takes ~4 consecutive
+/// wrong calls to fall out of view, not 1.
+const PERSONA_TRUST_DELTA: f64 = 0.3;
 
 #[derive(Debug, serde::Deserialize)]
 struct Signal {
@@ -90,16 +112,22 @@ fn parse_signal(raw: &str) -> Option<Signal> {
 }
 
 /// Handle `/committee <pergunta>`.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle(
     registry: &PersonaRegistry,
     provider: SharedProvider,
     capability_registry: &mut bastion_runtime::capability::CapabilityRegistry,
     arg: Option<&str>,
     owner: &str,
+    db_path: &str,
+    memory: SharedMemory,
 ) -> anyhow::Result<String> {
     let question = arg.unwrap_or("").trim();
     if question.is_empty() {
-        return Ok("usage: /committee <pergunta>".to_string());
+        return Ok(
+            "usage: /committee <pergunta>\n       /committee outcome <id> <helpful|harmful|neutral>"
+                .to_string(),
+        );
     }
 
     let mut report = String::new();
@@ -121,8 +149,15 @@ pub async fn handle(
     for turn in &stage1_transcript {
         match parse_signal(&turn.text) {
             Some(sig) => {
+                // M6: informational only -- surfaces the persona's current
+                // committee track record, does NOT bias the disagreement gate
+                // or synthesis below. See this module's doc comment.
+                let trust_note = match persona_trust_weight(&memory, owner, &turn.persona).await {
+                    Some(w) => format!(", peso de confiança: {w:.1}"),
+                    None => String::new(),
+                };
                 report.push_str(&format!(
-                    "- **{}**: {} (confiança: {})\n",
+                    "- **{}**: {} (confiança: {}{trust_note})\n",
                     turn.persona,
                     sig.signal,
                     format_confidence(&sig.confidence)
@@ -153,7 +188,10 @@ pub async fn handle(
         .collect();
     let disagree = normalized.len() > 1 && signals.len() >= 2;
 
-    let candidate_text: String = if disagree {
+    // M5/M6: which signal personas' stage-1 vote matched the candidate the
+    // committee actually carried forward -- the attribution `/committee
+    // outcome` later rewards or punishes per persona.
+    let (candidate_text, signal_records): (String, Vec<SignalRecord>) = if disagree {
         report.push_str(&format!(
             "\n**Divergência real detectada** ({} sinais distintos entre {} personas) — \
              convocando debate (Estágio 2)...\n\n",
@@ -206,17 +244,33 @@ pub async fn handle(
                         report.push_str(&format!("  - {}: {}\n", d.persona, d.position));
                     }
                 }
-                verdict.recommendation
+                // Aligned = the persona's position survived synthesis (i.e. it
+                // is NOT among verdict.dissents).
+                let dissent_names: HashSet<&str> =
+                    verdict.dissents.iter().map(|d| d.persona.as_str()).collect();
+                let records = signals
+                    .iter()
+                    .map(|(name, sig)| SignalRecord {
+                        persona: name.clone(),
+                        signal: sig.signal.clone(),
+                        aligned: !dissent_names.contains(name.as_str()),
+                    })
+                    .collect();
+                (verdict.recommendation, records)
             }
             Err(e) => {
                 report.push_str(&format!(
                     "\n(síntese do debate falhou: {e} — seguindo com as posições brutas do debate)\n"
                 ));
-                stage2_transcript
+                let text = stage2_transcript
                     .iter()
                     .map(|t| format!("[{}]: {}", t.persona, t.text))
                     .collect::<Vec<_>>()
-                    .join("\n")
+                    .join("\n");
+                // No verdict => no reliable per-persona attribution data; an
+                // empty Vec means /committee outcome later applies no
+                // reinforcement for this run rather than guessing.
+                (text, Vec::new())
             }
         }
     } else {
@@ -226,7 +280,7 @@ pub async fn handle(
              Estágio 2 não foi acionado.\n",
             signals.len()
         ));
-        signals
+        let text = signals
             .iter()
             .map(|(name, s)| {
                 format!(
@@ -237,7 +291,18 @@ pub async fn handle(
                 )
             })
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n");
+        // Unanimous stage 1 => every signal persona is aligned with the
+        // candidate by definition.
+        let records = signals
+            .iter()
+            .map(|(name, sig)| SignalRecord {
+                persona: name.clone(),
+                signal: sig.signal.clone(),
+                aligned: true,
+            })
+            .collect();
+        (text, records)
     };
 
     // --- Stage 3: Risk Manager, single dispatch (not Cabinet). ---
@@ -261,6 +326,117 @@ pub async fn handle(
     let pm_text = run_single_persona(registry, provider, PORTFOLIO_MANAGER, &pm_prompt).await?;
     report.push_str(&pm_text);
 
+    // --- M5: persist the run so an operator can grade it later. ---
+    match committee_store::insert(db_path, owner, question, &signal_records, &pm_text).await {
+        Ok(record_id) => {
+            report.push_str(&format!(
+                "\n\n---\nregistro **#{record_id}** salvo. Quando souber o resultado real, rode \
+                 `/committee outcome {record_id} helpful|harmful|neutral` — isso ajusta o peso de \
+                 confiança de cada persona de sinal (M6)."
+            ));
+        }
+        Err(e) => {
+            report.push_str(&format!(
+                "\n\n(não foi possível salvar o registro deste comitê para avaliação futura: {e})"
+            ));
+        }
+    }
+
+    Ok(report)
+}
+
+/// M6, informational only: current stigmergy weight of the ONE procedural
+/// belief standing in for `persona`'s committee track record (see
+/// `TRUST_MARKER`), or `None` if that persona has no recorded outcome yet.
+/// Never influences the disagreement gate or synthesis above — see this
+/// module's doc comment for why that's a deliberate, separate decision.
+async fn persona_trust_weight(memory: &SharedMemory, owner: &str, persona: &str) -> Option<f64> {
+    let mem = memory.read().await;
+    let beliefs = mem.retrieve_tagged(owner, Some(persona)).await.ok()?;
+    beliefs
+        .iter()
+        .find(|b| b.content.starts_with(TRUST_MARKER))
+        .map(|b| b.weight)
+}
+
+/// Handle `/committee outcome <id> <helpful|harmful|neutral>` — M5's grading
+/// half. Reads back a run persisted by `handle()`, applies M6's per-persona
+/// stigmergy reinforcement/weaken based on each signal persona's recorded
+/// `aligned` flag, and marks the run as graded (exactly once — see
+/// `committee_store::record_outcome`'s reject-double-record guard).
+pub async fn handle_outcome(
+    db_path: &str,
+    memory: SharedMemory,
+    owner: &str,
+    arg: Option<&str>,
+) -> anyhow::Result<String> {
+    let arg = arg.unwrap_or("").trim();
+    let mut parts = arg.splitn(2, char::is_whitespace);
+    let id: i64 = parts
+        .next()
+        .unwrap_or("")
+        .parse()
+        .map_err(|_| anyhow::anyhow!("uso: /committee outcome <id> <helpful|harmful|neutral>"))?;
+    let outcome_norm = parts.next().unwrap_or("").trim().to_lowercase();
+    if !matches!(outcome_norm.as_str(), "helpful" | "harmful" | "neutral") {
+        anyhow::bail!("resultado inválido: '{outcome_norm}' — use helpful, harmful ou neutral");
+    }
+
+    let row = committee_store::get(db_path, owner, id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("registro #{id} não encontrado para este owner"))?;
+    if let Some(existing) = &row.outcome {
+        anyhow::bail!("registro #{id} já tem um resultado registrado ({existing})");
+    }
+
+    let mut report = String::new();
+    if row.signals.is_empty() {
+        report.push_str(
+            "(nenhum dado de alinhamento por persona foi salvo nesse registro — a síntese do \
+             Estágio 2 falhou na hora, sem atribuição possível — nenhum peso será ajustado.)\n",
+        );
+    } else if outcome_norm == "neutral" {
+        report.push_str("resultado neutro — nenhum ajuste de peso de confiança foi aplicado.\n");
+    } else {
+        let mem = memory.write().await;
+        report.push_str("ajustes de peso de confiança:\n");
+        for sig in &row.signals {
+            let existing = mem.retrieve_tagged(owner, Some(&sig.persona)).await?;
+            let belief_id = match existing.iter().find(|b| b.content.starts_with(TRUST_MARKER)) {
+                Some(b) => b.id,
+                None => {
+                    mem.store_procedural_belief(BeliefDraft {
+                        owner_id: owner.to_string(),
+                        persona_tag: Some(sig.persona.clone()),
+                        issue: None,
+                        insight: format!("{TRUST_MARKER}: {}", sig.persona),
+                        keywords: vec![],
+                        session_id: "committee".to_string(),
+                        source: "committee-outcome".to_string(),
+                        tier: Some(PrivacyTier::LocalOnly),
+                    })
+                    .await?
+                }
+            };
+            // Reward when the persona's stage-1 signal matched a candidate that
+            // turned out helpful, OR its signal was the minority position that
+            // dissented from a candidate that turned out harmful. Punish the
+            // opposite pairing in both cases.
+            let reward = (outcome_norm == "helpful") == sig.aligned;
+            if reward {
+                mem.reinforce_persona_belief(owner, belief_id, PERSONA_TRUST_DELTA).await?;
+                mem.record_belief_outcome(owner, belief_id, Outcome::Helpful).await?;
+                report.push_str(&format!("  - {}: +{PERSONA_TRUST_DELTA:.1}\n", sig.persona));
+            } else {
+                mem.weaken_persona_belief(owner, belief_id, PERSONA_TRUST_DELTA).await?;
+                mem.record_belief_outcome(owner, belief_id, Outcome::Harmful).await?;
+                report.push_str(&format!("  - {}: -{PERSONA_TRUST_DELTA:.1}\n", sig.persona));
+            }
+        }
+    }
+
+    committee_store::record_outcome(db_path, owner, id, &outcome_norm).await?;
+    report.push_str(&format!("\nregistro #{id} marcado como **{outcome_norm}**."));
     Ok(report)
 }
 
@@ -292,5 +468,170 @@ async fn run_single_persona(
     match runner::run(decision, registry, provider, &history, &config).await? {
         runner::RunnerOutput::Single(_, response) => Ok(response.text),
         other => anyhow::bail!("expected RunnerOutput::Single for a Single-mode decision, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests for handle_outcome (M5/M6) — offline, no LLM: bypasses handle()'s
+// pipeline entirely by inserting committee_store rows directly, matching the
+// exact shape a real run would have produced.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+    use bastion_memory::sqlite::SqliteMemory;
+    use bastion_memory::Memory;
+    use std::sync::Arc;
+    use tempfile::NamedTempFile;
+    use tokio::sync::RwLock;
+
+    async fn make_env() -> (NamedTempFile, String, SharedMemory) {
+        let f = NamedTempFile::new().unwrap();
+        let db_path = f.path().to_str().unwrap().to_owned();
+        bastion_runtime::session::SessionManager::new(&db_path)
+            .init_schema()
+            .await
+            .expect("init session schema");
+        committee_store::init_schema(&db_path)
+            .await
+            .expect("init committee schema");
+        let memory: SharedMemory =
+            Arc::new(RwLock::new(Box::new(SqliteMemory::new(&db_path)) as Box<dyn Memory>));
+        (f, db_path, memory)
+    }
+
+    async fn trust_weight(memory: &SharedMemory, owner: &str, persona: &str) -> Option<f64> {
+        persona_trust_weight(memory, owner, persona).await
+    }
+
+    #[tokio::test]
+    async fn helpful_rewards_aligned_and_punishes_dissenting() {
+        let (_f, db_path, memory) = make_env().await;
+        let signals = vec![
+            SignalRecord { persona: "fundamentalist".into(), signal: "BUY".into(), aligned: true },
+            SignalRecord { persona: "contrarian".into(), signal: "SELL".into(), aligned: false },
+        ];
+        let id = committee_store::insert(&db_path, "alice", "AAPL?", &signals, "comprar 1%")
+            .await
+            .unwrap();
+
+        let report = handle_outcome(&db_path, memory.clone(), "alice", Some(&format!("{id} helpful")))
+            .await
+            .expect("handle_outcome");
+        assert!(report.contains("marcado como **helpful**"), "{report}");
+
+        assert_eq!(trust_weight(&memory, "alice", "fundamentalist").await, Some(1.3));
+        assert_eq!(trust_weight(&memory, "alice", "contrarian").await, Some(0.7));
+    }
+
+    #[tokio::test]
+    async fn harmful_rewards_dissenting_and_punishes_aligned() {
+        let (_f, db_path, memory) = make_env().await;
+        let signals = vec![
+            SignalRecord { persona: "fundamentalist".into(), signal: "BUY".into(), aligned: true },
+            SignalRecord { persona: "contrarian".into(), signal: "SELL".into(), aligned: false },
+        ];
+        let id = committee_store::insert(&db_path, "alice", "AAPL?", &signals, "comprar 1%")
+            .await
+            .unwrap();
+
+        handle_outcome(&db_path, memory.clone(), "alice", Some(&format!("{id} harmful")))
+            .await
+            .expect("handle_outcome");
+
+        assert_eq!(trust_weight(&memory, "alice", "fundamentalist").await, Some(0.7));
+        assert_eq!(trust_weight(&memory, "alice", "contrarian").await, Some(1.3));
+    }
+
+    #[tokio::test]
+    async fn repeated_wrong_calls_eventually_fall_out_of_view_not_after_one() {
+        // PERSONA_TRUST_DELTA (0.3) is deliberately smaller than the belief's
+        // starting weight (1.0) -- one wrong call must NOT erase the trust
+        // display; it should take several.
+        let (_f, db_path, memory) = make_env().await;
+        for i in 0..3 {
+            let signals =
+                vec![SignalRecord { persona: "growth".into(), signal: "BUY".into(), aligned: true }];
+            let id = committee_store::insert(&db_path, "alice", &format!("q{i}"), &signals, "r")
+                .await
+                .unwrap();
+            handle_outcome(&db_path, memory.clone(), "alice", Some(&format!("{id} harmful")))
+                .await
+                .unwrap();
+        }
+        // 1.0 - 3*0.3 ≈ 0.1 -- still visible after 3 wrong calls in a row.
+        let w = trust_weight(&memory, "alice", "growth").await.expect("still visible");
+        assert!((w - 0.1).abs() < 1e-9, "expected ≈0.1, got {w}");
+    }
+
+    #[tokio::test]
+    async fn neutral_applies_no_weight_change() {
+        let (_f, db_path, memory) = make_env().await;
+        let signals = vec![SignalRecord {
+            persona: "macro".into(),
+            signal: "HOLD".into(),
+            aligned: true,
+        }];
+        let id = committee_store::insert(&db_path, "alice", "q", &signals, "r").await.unwrap();
+
+        let report = handle_outcome(&db_path, memory.clone(), "alice", Some(&format!("{id} neutral")))
+            .await
+            .expect("handle_outcome");
+        assert!(report.contains("nenhum ajuste"), "{report}");
+        assert_eq!(
+            trust_weight(&memory, "alice", "macro").await,
+            None,
+            "neutral must not even create a trust belief"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_signals_skip_reinforcement_entirely() {
+        // Mirrors the synth-failure path in handle(): an empty Vec means no
+        // attribution data, not "everyone was wrong."
+        let (_f, db_path, memory) = make_env().await;
+        let id = committee_store::insert(&db_path, "alice", "q", &[], "r").await.unwrap();
+
+        let report = handle_outcome(&db_path, memory.clone(), "alice", Some(&format!("{id} helpful")))
+            .await
+            .expect("handle_outcome");
+        assert!(report.contains("nenhum dado de alinhamento"), "{report}");
+    }
+
+    #[tokio::test]
+    async fn second_grading_of_same_record_is_rejected() {
+        let (_f, db_path, memory) = make_env().await;
+        let signals = vec![SignalRecord { persona: "growth".into(), signal: "BUY".into(), aligned: true }];
+        let id = committee_store::insert(&db_path, "alice", "q", &signals, "r").await.unwrap();
+
+        handle_outcome(&db_path, memory.clone(), "alice", Some(&format!("{id} helpful")))
+            .await
+            .expect("first grading");
+        let weight_after_first = trust_weight(&memory, "alice", "growth").await;
+
+        let second = handle_outcome(&db_path, memory.clone(), "alice", Some(&format!("{id} harmful"))).await;
+        assert!(second.is_err(), "grading the same record twice must be rejected");
+        assert_eq!(
+            trust_weight(&memory, "alice", "growth").await,
+            weight_after_first,
+            "the rejected second grading must not have moved the weight"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_outcome_string() {
+        let (_f, db_path, memory) = make_env().await;
+        let id = committee_store::insert(&db_path, "alice", "q", &[], "r").await.unwrap();
+
+        let res = handle_outcome(&db_path, memory, "alice", Some(&format!("{id} maybe"))).await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_id() {
+        let (_f, db_path, memory) = make_env().await;
+        let res = handle_outcome(&db_path, memory, "alice", Some("999 helpful")).await;
+        assert!(res.is_err());
     }
 }

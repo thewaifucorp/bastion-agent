@@ -589,6 +589,10 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(store)
     };
 
+    // M5 (hedge-fund-committee backlog): `/committee` decision log, same
+    // shared-file-different-schema-owner precedent as SqliteTaskStore above.
+    bastion::agent::committee_store::init_schema(&db_path).await?;
+
     // US External Control Plane and SDK, Phase 2: same fail-closed criticality
     // tier as `task_store` above — the `/v1/*` routes' entire auth story rests
     // on this store, so a schema-init failure here refuses to start rather
@@ -2465,12 +2469,35 @@ async fn daemon_loop(
                         // same trusted-host tier as /extension above.
                         if first_token == "/committee" {
                             let committee_arg = trimmed.split_once(' ').map(|x| x.1);
+                            // M5: `/committee outcome <id> <helpful|harmful|neutral>` grades a
+                            // past run instead of starting a new one — same command prefix,
+                            // routed to a different handler before the pipeline's own
+                            // (question-required) parsing sees it.
+                            let outcome_arg = committee_arg
+                                .and_then(|a| a.strip_prefix("outcome"))
+                                .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace));
+                            if let Some(outcome_arg) = outcome_arg {
+                                match bastion::agent::committee::handle_outcome(
+                                    &cfg.session.db_path,
+                                    agent.memory.clone(),
+                                    bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                                    Some(outcome_arg.trim()),
+                                )
+                                .await
+                                {
+                                    Ok(report) => println!("{report}"),
+                                    Err(e) => println!("Erro no comando: {e}"),
+                                }
+                                continue;
+                            }
                             match bastion::agent::committee::handle(
                                 &registry_for_product,
                                 provider.clone(),
                                 &mut agent.capability_registry,
                                 committee_arg,
                                 bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                                &cfg.session.db_path,
+                                agent.memory.clone(),
                             )
                             .await
                             {
