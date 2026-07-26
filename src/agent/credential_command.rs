@@ -132,7 +132,9 @@ async fn issue(
     };
 
     let scope_names: Vec<&str> = scopes.0.iter().map(|s| scope_name(*s)).collect();
-    let (id, token) = store.issue(owner, project.as_deref(), scopes, label).await?;
+    let (id, token) = store
+        .issue(owner, project.as_deref(), scopes, label)
+        .await?;
     let project_line = match &project {
         Some(p) => format!("\n  project: {p}"),
         None => String::new(),

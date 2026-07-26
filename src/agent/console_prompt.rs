@@ -236,7 +236,15 @@ mod tests {
         let prompt = PendingConsolePrompt::ExtensionRevokeConfirmation {
             id: "acme/noop-mcp".to_string(),
         };
-        let report = resolve(prompt, "yes", &mut host, ".", "/nonexistent/bastion.toml", "alice").await;
+        let report = resolve(
+            prompt,
+            "yes",
+            &mut host,
+            ".",
+            "/nonexistent/bastion.toml",
+            "alice",
+        )
+        .await;
 
         assert_eq!(report, "extension acme/noop-mcp revoked.");
         assert!(!host.is_installed("acme/noop-mcp"));
@@ -249,7 +257,15 @@ mod tests {
         let prompt = PendingConsolePrompt::ExtensionRevokeConfirmation {
             id: "acme/noop-mcp".to_string(),
         };
-        let report = resolve(prompt, "not really", &mut host, ".", "/nonexistent/bastion.toml", "alice").await;
+        let report = resolve(
+            prompt,
+            "not really",
+            &mut host,
+            ".",
+            "/nonexistent/bastion.toml",
+            "alice",
+        )
+        .await;
 
         assert!(report.contains("cancelled"), "{report}");
         assert!(host.is_installed("acme/noop-mcp"));

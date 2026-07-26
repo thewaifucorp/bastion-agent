@@ -899,12 +899,20 @@ async fn list_tasks_filters_by_the_issuing_credentials_project() {
 
     let acme_view = list_with(acme_create_token).await;
     let acme_items = acme_view["items"].as_array().unwrap();
-    assert_eq!(acme_items.len(), 1, "acme credential must see only its own task");
+    assert_eq!(
+        acme_items.len(),
+        1,
+        "acme credential must see only its own task"
+    );
     assert_eq!(acme_items[0]["objective"], "acme's task");
 
     let beta_view = list_with(beta_create_token).await;
     let beta_items = beta_view["items"].as_array().unwrap();
-    assert_eq!(beta_items.len(), 1, "beta credential must see only its own task");
+    assert_eq!(
+        beta_items.len(),
+        1,
+        "beta credential must see only its own task"
+    );
     assert_eq!(beta_items[0]["objective"], "beta's task");
 
     let unscoped_view = list_with(unscoped_token).await;

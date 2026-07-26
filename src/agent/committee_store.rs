@@ -89,7 +89,13 @@ pub async fn insert(
             "INSERT INTO committee_outcomes \
                 (owner_id, question, signals_json, final_recommendation, created_at) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![owner_id, question, signals_json, final_recommendation, now_nanos()],
+            rusqlite::params![
+                owner_id,
+                question,
+                signals_json,
+                final_recommendation,
+                now_nanos()
+            ],
         )?;
         Ok::<i64, anyhow::Error>(conn.last_insert_rowid())
     })
@@ -98,7 +104,11 @@ pub async fn insert(
 
 /// Owner-scoped lookup (IDOR guard): a wrong owner sees `Ok(None)`, indistinguishable
 /// from a missing id.
-pub async fn get(db_path: &str, owner_id: &str, id: i64) -> anyhow::Result<Option<CommitteeOutcomeRow>> {
+pub async fn get(
+    db_path: &str,
+    owner_id: &str,
+    id: i64,
+) -> anyhow::Result<Option<CommitteeOutcomeRow>> {
     let path = db_path.to_owned();
     let owner_id = owner_id.to_owned();
     task::spawn_blocking(move || {
@@ -121,16 +131,19 @@ pub async fn get(db_path: &str, owner_id: &str, id: i64) -> anyhow::Result<Optio
                 },
             )
             .optional()?;
-        Ok::<_, anyhow::Error>(row.map(|(id, question, signals_json, final_recommendation, outcome)| {
-            let signals: Vec<SignalRecord> = serde_json::from_str(&signals_json).unwrap_or_default();
-            CommitteeOutcomeRow {
-                id,
-                question,
-                signals,
-                final_recommendation,
-                outcome,
-            }
-        }))
+        Ok::<_, anyhow::Error>(row.map(
+            |(id, question, signals_json, final_recommendation, outcome)| {
+                let signals: Vec<SignalRecord> =
+                    serde_json::from_str(&signals_json).unwrap_or_default();
+                CommitteeOutcomeRow {
+                    id,
+                    question,
+                    signals,
+                    final_recommendation,
+                    outcome,
+                }
+            },
+        ))
     })
     .await?
 }
@@ -139,7 +152,12 @@ pub async fn get(db_path: &str, owner_id: &str, id: i64) -> anyhow::Result<Optio
 /// discipline as `Memory::revoke_belief` — a wrong owner cannot silently no-op.
 /// Errors (instead of silently overwriting) when the outcome was already recorded,
 /// since M6's stigmergy adjustment must never double-apply for the same row.
-pub async fn record_outcome(db_path: &str, owner_id: &str, id: i64, outcome: &str) -> anyhow::Result<()> {
+pub async fn record_outcome(
+    db_path: &str,
+    owner_id: &str,
+    id: i64,
+    outcome: &str,
+) -> anyhow::Result<()> {
     let path = db_path.to_owned();
     let owner_id = owner_id.to_owned();
     let outcome = outcome.to_owned();
@@ -167,7 +185,12 @@ mod tests {
 
     async fn temp_db() -> (tempfile::TempDir, String) {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("committee.db").to_str().unwrap().to_string();
+        let path = dir
+            .path()
+            .join("committee.db")
+            .to_str()
+            .unwrap()
+            .to_string();
         init_schema(&path).await.unwrap();
         (dir, path)
     }
@@ -176,8 +199,16 @@ mod tests {
     async fn insert_then_get_round_trips() {
         let (_dir, db_path) = temp_db().await;
         let signals = vec![
-            SignalRecord { persona: "fundamentalist".into(), signal: "BUY".into(), aligned: true },
-            SignalRecord { persona: "contrarian".into(), signal: "BUY".into(), aligned: true },
+            SignalRecord {
+                persona: "fundamentalist".into(),
+                signal: "BUY".into(),
+                aligned: true,
+            },
+            SignalRecord {
+                persona: "contrarian".into(),
+                signal: "BUY".into(),
+                aligned: true,
+            },
         ];
         let id = insert(&db_path, "alice", "AAPL?", &signals, "comprar 1%")
             .await
@@ -199,7 +230,10 @@ mod tests {
         let id = insert(&db_path, "alice", "q", &[], "r").await.unwrap();
 
         let bob_view = get(&db_path, "bob", id).await.expect("get");
-        assert!(bob_view.is_none(), "a different owner must not see alice's row");
+        assert!(
+            bob_view.is_none(),
+            "a different owner must not see alice's row"
+        );
     }
 
     #[tokio::test]
@@ -207,12 +241,17 @@ mod tests {
         let (_dir, db_path) = temp_db().await;
         let id = insert(&db_path, "alice", "q", &[], "r").await.unwrap();
 
-        record_outcome(&db_path, "alice", id, "helpful").await.expect("first record");
+        record_outcome(&db_path, "alice", id, "helpful")
+            .await
+            .expect("first record");
         let row = get(&db_path, "alice", id).await.unwrap().unwrap();
         assert_eq!(row.outcome.as_deref(), Some("helpful"));
 
         let second = record_outcome(&db_path, "alice", id, "harmful").await;
-        assert!(second.is_err(), "recording an outcome twice must error, not overwrite");
+        assert!(
+            second.is_err(),
+            "recording an outcome twice must error, not overwrite"
+        );
     }
 
     #[tokio::test]
@@ -221,9 +260,15 @@ mod tests {
         let id = insert(&db_path, "alice", "q", &[], "r").await.unwrap();
 
         let res = record_outcome(&db_path, "bob", id, "helpful").await;
-        assert!(res.is_err(), "bob must not be able to record an outcome on alice's row");
+        assert!(
+            res.is_err(),
+            "bob must not be able to record an outcome on alice's row"
+        );
 
         let row = get(&db_path, "alice", id).await.unwrap().unwrap();
-        assert!(row.outcome.is_none(), "alice's row must be untouched by bob's rejected call");
+        assert!(
+            row.outcome.is_none(),
+            "alice's row must be untouched by bob's rejected call"
+        );
     }
 }

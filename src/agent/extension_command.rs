@@ -165,7 +165,9 @@ async fn install(
     let pack_toml_path = pack_dir.join("pack.toml");
     let raw = match std::fs::read_to_string(&pack_toml_path) {
         Ok(s) => s,
-        Err(e) => return InstallOutcome::Done(format!("cannot read {}: {e}", pack_toml_path.display())),
+        Err(e) => {
+            return InstallOutcome::Done(format!("cannot read {}: {e}", pack_toml_path.display()))
+        }
     };
     let pack: PackManifest = match toml::from_str(&raw) {
         Ok(p) => p,
@@ -189,9 +191,16 @@ async fn install(
         .collect();
 
     if optional.is_empty() {
-        let report =
-            install_commit(host, personas_dir, bastion_toml_path, owner, pack_dir, &required, &[])
-                .await;
+        let report = install_commit(
+            host,
+            personas_dir,
+            bastion_toml_path,
+            owner,
+            pack_dir,
+            &required,
+            &[],
+        )
+        .await;
         return InstallOutcome::Done(report);
     }
 
@@ -1055,7 +1064,9 @@ mod tests {
         .await
         .unwrap();
         let HandleOutcome::AwaitingRevokeConfirmation { report, id } = out else {
-            panic!("revoking an installed id must ask for confirmation first, not revoke immediately")
+            panic!(
+                "revoking an installed id must ask for confirmation first, not revoke immediately"
+            )
         };
         assert_eq!(id, "acme/noop-mcp");
         assert!(report.contains("acme/noop-mcp"), "{report}");
@@ -1073,9 +1084,15 @@ mod tests {
     #[tokio::test]
     async fn revoke_of_unknown_id_fails_immediately_without_asking() {
         let mut host = ExtensionHost::new();
-        let out = handle(&mut host, ".", "/nonexistent/bastion.toml", Some("revoke nope"), "alice")
-            .await
-            .unwrap();
+        let out = handle(
+            &mut host,
+            ".",
+            "/nonexistent/bastion.toml",
+            Some("revoke nope"),
+            "alice",
+        )
+        .await
+        .unwrap();
         assert_eq!(
             out,
             HandleOutcome::Done("cannot revoke nope: not installed".to_string())
@@ -1213,13 +1230,14 @@ mod tests {
     #[test]
     fn parse_persona_selection_all_and_none_and_empty() {
         let optional = opt(&["burry", "ackman", "wood"]);
-        assert_eq!(
-            parse_persona_selection("all", &optional).selected,
-            optional
-        );
-        assert!(parse_persona_selection("none", &optional).selected.is_empty());
+        assert_eq!(parse_persona_selection("all", &optional).selected, optional);
+        assert!(parse_persona_selection("none", &optional)
+            .selected
+            .is_empty());
         assert!(parse_persona_selection("", &optional).selected.is_empty());
-        assert!(parse_persona_selection("   ", &optional).selected.is_empty());
+        assert!(parse_persona_selection("   ", &optional)
+            .selected
+            .is_empty());
     }
 
     #[test]
@@ -1278,7 +1296,10 @@ mod tests {
             "#,
             &[
                 ("risk-manager", "---\nname: risk-manager\n---\nbody"),
-                ("portfolio-manager", "---\nname: portfolio-manager\n---\nbody"),
+                (
+                    "portfolio-manager",
+                    "---\nname: portfolio-manager\n---\nbody",
+                ),
                 ("burry", "---\nname: burry\n---\nbody"),
                 ("ackman", "---\nname: ackman\n---\nbody"),
             ],
@@ -1309,7 +1330,9 @@ mod tests {
             optional,
         } = outcome
         else {
-            panic!("pack declares [personas_selection] with optional personas — must await a reply");
+            panic!(
+                "pack declares [personas_selection] with optional personas — must await a reply"
+            );
         };
         assert_eq!(pack_dir, pack_root.path());
         assert_eq!(required, opt(&["risk-manager", "portfolio-manager"]));
@@ -1345,7 +1368,10 @@ mod tests {
         assert!(report.contains("portfolio-manager"), "{report}");
         assert!(report.contains("burry"), "{report}");
         assert!(personas_dest.path().join("risk-manager/SOUL.md").exists());
-        assert!(personas_dest.path().join("portfolio-manager/SOUL.md").exists());
+        assert!(personas_dest
+            .path()
+            .join("portfolio-manager/SOUL.md")
+            .exists());
         assert!(personas_dest.path().join("burry/SOUL.md").exists());
         assert!(
             !personas_dest.path().join("ackman").exists(),

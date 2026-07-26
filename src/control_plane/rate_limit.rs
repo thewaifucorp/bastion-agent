@@ -96,11 +96,7 @@ impl RateLimiter {
 /// missing/garbage token (it can't do anything past the 401 the handler
 /// itself still issues), so this never needs to touch the credential store
 /// or fail differently than "count it and move on."
-pub async fn enforce(
-    State(limiter): State<RateLimiter>,
-    req: Request,
-    next: Next,
-) -> Response {
+pub async fn enforce(State(limiter): State<RateLimiter>, req: Request, next: Next) -> Response {
     let key = req
         .headers()
         .get("x-bastion-token")
