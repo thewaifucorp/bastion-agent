@@ -8,7 +8,15 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
-## [0.2.3] — 2026-07-27
+## [0.2.4] — 2026-07-27
+
+### Changed
+
+- Core pin advances to `bastion-core` 0.3.0, which brings the persona contract
+  v2 tool-authority gate (Policy 0) — including the `run_provider_fallback`
+  path — the hot-swappable fallback ladder and compaction-provider seams,
+  persona-tagged stigmergy reinforce/weaken, and the fix for Cabinet personas
+  never receiving the actual user question.
 
 ### Added
 
