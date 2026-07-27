@@ -1,9 +1,8 @@
 //! Extensible "the console asked something, this line answers it" state for
 //! the daemon's stdin REPL (`main.rs`'s `tokio::select!` loop).
 //!
-//! Backlog: "mecanismo de prompt interativo no console (+ seletor de persona
-//! no /extension install)". Confirmed before building this (see
-//! `src/agent/prompt.rs`'s own module doc): the REPL processes one line per
+//! Confirmed before building this (see `src/agent/prompt.rs`'s own module
+//! doc): the REPL processes one line per
 //! loop iteration, every command handler returns a single string, and there
 //! was no pending-operation state anywhere — every existing command
 //! (`/task`, `/credential`, `/extension`, `/proposal`, `/schedule`,

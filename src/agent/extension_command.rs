@@ -17,9 +17,8 @@
 //! (`SkillsLoader::load_all` exists but nothing calls it from `main()`) — a
 //! pre-existing gap this command surfaces rather than silently papering over.
 //!
-//! Optional persona selection (backlog: "seletor de persona no /extension
-//! install"): a pack's `pack.toml` may declare `[personas_selection]
-//! required = [...]` — any name in `personas` not listed there is optional,
+//! Optional persona selection: a pack's `pack.toml` may declare
+//! `[personas_selection] required = [...]` — any name in `personas` not listed there is optional,
 //! shown as a numbered menu, chosen interactively by the operator via
 //! [`crate::agent::console_prompt::PendingConsolePrompt`]. Mirrors the exact
 //! pattern `crate::extension::mcp_reconciler::parse_mcp_dependencies` already
@@ -60,9 +59,9 @@ use crate::extension::{CliCapability, ExtensionHost, ExtensionInstance, HostFaca
 /// [`crate::agent::console_prompt::PendingConsolePrompt`] (the first being
 /// `AwaitingPersonaSelection`) — deliberately built to validate that the
 /// pending-prompt mechanism generalizes past its original single use case,
-/// per the backlog task's own open question about proving genericity now
-/// vs. later. Revoke is a real, already-existing, already-destructive
-/// action (it deactivates a capability a persona may be relying on) — not a
+/// rather than deferring that question. Revoke is a real, already-existing,
+/// already-destructive action (it deactivates a capability a persona may be
+/// relying on) — not a
 /// prompt invented just to have a second consumer.
 #[derive(Debug, PartialEq)]
 pub enum HandleOutcome {
@@ -333,7 +332,7 @@ fn parse_personas_selection(raw_pack_toml: &str) -> Option<Vec<String>> {
 
 /// What the operator's reply line resolved to: which optional personas were
 /// selected, and which tokens in the reply didn't match anything (reported
-/// back, never silently dropped — backlog requirement).
+/// back, never silently dropped).
 #[derive(Debug, PartialEq, Default)]
 pub(crate) struct PersonaSelectionResult {
     pub selected: Vec<String>,
@@ -1184,8 +1183,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // Optional persona selection (backlog: "seletor de persona no /extension
-    // install") — parse_personas_selection, parse_persona_selection,
+    // Optional persona selection — parse_personas_selection, parse_persona_selection,
     // install_commit's exact copy set, and backward compatibility.
     // ---------------------------------------------------------------------
 
@@ -1405,7 +1403,7 @@ mod tests {
 
     #[tokio::test]
     async fn existing_packs_without_personas_selection_are_unaffected_regression_check() {
-        // Hard compatibility requirement from the backlog: a pack with no
+        // Hard compatibility requirement: a pack with no
         // [personas_selection] table installs EXACTLY like before this
         // feature existed — Done immediately, every persona installed,
         // never AwaitingPersonaSelection.

@@ -589,7 +589,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(store)
     };
 
-    // M5 (hedge-fund-committee backlog): `/committee` decision log, same
+    // `/committee` decision log, same
     // shared-file-different-schema-owner precedent as SqliteTaskStore above.
     bastion::agent::committee_store::init_schema(&db_path).await?;
 
@@ -996,13 +996,14 @@ async fn main() -> anyhow::Result<()> {
             );
         }
     }
-    // M4-07 (docs/revamp/BACKLOG.md): verify every configured `[auth.<profile>]`
-    // entry against the live host (by reference only — no token ever read/
+    // Verify every configured `[auth.<profile>]` entry against the live host
+    // (by reference only — no token ever read/
     // logged, see auth_profile_registry.rs) and wire the result as the
     // AuthResolver a runtime-backed turn checks before start/resume. Cheap
     // even with zero `[auth.*]` sections: the loop over an empty map does
     // nothing, and AgentLoop's own NullAuthResolver default (unchanged if
-    // this call is ever removed) already preserves pre-M4-07 behavior.
+    // this call is ever removed) already preserves the behavior deployments
+    // had before `[auth.*]` existed.
     let auth_resolver = bastion::auth_profile_registry::AuthProfileRegistry::build(&cfg.auth).await;
 
     // Fase 2.9: `/status` (webhook.rs) needs its own handle to the registry
@@ -1577,8 +1578,8 @@ async fn daemon_loop(
             let agent_name =
                 std::env::var("BASTION_AGENT_NAME").unwrap_or_else(|_| "bastion".to_string());
 
-            // Backlog: "rate limiting no Control Plane e nas tools MCP" — ONE
-            // instance for this whole daemon process, shared by the `/v1/*`
+            // ONE rate-limiter instance for this whole daemon process,
+            // shared by the `/v1/*`
             // HTTP layer below and (when `mcp-server` is enabled) the 5
             // Control Plane MCP tools, so both surfaces count against the
             // same budget per credential. See `rate_limit.rs`'s module doc
@@ -2260,8 +2261,7 @@ async fn daemon_loop(
     // whether stdin is still live and disable that select arm on EOF instead of exiting.
     let mut stdin_open = true;
     let mut sigterm = signal(SignalKind::terminate())?;
-    // Backlog: "mecanismo de prompt interativo no console" — the console
-    // asked something on a previous iteration and is waiting for THIS
+    // The console asked something on a previous iteration and is waiting for THIS
     // iteration's line to be the answer, not a new command or chat message.
     // See `agent::console_prompt`'s module doc for the full design;
     // `None` (every iteration before/after a pending prompt) is
@@ -2463,8 +2463,8 @@ async fn daemon_loop(
                             }
                             continue;
                         }
-                        // Backlog M4 (hedge-fund-committee): 2-stage Cabinet
-                        // composition (signal gate -> conditional debate ->
+                        // 2-stage Cabinet composition
+                        // (signal gate -> conditional debate ->
                         // Risk Manager -> Portfolio Manager) — console only,
                         // same trusted-host tier as /extension above.
                         if first_token == "/committee" {

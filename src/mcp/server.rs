@@ -167,9 +167,8 @@ pub struct BastionMcpServer {
     goals: GoalEngine,
     token_permissions: HashMap<String, TokenPermissions>,
     local_owner: String,
-    /// Backlog: "rate limiting no Control Plane e nas tools MCP" — the SAME
-    /// instance `control_plane::routes::router` uses, constructed once in
-    /// `main.rs`. Only applied to the 5 `control_plane_registry` tools in
+    /// The SAME instance `control_plane::routes::router` uses, constructed
+    /// once in `main.rs`. Only applied to the 5 `control_plane_registry` tools in
     /// `call_tool` below, matching what the HTTP `/v1/*` routes limit; every
     /// other (shared-registry) MCP tool call is unaffected.
     rate_limiter: crate::control_plane::rate_limit::RateLimiter,
