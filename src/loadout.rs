@@ -1250,8 +1250,15 @@ mod tests {
         assert_eq!(chat["model"], serde_json::Value::Null);
         assert_eq!(chat["source"], serde_json::Value::Null);
         assert_eq!(chat["supported"], true);
-        // Honest v1: no reachable knob on the pinned core rev.
-        for unsupported in ["pursue_task", "cabinet", "compaction"] {
+        // `compaction` became reachable once `with_compaction_provider` was
+        // wired (bastion-core 0.3.0's seam) — it is startup-read, like
+        // `reflection`, not hot.
+        let compaction = items.iter().find(|i| i["class"] == "compaction").unwrap();
+        assert_eq!(compaction["supported"], true);
+        // Still no reachable knob for these two: they wait on seams in
+        // bastion-agent-runtime (`SessionSpec` has no model field) and
+        // bastion-personas (Cabinet legs share the loop's provider).
+        for unsupported in ["pursue_task", "cabinet"] {
             let row = items.iter().find(|i| i["class"] == unsupported).unwrap();
             assert_eq!(row["supported"], false, "{unsupported}");
         }
