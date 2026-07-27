@@ -530,6 +530,14 @@ pub struct McpServerTokenConfig {
     /// read tasks, never create/control them.
     #[serde(default)]
     pub control_plane_scopes: Option<Vec<Scope>>,
+    /// Control Plane `project` tag this token acts under, e.g.
+    /// `control_plane_project = "acme"`. Tasks this token creates over MCP are
+    /// tagged with it and `list_tasks` narrows to it, matching what an HTTP
+    /// credential carrying the same tag already does. Omitted (the default)
+    /// keeps the previous behavior: untagged creation, no narrowing. Segments
+    /// tasks BELOW the owner level — never a replacement for owner isolation.
+    #[serde(default)]
+    pub control_plane_project: Option<String>,
 }
 
 /// Config section for the MCP server (not the client — D-08).

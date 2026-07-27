@@ -3014,6 +3014,7 @@ fn build_token_perms(
                         bastion_memory::PrivacyTier::LocalOnly
                     },
                     control_plane_scopes,
+                    control_plane_project: t.control_plane_project.clone(),
                 },
             )
         })

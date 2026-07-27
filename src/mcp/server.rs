@@ -58,6 +58,14 @@ pub struct TokenPermissions {
     /// same gap for MCP callers, which previously had no scope concept at
     /// all beyond this coarse `read_only` boolean.
     pub control_plane_scopes: ScopeSet,
+    /// Control Plane `project` tag this token acts under — the MCP counterpart
+    /// of `AuthenticatedCredential::project`. `Some(p)` makes `create_task`
+    /// tag its tasks with `p` and `list_tasks` narrow to `p`, matching
+    /// `POST /v1/tasks` and `GET /v1/tasks`; `None` (the default) keeps the
+    /// pre-existing behavior — untagged creation, no narrowing. It segments
+    /// BELOW the owner level and never substitutes for owner isolation. See
+    /// `control_plane::mcp_tools`' "Project scoping" section.
+    pub control_plane_project: Option<String>,
 }
 
 /// 09-REVIEW.md WR-08: constant-time byte comparison so token lookup doesn't leak
@@ -267,7 +275,7 @@ impl ServerHandler for BastionMcpServer {
     ) -> impl Future<Output = Result<CallToolResult, McpError>> + MaybeSendFuture + '_ {
         let meta = request.meta.clone();
         let name = request.name.clone();
-        let args = request.arguments.unwrap_or_default();
+        let mut args = request.arguments.unwrap_or_default();
 
         let registry = self.registry.clone();
         let control_plane_registry = self.control_plane_registry.clone();
@@ -309,6 +317,8 @@ impl ServerHandler for BastionMcpServer {
                     "read-only token cannot invoke tools",
                 )]));
             }
+
+            let control_plane_project = perms.control_plane_project.clone();
 
             // CR-03: privacy_tier comes from the AUTHENTICATED token's configured
             // tier — never a blanket CloudOk applied to every MCP caller, which
@@ -352,6 +362,21 @@ impl ServerHandler for BastionMcpServer {
             if dispatches_to_control_plane {
                 if let Err(result) = check_control_plane_scope(&name, &perms.control_plane_scopes) {
                     return Ok(result);
+                }
+
+                // Project tag is server-resolved from the authenticated token,
+                // exactly as the HTTP routes read it off the credential record.
+                // The caller-supplied value (if any) is DROPPED first, so the
+                // key can never be used to reach another project's tasks —
+                // then the token's own tag, when it has one, is inserted.
+                // Scoped to Control Plane dispatch: a shared-registry tool
+                // never sees this key.
+                args.remove(crate::control_plane::mcp_tools::PROJECT_ARG);
+                if let Some(project) = control_plane_project {
+                    args.insert(
+                        crate::control_plane::mcp_tools::PROJECT_ARG.to_string(),
+                        Value::String(project),
+                    );
                 }
             }
 
@@ -547,6 +572,7 @@ mod tests {
             owner_id: owner.to_string(),
             privacy_tier: PrivacyTier::LocalOnly,
             control_plane_scopes,
+            control_plane_project: None,
         }
     }
 
