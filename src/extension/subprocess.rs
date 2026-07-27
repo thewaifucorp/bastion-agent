@@ -114,11 +114,11 @@ pub struct SubprocessCapability {
     manifest: Arc<ExtensionManifest>,
     command: String,
     args: Vec<String>,
-    /// C3-cloud-ready (`docs/revamp/C3-cloud-ready-design.md`, security
-    /// point 1): resolves each `manifest.secrets` entry BY NAME into the
+    /// Resolves each `manifest.secrets` entry BY NAME into the
     /// child's env at spawn time — never the daemon's own ambient env
     /// (`env_clear()` below still runs first). `None` preserves the
-    /// pre-Loop-3-D behavior exactly (no allowlist, child gets nothing).
+    /// behavior from before this field existed (no allowlist, child gets
+    /// nothing).
     secret_resolver: Option<Arc<dyn bastion_types::SecretResolver>>,
     allow_unsandboxed: bool,
 }

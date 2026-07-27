@@ -1,5 +1,4 @@
-//! Extension host + package manager (`docs/revamp/C3-extension-protocol-design.md`
-//! §3, M4-08..12). Deliberately OUTSIDE the kernel — this is product code
+//! Extension host + package manager. Deliberately OUTSIDE the kernel — this is product code
 //! (dependency resolution, lockfile, install/upgrade/rollback/revoke), never
 //! a `bastion-runtime`/`bastion-extension-protocol` concern.
 //!

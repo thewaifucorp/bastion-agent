@@ -891,7 +891,7 @@ async fn main() -> anyhow::Result<()> {
             std::env::temp_dir().join("bastion-browser"),
         )))?;
 
-    // Ciclo 2.4 (`docs/revamp/C2-backend-profile-design.md` §2): build the
+    // Build the
     // RuntimeRegistry from whatever AgentRuntime adapters are actually
     // healthy on this host RIGHT NOW — conditional registration, an
     // unhealthy adapter never enters the map (an owner who then selects it
@@ -1017,11 +1017,10 @@ async fn main() -> anyhow::Result<()> {
         .with_backend_profile(backend_profile)
         .with_runtime_registry(runtime_registry)
         .with_auth_resolver(std::sync::Arc::new(auth_resolver))
-        // Loop 3-A (6a, docs/revamp/C3-runtime-followups-design.md §6a):
-        // owner-scoped, persisted cross-turn permission queue — the same
+        // Owner-scoped, persisted cross-turn permission queue — the same
         // db_path SqliteApprovalGate above already opens. Without this call
-        // AgentLoop keeps NullPermissionGate (fail-closed immediate deny,
-        // pre-6a behavior); wiring the real gate here is what lets a
+        // AgentLoop keeps NullPermissionGate (fail-closed immediate deny);
+        // wiring the real gate here is what lets a
         // delegated task's paused PermissionRequest survive to be resolved
         // by a LATER turn instead of denying instantly.
         .with_permission_gate(std::sync::Arc::new(
@@ -1284,8 +1283,7 @@ async fn daemon_loop(
     // registry `PersonaResponder` wraps, cloned in `main()` before it moved
     // into the responder.
     registry_for_product: PersonaRegistry,
-    // Loop 3-D (`docs/revamp/C3-cloud-ready-design.md`, security point 1):
-    // the injectable resolver every daemon-level `SecretRef` (currently
+    // The injectable resolver every daemon-level `SecretRef` (currently
     // `APP_JWT_SECRET`, `BASTION_INFER_TOKEN`) is resolved through at boot —
     // env var today, optionally a mounted-secrets directory
     // (`BASTION_SECRETS_DIR`); a hosted operator's own secret manager is a
@@ -1385,7 +1383,7 @@ async fn daemon_loop(
         .take()
         .expect("pending_rx must be available at daemon start");
 
-    // Loop 3-D (`docs/revamp/C3-cloud-ready-design.md`): session/memory/
+    // Session/memory/
     // provider are guaranteed initialized by the time `daemon_loop` is ever
     // called — `main()` already propagated any of their own init failures
     // before dispatching to `Command::Daemon` — so they're marked ready
@@ -2664,8 +2662,8 @@ async fn daemon_loop(
                 }
             }
             // PROACT-05: proactive messages delivered ONLY between turns.
-            // 6d (docs/revamp/C3-runtime-followups-design.md): the queued item
-            // carries its own owner now — route the turn to THAT owner instead
+            // The queued item
+            // carries its own owner — route the turn to THAT owner instead
             // of always assuming DEFAULT_OWNER (a delegated task's or a
             // goal-drift nudge's owner may be any owner, not just the local
             // one). `None` (no producer left in this codebase sends that, but
@@ -2932,7 +2930,7 @@ async fn daemon_loop(
                 println!("\nShutting down (Ctrl-C).");
                 break;
             }
-            // Loop 3-D (`docs/revamp/C3-cloud-ready-design.md`): the SAME
+            // The SAME
             // graceful-shutdown path as SIGTERM/Ctrl-C, triggered instead by
             // an authenticated `POST /lifecycle/stop`.
             _ = lifecycle.shutdown.notified() => {

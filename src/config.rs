@@ -38,8 +38,8 @@ fn default_sync_interval() -> u64 {
     15
 }
 
-/// `ReflectorConfig` moved to `bastion_cognition::learn` (M2 step 6, V2 fix —
-/// `docs/revamp/M1-ADR-substrate-split.md`): the Reflector already took this
+/// `ReflectorConfig` moved to `bastion_cognition::learn`: the Reflector
+/// already took this
 /// struct as a constructor parameter (never read the global `Config`), so the
 /// only remaining leak was the struct DEFINITION living in this app-level
 /// module while `bastion-cognition::learn` (an extension crate) needed it.
@@ -68,7 +68,7 @@ pub struct BastionConfig {
     /// source of truth for OwnerMap construction (see `owner_map_for_*` below).
     #[serde(default)]
     pub identity: IdentityConfig,
-    /// Ciclo 2.4 (`docs/revamp/C2-backend-profile-design.md`): optional
+    /// Optional
     /// `[backend]` section. Absent entirely = `#[serde(default)]` empty
     /// `BackendConfig`, which `backend_profile_from_config` maps to
     /// `ConversationBackend::Model` + no delegation — byte-identical to
@@ -417,8 +417,7 @@ pub fn owner_map_for_email(cfg: &IdentityConfig) -> OwnerMap {
     )
 }
 
-/// `AgentConfig` moved to `bastion_types` (M2 step 6, V2 fix —
-/// `docs/revamp/M1-ADR-substrate-split.md`): `interop::export::{export_full,
+/// `AgentConfig` moved to `bastion_types`: `interop::export::{export_full,
 /// export_template}` (moving to `bastion-mesh`) only ever read this
 /// sub-struct (`cfg.agent.{default_model,daily_budget_usd}`) through the
 /// whole `BastionConfig` — a leak of the app's config format into an
@@ -1170,7 +1169,6 @@ telegram_chat_id = "222"
 
     // ── Ciclo 2.4 — `[backend]` / BackendProfile mapping ─────────────────────
 
-    /// Acceptance criterion 1 (`docs/revamp/C2-backend-profile-design.md`):
     /// bastion.toml's real `[backend]`-less config must still load and map to
     /// `ConversationBackend::Model` + no delegation — the exact default the
     /// whole test suite already runs against.

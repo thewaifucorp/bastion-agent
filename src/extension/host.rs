@@ -1,6 +1,6 @@
 //! `ExtensionHost` — dependency resolution, reproducible lockfile,
-//! install/upgrade/rollback/revoke (`docs/revamp/C3-extension-protocol-design.md`
-//! §3). Product code, deliberately outside the kernel.
+//! install/upgrade/rollback/revoke. Product code, deliberately outside the
+//! kernel.
 //!
 //! Every state-changing method here is all-or-nothing: a failed
 //! install/upgrade leaves the registry and `installed` map EXACTLY as they

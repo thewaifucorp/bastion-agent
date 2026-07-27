@@ -1,5 +1,5 @@
 //! `reference-extension-echo` — the reference `Subprocess`-kind extension
-//! child (`docs/revamp/C3-extension-protocol-design.md` §2/§6). A tiny,
+//! child. A tiny,
 //! synchronous, dependency-free (beyond `serde_json`, already a workspace
 //! dep) helper binary that speaks the versioned NDJSON protocol
 //! `src/extension/subprocess.rs` implements the host side of.

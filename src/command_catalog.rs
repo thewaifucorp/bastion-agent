@@ -1,5 +1,4 @@
-//! Fase 3.1 (`docs/revamp` plan `lexical-orbiting-hoare.md` — "UX CLI/TUI"):
-//! single source of truth for every real Bastion slash command.
+//! Single source of truth for every real Bastion slash command.
 //!
 //! Before this module, the same information was duplicated in THREE places
 //! that had already drifted apart: `agent::command::KNOWN_COMMANDS` (which

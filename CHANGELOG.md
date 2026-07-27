@@ -8,6 +8,8 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-07-27
+
 ### Added
 
 - **Extension pack cockpit**: `ExtensionHost` (install/upgrade/rollback/revoke,
@@ -43,6 +45,84 @@ for how that differs from the library crates it depends on).
   `~/.config/bastion/companion.json` unchanged when unset. Fully
   backward-compatible: omitting `BASTION_DATA_DIR` changes nothing. See
   [Configuration — Portable state](docs/en/configuration.md#portable-state-bastion_data_dir).
+- **MCP dependency reconciler for pack members** (`src/extension/mcp_reconciler.rs`):
+  a pack member may declare `mcp_dependencies`, reconciled into the operator's
+  MCP config at install time. Each entry may carry an `auth_token` field for
+  MCP servers gated behind an API key — a REFERENCE resolved from the
+  operator's secret backend, never a literal token in the pack.
+- **Rate limiting on the Control Plane** (`src/control_plane/rate_limit.rs`):
+  fixed window, 60 requests per 60s, keyed by CREDENTIAL rather than IP
+  (this is an authenticated API). ONE `RateLimiter` per daemon process,
+  shared by the `/v1/*` HTTP routes and the 5 Control Plane MCP tools, so
+  both surfaces draw on the same budget per credential. `McpStdio` is a
+  separate process and gets its own instance. Deliberately hand-rolled
+  rather than pulling a general-purpose rate-limiting crate for a
+  single-key-shape v1; a key can burst up to the limit at a window boundary,
+  an accepted and documented imprecision.
+- **`project` isolation on the Control Plane**: `AuthenticatedCredential.project`
+  was accepted, stored and returned but never filtered on. It now rides in
+  `business_state` (host-owned opaque JSON, the same convention `external_ref`
+  already established — bastion-core's `TaskCase` still has no `project`
+  concept, deliberately), and `list_tasks` narrows to the issuing
+  credential's project. `/credential issue` gained an optional
+  `--project <name>` flag. A credential with no project tag keeps seeing
+  everything, so existing deployments are unaffected. **Known gap**: the MCP
+  dispatch context (`InvokeCtx`) has no project concept, so tasks created or
+  listed through MCP are not project-scoped yet.
+- **Interactive prompts in the stdin REPL** (`src/agent/prompt.rs`,
+  `src/agent/console_prompt.rs`): a generic pending-prompt primitive — before
+  this, every console command was single-shot and no confirm/modal mechanism
+  existed anywhere. Two real consumers ship with it: optional persona
+  selection during `/extension install` (a pack declaring
+  `[personas_selection] required = [...]` presents its optional personas as a
+  numbered menu; unmatched tokens in the reply are reported back, never
+  silently dropped) and a revoke confirmation. Read-only commands stay
+  available while a prompt is pending.
+- **`/committee <question>`** (`src/agent/committee.rs`): 2-stage Cabinet
+  composition — independent signals from each persona, a second debate round
+  restricted to those who actually dissented, then a risk filter and a final
+  decision. Outcomes are persisted to a `committee_outcomes` table
+  (`src/agent/committee_store.rs`, sharing the session DB file but owned by
+  bastion-agent), and `/committee outcome <id> <helpful|harmful|neutral>`
+  feeds per-persona stigmergy weighting.
+
+### Fixed
+
+- **`/extension install` never actually loaded a pack's personas**: they were
+  copied to the wrong directory, so the registry could not find them even
+  after the daemon restart the command told the operator to perform. Covered
+  by a new end-to-end install-then-load test.
+- **`CliCapability` rejected unlisted subcommands but not unlisted flags** —
+  the allowlist is now enforced on both.
+- **Path traversal in a pack's `personas`/`skills` names**: those names come
+  from the pack author, not the operator, and were joined into filesystem
+  paths unchecked. Absolute paths and traversal are rejected, and symlinks
+  are not followed while copying.
+
+### Changed
+
+- Pinned `bastion-core` revision bumped, picking up the tool-authority gate on
+  `run_provider_fallback` (a persona's `tools:` allowlist was reachable around
+  that one dispatch path), the fix for Cabinet personas never receiving the
+  user's actual question, and staggered parallel persona provider calls.
+- Internal planning references removed from source comments — quoted backlog
+  task titles, milestone ids, and pointers to design docs that do not exist in
+  this repository. The design rationale those comments carried is unchanged;
+  only the unfollowable citation is gone.
+
+### Documentation
+
+- `docs/en/security.md`: the external `/v1/tasks*` Control Plane API is
+  documented as live rather than planned, and three previously undisclosed
+  gaps are stated outright (no rate limiting, `project` accepted but not
+  enforced, webhook subscriptions create-only). The first two close in this
+  release.
+- `docs/en/personas.md` and `docs/pt-br/personas.md`: the persona contract v2
+  is now documented — all seven frontmatter fields, what `validate()`
+  requires, and the `tools:` allowlist gating semantics including the
+  `tools: []` pitfall (flagged as suspicious by `validate()`, not a clean way
+  to express an unrestricted persona).
+- New Extensions guide, plus portability notes in the README.
 
 ## [0.2.2] — 2026-07-22
 
@@ -595,7 +675,9 @@ Depends on [bastion-core](https://github.com/thewaifucorp/bastion-core) for
 the runtime substrate (agent loop, capabilities, memory, cognition,
 personas, mesh, providers, extension protocol).
 
-[Unreleased]: https://github.com/thewaifucorp/bastion-agent/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/thewaifucorp/bastion-agent/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/thewaifucorp/bastion-agent/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/thewaifucorp/bastion-agent/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/thewaifucorp/bastion-agent/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/thewaifucorp/bastion-agent/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/thewaifucorp/bastion-agent/compare/v0.1.2...v0.1.3

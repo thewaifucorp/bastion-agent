@@ -1,6 +1,5 @@
-//! Ciclo 2.4 (`docs/revamp/C2-backend-profile-design.md` §2): composition-root
-//! wiring of the `AgentRuntime` adapters Bastion knows about into the
-//! kernel's `RuntimeRegistry`.
+//! Composition-root wiring of the `AgentRuntime` adapters Bastion knows
+//! about into the kernel's `RuntimeRegistry`.
 //!
 //! Conditional registration: an adapter that fails its own `health()` probe
 //! (missing binary, version out of the adapter's pinned range, unresolvable

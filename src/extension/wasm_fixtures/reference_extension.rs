@@ -1,5 +1,4 @@
-//! Source for the reference `Wasm`-kind extension module
-//! (`docs/revamp/C3-extension-protocol-design.md` §2/§6).
+//! Source for the reference `Wasm`-kind extension module.
 //!
 //! NOT part of any cargo package — this file is compiled directly with
 //! `rustc` (not `cargo`) into a freestanding `wasm32-unknown-unknown`

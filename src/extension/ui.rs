@@ -1,8 +1,7 @@
-//! Extension UI isolation — Loop 3-D, CLD-08
-//! (`docs/revamp/C3-cloud-ready-design.md` §Ponto de segurança 2): an
-//! extension may `provides: Ui` (`bastion_extension_protocol::Provided::Ui`,
-//! declared in Loop 3-C, never wired to a serving mechanism until now).
-//! Constraint (non-negotiable, same wording as the design doc):
+//! Extension UI isolation: an extension may `provides: Ui`
+//! (`bastion_extension_protocol::Provided::Ui`, declared by the protocol
+//! crate but not wired to a serving mechanism until this module).
+//! Constraint (non-negotiable):
 //!
 //! - Extension UI runs isolated by capability/sandbox — **forbidden to
 //!   execute arbitrary code same-origin with the host UI**, no access to the

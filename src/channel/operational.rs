@@ -1,5 +1,4 @@
-//! Daemon operational contract — Loop 3-D
-//! (`docs/revamp/C3-cloud-ready-design.md`): the surface that lets a hosted
+//! Daemon operational contract: the surface that lets a hosted
 //! operator run the SAME `bastion` binary as "just another sink" runs it —
 //! liveness/readiness distinct from each other, a lifecycle stop/reload
 //! surface, and a daemon-access auth hook. This module never learns

@@ -1,5 +1,5 @@
-//! Fase 2.3 (`docs/revamp` plan `lexical-orbiting-hoare.md` — "Subscription
-//! utilizável no TUI"): product-side `/backend`/`/backends` command.
+//! Product-side `/backend`/`/backends` command — makes a subscription
+//! backend selectable from the console/TUI.
 //!
 //! The kernel already has `cockpit_command`/`set_backend`
 //! (`crates/bastion-runtime/src/agent/loop_.rs:932-1163` in the pinned

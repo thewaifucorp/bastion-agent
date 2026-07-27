@@ -1,5 +1,4 @@
-//! Loop 3-D (`docs/revamp/C3-cloud-ready-design.md`, security point 1):
-//! concrete, injectable [`bastion_types::SecretResolver`]s. The kernel
+//! Concrete, injectable [`bastion_types::SecretResolver`]s. The kernel
 //! contracts crate only defines the trait
 //! (`crates/bastion-types/src/secret.rs`) — resolution itself is always a
 //! product/host concern, mirroring exactly how `AuthProfileRegistry`

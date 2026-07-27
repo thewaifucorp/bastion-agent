@@ -168,12 +168,12 @@ struct AppState {
     /// 501 rather than panicking — Composio integration is opt-in per instance
     /// (requires COMPOSIO_API_KEY).
     composio_oauth: Option<std::sync::Arc<bastion_mcp::oauth::ComposioOAuth>>,
-    /// Loop 3-D (`docs/revamp/C3-cloud-ready-design.md`): boot-sequence
+    /// Boot-sequence
     /// readiness gate backing `/readyz` — extracted via `FromRef` below so
     /// `operational::readiness_handler` (`State<Arc<ReadinessState>>`)
     /// mounts directly onto this SAME `Router<AppState>`.
     readiness: std::sync::Arc<crate::channel::operational::ReadinessState>,
-    /// Loop 3-D: daemon-access-gated stop/reload control, extracted via
+    /// Daemon-access-gated stop/reload control, extracted via
     /// `FromRef` for `operational::lifecycle_*_handler`.
     lifecycle: crate::channel::operational::LifecycleControl,
     /// Fase 2.9: backs `GET /status` (`operational::status_handler`) via the
@@ -1259,7 +1259,7 @@ pub async fn serve_with_mesh(
     // Composio OAuth client (SEC-03). None = /auth/composio/callback rejects with
     // 501 rather than panicking — opt-in, requires COMPOSIO_API_KEY.
     composio_oauth: Option<std::sync::Arc<bastion_mcp::oauth::ComposioOAuth>>,
-    // Loop 3-D (`docs/revamp/C3-cloud-ready-design.md`): boot-sequence
+    // Boot-sequence
     // readiness gate backing `/readyz` — built and threaded by the caller
     // (`daemon_loop`/`serve`) so ITS OWN startup sequence decides when each
     // component is actually ready, never this function.
