@@ -883,9 +883,8 @@ async fn main() -> anyhow::Result<()> {
         match resolved {
             Ok(p) => {
                 tracing::info!(event = "routing_compaction_applied", model = %model);
-                agent = agent.with_compaction_provider(std::sync::Arc::new(
-                    tokio::sync::RwLock::new(p),
-                ));
+                agent = agent
+                    .with_compaction_provider(std::sync::Arc::new(tokio::sync::RwLock::new(p)));
             }
             Err(e) => tracing::warn!(
                 event = "routing_compaction_failed",
