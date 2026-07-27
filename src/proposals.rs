@@ -1165,7 +1165,11 @@ mod tests {
     fn provider_secret_is_resolved_from_the_secrets_dir_and_published() {
         let dir = tempfile::tempdir().unwrap();
         // Trailing newline is what `echo` and most secret volumes produce.
-        std::fs::write(dir.path().join("BASTION_TEST_PROVIDER_KEY_B"), "from-file\n").unwrap();
+        std::fs::write(
+            dir.path().join("BASTION_TEST_PROVIDER_KEY_B"),
+            "from-file\n",
+        )
+        .unwrap();
 
         with_env_key_absent("BASTION_TEST_PROVIDER_KEY_B", || {
             assert!(

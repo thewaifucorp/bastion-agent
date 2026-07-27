@@ -16,9 +16,8 @@ use std::collections::BTreeSet;
 use bastion::control_plane::dto::{
     AttemptListResponse, AttemptSummaryDto, BudgetSummaryDto, CreateTaskBoundsDto,
     CreateTaskRequest, CredentialIssueRequest, CredentialIssueResponse, ErrorEnvelope,
-    StopReasonDto, TaskEventEnvelope, TaskListResponse, TaskMode,
-    TaskResource, TaskStatusDto, WebhookSubscriptionListResponse, WebhookSubscriptionRequest,
-    WebhookSubscriptionResource,
+    StopReasonDto, TaskEventEnvelope, TaskListResponse, TaskMode, TaskResource, TaskStatusDto,
+    WebhookSubscriptionListResponse, WebhookSubscriptionRequest, WebhookSubscriptionResource,
 };
 use serde_json::Value;
 

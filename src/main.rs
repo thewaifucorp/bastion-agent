@@ -1811,8 +1811,9 @@ async fn daemon_loop(
             let extension_ui_routes = if cfg.extension_ui.enabled {
                 let host = bastion::extension::ui::ExtensionUiHost::new(
                     Arc::new(agent.capability_registry.clone()),
-                    std::env::var("BASTION_OWNER_ID")
-                        .unwrap_or_else(|_| bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string()),
+                    std::env::var("BASTION_OWNER_ID").unwrap_or_else(|_| {
+                        bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string()
+                    }),
                 );
                 let mount_path = cfg.extension_ui.mount_path.clone();
                 tracing::info!(event = "extension_ui_mounted", mount_path = %mount_path);

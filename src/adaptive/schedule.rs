@@ -167,7 +167,9 @@ pub fn next_daily_fire(
     // owes; it is not silently guessed here.
     for day_offset in [0_i64, 1] {
         let date = (local + Duration::days(day_offset)).date_naive();
-        let candidate = offset.from_local_datetime(&date.and_time(target)).single()?;
+        let candidate = offset
+            .from_local_datetime(&date.and_time(target))
+            .single()?;
         if candidate > local {
             return candidate.timestamp_nanos_opt();
         }
@@ -748,7 +750,10 @@ mod tests {
     #[test]
     fn daily_fire_honors_a_fixed_offset() {
         let after = utc_nanos(1, 0, 0);
-        assert_eq!(next_daily_fire(9, 0, -180, after), Some(utc_nanos(1, 12, 0)));
+        assert_eq!(
+            next_daily_fire(9, 0, -180, after),
+            Some(utc_nanos(1, 12, 0))
+        );
         assert_eq!(next_daily_fire(9, 0, 330, after), Some(utc_nanos(1, 3, 30)));
     }
 
@@ -759,7 +764,10 @@ mod tests {
         // 13:00 UTC = 10:00 at UTC-03:00, so today's 09:00-03:00 (12:00 UTC)
         // is already behind us and the answer is tomorrow.
         let after = utc_nanos(1, 13, 0);
-        assert_eq!(next_daily_fire(9, 0, -180, after), Some(utc_nanos(2, 12, 0)));
+        assert_eq!(
+            next_daily_fire(9, 0, -180, after),
+            Some(utc_nanos(2, 12, 0))
+        );
     }
 
     #[test]

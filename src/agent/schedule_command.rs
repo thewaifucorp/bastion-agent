@@ -117,8 +117,9 @@ fn parse_offset(raw: &str) -> Option<i32> {
 
 async fn add(store: &Arc<SqliteScheduleStore>, owner: &str, rest: &str) -> anyhow::Result<String> {
     // `add <every|once> <secs> <intent...>` | `add daily <HH:MM[±HH:MM]> <intent...>`
-    let usage = "usage: /schedule add every <secs> <intent>  |  /schedule add once <secs> <intent>  \
-                 |  /schedule add daily <HH:MM[±HH:MM]> <intent>";
+    let usage =
+        "usage: /schedule add every <secs> <intent>  |  /schedule add once <secs> <intent>  \
+                  |  /schedule add daily <HH:MM[±HH:MM]> <intent>";
     let (mode, tail) = match rest.split_once(char::is_whitespace) {
         Some(p) => p,
         None => return Ok(usage.to_string()),

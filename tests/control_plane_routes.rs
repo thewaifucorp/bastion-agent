@@ -475,9 +475,18 @@ async fn an_issued_credential_authenticates_with_exactly_the_requested_scopes() 
     assert_eq!(resp.status(), StatusCode::CREATED);
     let json = body_json(resp).await;
     assert_eq!(json["owner_id"], "alice");
-    assert_eq!(json["scopes"], serde_json::json!(["tasks:read", "tasks:create"]));
-    assert!(json.get("project").is_none(), "no project asked, none echoed");
-    let token = json["token"].as_str().expect("token returned once").to_owned();
+    assert_eq!(
+        json["scopes"],
+        serde_json::json!(["tasks:read", "tasks:create"])
+    );
+    assert!(
+        json.get("project").is_none(),
+        "no project asked, none echoed"
+    );
+    let token = json["token"]
+        .as_str()
+        .expect("token returned once")
+        .to_owned();
     assert!(!token.is_empty());
 
     // Granted scope works...
