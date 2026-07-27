@@ -292,15 +292,72 @@ pub struct WebhookSubscriptionResource {
     pub target_url: String,
     pub event_types: Vec<String>,
     pub created_at: i64,
+    /// When this subscription was revoked, or `None` while it is still
+    /// active. Only `GET /v1/webhook-subscriptions` ever carries it: the
+    /// `POST` response describes a subscription that was just created, so the
+    /// field is omitted there (`skip_serializing_if`) rather than serialized
+    /// as a redundant `null`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<i64>,
     /// The HMAC signing secret (`webhook_delivery::sign_payload`'s key) —
     /// present ONLY in the response to the `POST` call that created this
-    /// subscription; `None` everywhere else (a future list-subscriptions
-    /// endpoint reusing this same DTO must never populate it). Mirrors
+    /// subscription; `None` everywhere else (`GET
+    /// /v1/webhook-subscriptions` constructs every item with `secret: None`).
+    /// Mirrors
     /// [`super::credential::SqliteCredentialStore::issue`]'s
     /// plaintext-token-shown-once pattern — there is no way to retrieve a
     /// lost secret; the subscription must be re-created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
+}
+
+/// `GET /v1/webhook-subscriptions` response envelope. No `next_cursor`: a
+/// subscription list is bounded by how many targets one owner registers by
+/// hand (single digits in practice), unlike the task list, which grows
+/// without an operator in the loop and therefore paginates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebhookSubscriptionListResponse {
+    pub items: Vec<WebhookSubscriptionResource>,
+}
+
+/// `POST /v1/credentials` request — remote credential issuance.
+///
+/// `owner_id` is supplied by the CALLER, which is only sound because this
+/// route's authority is the operator's daemon token, not a Control Plane
+/// credential: the "client-supplied owner_id is never trusted" rule applies to
+/// integration credentials acting on their own behalf, and an operator
+/// minting a credential for one of their owners is the one case where naming
+/// the owner IS the operation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CredentialIssueRequest {
+    pub owner_id: String,
+    /// Optional project tag baked into the credential — the same tag
+    /// `create_task`/`list_tasks` narrow by. Cannot be changed afterwards; a
+    /// different project means a different credential.
+    #[serde(default)]
+    pub project: Option<String>,
+    /// Wire scope names (`tasks:read`, `tasks:create`, `tasks:control`,
+    /// `webhooks:manage`). An unknown name rejects the whole request rather
+    /// than being dropped, so a caller never receives a credential with
+    /// silently fewer grants than it asked for. An empty list is refused: a
+    /// credential that can do nothing is a mistake, not a default.
+    pub scopes: Vec<String>,
+    /// Operator-facing label, for telling credentials apart when listing.
+    pub label: String,
+}
+
+/// `POST /v1/credentials` response. `token` appears exactly once, here —
+/// only its hash is stored, so a lost token cannot be recovered, only
+/// replaced.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CredentialIssueResponse {
+    pub id: String,
+    pub owner_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    pub scopes: Vec<String>,
+    pub label: String,
+    pub token: String,
 }
 
 /// One outbound event envelope, matching the spec's "Events" section 1:1:

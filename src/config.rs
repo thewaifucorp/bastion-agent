@@ -93,6 +93,70 @@ pub struct BastionConfig {
     /// empty map — byte-identical behavior for every existing deployment.
     #[serde(default)]
     pub routing: RoutingConfig,
+    /// Optional `[control_plane]` table. Absent entirely =
+    /// `#[serde(default)]`, which keeps every Control Plane behavior exactly
+    /// as it was.
+    #[serde(default)]
+    pub control_plane: ControlPlaneConfig,
+    /// Optional `[extension_ui]` table — mounts the extension-UI surface
+    /// (`/ext-ui/*`) on the daemon's axum router. Absent entirely =
+    /// `#[serde(default)]` disabled, which mounts nothing: byte-identical to
+    /// every deployment predating this field.
+    #[serde(default)]
+    pub extension_ui: ExtensionUiConfig,
+}
+
+/// The `[control_plane]` table.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ControlPlaneConfig {
+    /// Mount `POST /v1/credentials`, letting an operator issue a Control Plane
+    /// credential without a shell on the daemon's host. Default false: the
+    /// console `/credential` command remains the only issuance path unless
+    /// this is turned on.
+    ///
+    /// The route's authority is `BASTION_DAEMON_TOKEN` (the same fail-closed
+    /// bearer check `/lifecycle/*` uses), NOT a Control Plane credential — a
+    /// leaked integration token must never be able to mint itself a wider one.
+    /// With that token unset, every request is refused even when this is
+    /// enabled.
+    ///
+    /// The response carries a freshly minted plaintext token exactly once, so
+    /// enabling this over plain HTTP exposes it in flight: terminate TLS in
+    /// front of the daemon (see `docs/en/vps-setup.md`) before turning it on.
+    #[serde(default)]
+    pub remote_credential_issuance: bool,
+}
+
+/// The `[extension_ui]` table. The surface it mounts serves extension-provided
+/// assets under a sandbox CSP and exposes ONE mediated capability bridge
+/// (`POST /ext-ui/{id}/invoke`) — see `crate::extension::ui`. Opt-in because
+/// mounting it widens the daemon's network surface, and gated by
+/// `BASTION_DAEMON_TOKEN` because that bridge reaches the real
+/// `CapabilityRegistry`: with the token unset, every `/ext-ui` request is
+/// refused (fail-closed), so enabling this alone cannot expose it.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ExtensionUiConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path prefix to mount on. Defaults to `/ext-ui`.
+    #[serde(default = "default_extension_ui_mount_path")]
+    pub mount_path: String,
+}
+
+/// Hand-written rather than derived: a derived `Default` would leave
+/// `mount_path` empty for a config file with no `[extension_ui]` section,
+/// which is not the documented default.
+impl Default for ExtensionUiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mount_path: default_extension_ui_mount_path(),
+        }
+    }
+}
+
+fn default_extension_ui_mount_path() -> String {
+    "/ext-ui".into()
 }
 
 /// A4.5: the `[routing]` table, keyed by call-site class name. Kept as a
@@ -530,6 +594,14 @@ pub struct McpServerTokenConfig {
     /// read tasks, never create/control them.
     #[serde(default)]
     pub control_plane_scopes: Option<Vec<Scope>>,
+    /// Control Plane `project` tag this token acts under, e.g.
+    /// `control_plane_project = "acme"`. Tasks this token creates over MCP are
+    /// tagged with it and `list_tasks` narrows to it, matching what an HTTP
+    /// credential carrying the same tag already does. Omitted (the default)
+    /// keeps the previous behavior: untagged creation, no narrowing. Segments
+    /// tasks BELOW the owner level — never a replacement for owner isolation.
+    #[serde(default)]
+    pub control_plane_project: Option<String>,
 }
 
 /// Config section for the MCP server (not the client — D-08).
@@ -1181,6 +1253,29 @@ telegram_chat_id = "222"
         assert!(profile.task_runtime.is_none());
         assert!(profile.auth.is_none());
         assert!(profile.coverage_note.is_none());
+    }
+
+    #[test]
+    fn test_extension_ui_absent_is_disabled_with_the_documented_mount_path() {
+        let cfg = load_config("bastion.toml").expect("bastion.toml must exist at repo root");
+        assert!(
+            !cfg.extension_ui.enabled,
+            "the extension-UI surface must stay opt-in: an upgrade cannot mount it"
+        );
+        // A derived `Default` would leave this empty; the documented default
+        // has to survive a config file with no `[extension_ui]` section.
+        assert_eq!(cfg.extension_ui.mount_path, "/ext-ui");
+    }
+
+    #[test]
+    fn test_extension_ui_section_parses_and_keeps_the_default_mount_path() {
+        let cfg: ExtensionUiConfig = toml::from_str("enabled = true").unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.mount_path, "/ext-ui");
+
+        let custom: ExtensionUiConfig =
+            toml::from_str("enabled = true\nmount_path = \"/x\"").unwrap();
+        assert_eq!(custom.mount_path, "/x");
     }
 
     #[test]

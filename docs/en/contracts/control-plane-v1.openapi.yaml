@@ -288,6 +288,27 @@ paths:
           $ref: '#/components/responses/Error'
 
   /webhook-subscriptions:
+    get:
+      operationId: listWebhookSubscriptions
+      summary: This owner's subscriptions, newest first, revoked ones included.
+      security:
+        - bastionToken: [webhooks:manage]
+      responses:
+        '200':
+          description: >
+            The caller's subscriptions. The HMAC signing secret is never
+            present here — it exists only in the response to the POST that
+            created the subscription.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscriptionListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ScopeDenied'
+        default:
+          $ref: '#/components/responses/Error'
     post:
       operationId: createWebhookSubscription
       summary: Register a signed event target.
@@ -310,6 +331,82 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/ScopeDenied'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /webhook-subscriptions/{id}:
+    delete:
+      operationId: revokeWebhookSubscription
+      summary: Stop delivering to a target.
+      description: >
+        Revocation writes a tombstone (revoked_at) rather than deleting the
+        row, so the subscription stays visible in the list with its
+        timestamp. Another owner's id answers 404, indistinguishable from an
+        id that never existed, so this route cannot be used to probe for
+        other owners' subscription ids.
+      security:
+        - bastionToken: [webhooks:manage]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204':
+          description: Revoked. No body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ScopeDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The subscription is already revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /credentials:
+    post:
+      operationId: issueCredential
+      summary: Issue a Control Plane credential (operator token, opt-in route).
+      description: >
+        Mounted only when the operator sets [control_plane]
+        remote_credential_issuance in bastion.toml. Its authority is the
+        operator's daemon token (Authorization: Bearer $BASTION_DAEMON_TOKEN),
+        NOT a Control Plane credential: a leaked integration token must never
+        be able to mint itself a wider credential, or a fresh one after
+        revocation. With BASTION_DAEMON_TOKEN unset, every request is refused.
+        The response carries the plaintext token exactly once — only its hash
+        is stored — so terminate TLS in front of the daemon before enabling it.
+      security:
+        - daemonToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialIssueRequest'
+      responses:
+        '201':
+          description: Credential issued. The plaintext token appears only here.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialIssueResponse'
+        '400':
+          description: >
+            Empty owner_id/label/scopes, or an unknown scope name (which
+            refuses the whole request rather than dropping that scope).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         default:
           $ref: '#/components/responses/Error'
 
@@ -368,6 +465,14 @@ components:
         channel, the MCP server, and now here), resolved in
         docs/en/control-plane-security.md's "which header" decision.
         Not OAuth. Scopes: tasks:read, tasks:create, tasks:control, webhooks:manage.
+    daemonToken:
+      type: http
+      scheme: bearer
+      description: >
+        The OPERATOR's daemon token (BASTION_DAEMON_TOKEN), the same credential
+        /lifecycle/stop and /lifecycle/reload require. Used by exactly one /v1
+        route — POST /credentials — because minting credentials must not be
+        delegable to a credential. Fails closed when unset.
 
   parameters:
     TaskId:
@@ -539,14 +644,81 @@ components:
           type: array
           items: { type: string }
         created_at: { type: integer, format: int64 }
+        revoked_at:
+          type: integer
+          format: int64
+          description: >
+            When this subscription was revoked. Absent (key omitted entirely,
+            not null) while it is still active, and absent from the POST
+            response, which describes a subscription that was just created.
         secret:
           type: string
           description: >
             The HMAC signing secret, present ONLY in the response to the
             POST call that created this subscription. Absent (key omitted
-            entirely, not null) in any other response reusing this schema
-            (e.g. a future list-subscriptions endpoint). There is no way to
+            entirely, not null) in any other response reusing this schema —
+            GET /webhook-subscriptions never carries it. There is no way to
             retrieve a lost secret — re-create the subscription.
+
+    WebhookSubscriptionListResponse:
+      type: object
+      required: [items]
+      description: >
+        Not cursor-paginated, unlike TaskListResponse: the number of
+        subscriptions is bounded by how many targets one owner registers by
+        hand, while tasks accumulate without an operator in the loop.
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/WebhookSubscriptionResource' }
+
+    CredentialIssueRequest:
+      type: object
+      required: [owner_id, scopes, label]
+      properties:
+        owner_id:
+          type: string
+          description: >
+            Supplied by the caller here — sound only because this route's
+            authority is the operator's daemon token. Every OTHER route derives
+            the owner from the authenticated credential and never trusts a
+            client-supplied value.
+        project:
+          type: string
+          description: >
+            Optional project tag baked into the credential; the same tag
+            create/list narrow by. Immutable — a different project means a
+            different credential.
+        scopes:
+          type: array
+          description: >
+            Wire scope names. An unknown name refuses the whole request; an
+            empty list is refused too.
+          items:
+            type: string
+            enum: [tasks:read, tasks:create, tasks:control, webhooks:manage]
+        label:
+          type: string
+
+    CredentialIssueResponse:
+      type: object
+      required: [id, owner_id, scopes, label, token]
+      properties:
+        id: { type: string }
+        owner_id: { type: string }
+        project:
+          type: string
+          description: Absent (key omitted, not null) when no project was requested.
+        scopes:
+          type: array
+          items: { type: string }
+        label: { type: string }
+        token:
+          type: string
+          description: >
+            The plaintext bearer, present exactly once, in this response. Only
+            its hash is stored — a lost token cannot be recovered, only
+            replaced.
 
     ErrorEnvelope:
       type: object

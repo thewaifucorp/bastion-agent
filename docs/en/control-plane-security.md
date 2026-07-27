@@ -16,9 +16,7 @@ those routes call is now ALSO reachable as 5 MCP tools
 Phase 5" below) and demonstrated end-to-end by a standalone proof adapter
 (`integrations/paperclip-adapter/`). See
 [`contracts/control-plane-v1.openapi.yaml`](contracts/control-plane-v1.openapi.yaml)
-and "Known gaps" below for what's still genuinely absent (webhook-
-subscription list/revoke self-service, and MCP-side project scoping and
-rate limiting).
+and "Known gaps" below for what's still genuinely absent.
 
 ## What a Control Plane credential is
 
@@ -331,27 +329,62 @@ Two of the original gaps were closed by the observability frontend work
   issues/lists/revokes credentials; the plaintext token prints exactly once
   to the operator's terminal. Deliberately still NOT reachable from `/v1/*`
   or any remote channel — issuance stays a trusted-host operation.
-  Webhook-subscription management (list/revoke) remains absent.
+- ~~Webhook-subscription management (list/revoke) is absent~~ — CLOSED.
+  `GET /v1/webhook-subscriptions` lists this owner's subscriptions (revoked
+  ones included, with their `revoked_at`) and
+  `DELETE /v1/webhook-subscriptions/{id}` revokes one, both requiring
+  `webhooks:manage`. Revocation is a tombstone, not a row deletion, and the
+  store's `UPDATE ... WHERE id = ?1 AND owner_id = ?2` is the IDOR guard:
+  another owner's id answers `404 not_found`, indistinguishable from an id
+  that never existed. Revoking twice answers `409 already_revoked` instead of
+  a silent success. The signing secret is never present in a list response —
+  it exists only in the response to the `POST` that created the subscription.
+  (tested: `list_webhook_subscriptions_is_owner_scoped_and_never_returns_the_secret`,
+  `revoke_webhook_subscription_cannot_touch_another_owners_subscription`,
+  `revoke_webhook_subscription_stops_delivery_and_shows_up_in_the_list`,
+  `revoke_webhook_subscription_twice_is_a_conflict_not_a_silent_success`).
 
 - ~~`project` is stored but not enforced anywhere~~ — PARTIALLY CLOSED.
   `create_task`/`list_tasks` on the HTTP `/v1/*` routes now tag/filter by
   the issuing credential's `project` (`control_plane::business_state`,
   since `bastion-core`'s `TaskCase` has no `project` field of its own and
   is deliberately not modified to add one). Owner remains the primary,
-  always-enforced boundary; `project` only narrows within it, and only on
-  HTTP — the equivalent MCP tools resolve auth through `InvokeCtx`, which
-  has no `project` concept, so MCP-created/listed tasks are still never
-  project-scoped.
+  always-enforced boundary; `project` only narrows within it. Now closed on
+  the MCP side too: an MCP token carries `control_plane_project`
+  (`[mcp_server.tokens.<token>]`), the counterpart of a credential's tag, and
+  `call_tool` threads it into `create_task`/`list_tasks` — a caller-supplied
+  value for that reserved argument key is dropped before the server's own is
+  inserted, so it cannot be used to reach another project's tasks (tested:
+  `mcp_tasks_are_isolated_between_projects_of_the_same_owner`). A token with
+  no tag keeps the previous behavior: untagged creation, no narrowing.
 - ~~No rate limiting on any route or MCP tool~~ — PARTIALLY CLOSED. `/v1/*`
   now enforces a fixed 60 requests/minute per credential
   (`src/control_plane/rate_limit.rs`, a hand-rolled fixed-window limiter,
   not a new dependency), applied as a router-level layer before any
-  handler runs. Still open: the equivalent MCP tools have no rate limit at
-  all yet.
+  handler runs. The 5 Control Plane MCP tools share the same limiter
+  instance, keyed on the presented `x-bastion-token` and checked before
+  authentication (`mcp::server::call_tool`), so a flood of invalid tokens is
+  bounded too; every other MCP tool is unaffected.
+
+- ~~Issuing a credential requires a shell on the daemon's host~~ — CLOSED,
+  opt-in. `POST /v1/credentials` (mounted only when `[control_plane]
+  remote_credential_issuance` is set) issues a credential for a named owner,
+  optional project and explicit scopes, returning the plaintext token exactly
+  once. Its authority is the OPERATOR's `BASTION_DAEMON_TOKEN` — the same
+  fail-closed bearer check `/lifecycle/*` uses — and deliberately NOT a
+  Control Plane credential: if a credential could mint credentials, a leaked
+  integration token could widen itself and re-mint after revocation. A valid
+  `x-bastion-token` with every scope is still refused here (tested:
+  `a_control_plane_credential_cannot_mint_credentials`), an unset daemon token
+  refuses everything, and an unknown scope name refuses the whole request
+  rather than issuing with fewer grants than asked for. The response crosses
+  the network, so the config field's documentation requires TLS termination in
+  front of the daemon before enabling it.
 
 Still open:
-- Webhook-subscription management (list/revoke) remains absent (create-only).
-- MCP tools have no `project` scoping and no rate limiting (both above).
+- The plaintext token in that response is only as protected as the transport
+  in front of the daemon; there is no signed/expiring one-time retrieval
+  handoff yet.
 
 ## Closed since Phase 5
 - **Python SDK** (was: "spec asked for Python second, only TS shipped") —

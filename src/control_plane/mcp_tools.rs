@@ -57,6 +57,23 @@
 //! behavior (every scope when not `read_only`, none when `read_only`) — see
 //! `docs/en/control-plane-security.md`'s "New in Phase 5" / "Closed since
 //! Phase 5" sections for the full mechanism and its compatibility guarantee.
+//!
+//! ## Project scoping
+//!
+//! An MCP token can also carry a Control Plane `project` tag
+//! (`mcp::server::TokenPermissions::control_plane_project`, from
+//! `bastion.toml`'s `[mcp_server.tokens.<token>] control_plane_project`),
+//! which is the MCP counterpart of the tag an HTTP credential carries. When
+//! set, `create_task` writes it onto the task's business state and
+//! `list_tasks` narrows to it, exactly as `POST /v1/tasks` and
+//! `GET /v1/tasks` already do. It segments tasks BELOW the owner level and is
+//! never a substitute for owner isolation (`core_ops::list_tasks`' doc
+//! comment). `None` — the default — keeps the pre-existing behavior: tasks are
+//! created untagged and every task the owner can see is listed.
+//!
+//! The tag reaches these capabilities through [`PROJECT_ARG`]; see its doc
+//! comment for why it travels in the arguments and why a caller cannot forge
+//! it.
 
 use std::sync::Arc;
 
@@ -109,6 +126,33 @@ fn require_u64(args: &Value, field: &str) -> anyhow::Result<u64> {
     args.get(field).and_then(Value::as_u64).ok_or_else(|| {
         anyhow::anyhow!("invalid_input: {field} is required and must be a non-negative integer")
     })
+}
+
+/// Reserved argument key carrying the AUTHENTICATED token's Control Plane
+/// project tag (`mcp::server::TokenPermissions::control_plane_project`) into
+/// these capabilities.
+///
+/// It is deliberately absent from every `input_schema` below, and
+/// `mcp::server::call_tool` REMOVES any caller-supplied value under this key
+/// before inserting the server-resolved one — a caller can neither set nor
+/// forge its own project, exactly as an HTTP caller cannot: there, the tag
+/// comes from the credential record (`AuthenticatedCredential::project`), not
+/// from the request body. `CapabilityRegistry::invoke` does not validate
+/// arguments against `input_schema` (it is used to ADVERTISE tools, see
+/// `bastion_runtime::capability::registry`), so a key outside the advertised
+/// schema is an internal channel, not a contract violation.
+///
+/// Threading it through the arguments is forced by the seam: `InvokeCtx` is a
+/// `bastion-core` type carrying owner/tier/allowed_tools, and "project" is a
+/// Control Plane concept this repository owns (same discipline as
+/// `external_ref`, `dto.rs`) — it has nowhere to live on that struct.
+pub const PROJECT_ARG: &str = "__bastion_project";
+
+/// Read the server-injected project tag, if this token carries one.
+fn injected_project(args: &Value) -> Option<&str> {
+    args.get(PROJECT_ARG)
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
 }
 
 pub struct CreateTaskCapability {
@@ -198,16 +242,19 @@ impl Capability for CreateTaskCapability {
             bounds,
         };
 
-        // `InvokeCtx` (bastion-core) carries owner/tier/allowed_tools, not a
-        // Control Plane `project` tag — that's resolved from an
-        // `AuthenticatedCredential`, a concept this native capability-registry
-        // MCP path doesn't have (unlike the HTTP `/v1/*` routes, which do).
-        // Known, disclosed gap: MCP-created tasks are never project-tagged
-        // yet, so `project_filter` in `list_tasks` below only ever narrows
-        // tasks the HTTP surface created.
-        let outcome = core_ops::create_task(&self.state, &ctx.owner, &idempotency_key, req, None)
-            .await
-            .map_err(map_core_op_error)?;
+        // Project tag comes from the authenticated token (see `PROJECT_ARG`),
+        // never from the caller's arguments — same source of truth as the HTTP
+        // routes, which read it off the credential record. A token with no
+        // project configured passes `None` and behaves exactly as before.
+        let outcome = core_ops::create_task(
+            &self.state,
+            &ctx.owner,
+            &idempotency_key,
+            req,
+            injected_project(&args),
+        )
+        .await
+        .map_err(map_core_op_error)?;
 
         let mut value = serde_json::to_value(&outcome.resource)?;
         if let Value::Object(ref mut map) = value {
@@ -307,11 +354,18 @@ impl Capability for ListTasksCapability {
     async fn invoke(&self, args: Value, ctx: &InvokeCtx) -> anyhow::Result<Value> {
         let status = args.get("status").and_then(Value::as_str);
         let cursor = args.get("cursor").and_then(Value::as_str);
-        // No project scoping on this path yet (see create_task's comment
-        // above) — an MCP caller always sees every task the owner can see.
-        let resp = core_ops::list_tasks(&self.state, &ctx.owner, status, cursor, None)
-            .await
-            .map_err(map_core_op_error)?;
+        // Narrowed to the authenticated token's project when it has one
+        // (`PROJECT_ARG`), matching `GET /v1/tasks`. A token with no project
+        // configured still sees every task the owner can see.
+        let resp = core_ops::list_tasks(
+            &self.state,
+            &ctx.owner,
+            status,
+            cursor,
+            injected_project(&args),
+        )
+        .await
+        .map_err(map_core_op_error)?;
         Ok(serde_json::to_value(resp)?)
     }
 
@@ -670,5 +724,111 @@ mod tests {
             .await
             .expect("list_tasks should succeed");
         assert_eq!(empty.data["items"].as_array().unwrap().len(), 0);
+    }
+
+    /// Two projects of the SAME owner: each token only lists what it created.
+    /// This is the MCP counterpart of the HTTP `project` isolation test — the
+    /// gap this closes was that MCP always passed `None` on both paths.
+    #[tokio::test]
+    async fn mcp_tasks_are_isolated_between_projects_of_the_same_owner() {
+        let (_f, state) = test_state().await;
+        let registry = build_registry(state);
+
+        registry
+            .invoke(
+                "create_task",
+                json!({"objective": "acme work", "idempotency_key": "k1", PROJECT_ARG: "acme"}),
+                &ctx("alice"),
+            )
+            .await
+            .unwrap();
+        registry
+            .invoke(
+                "create_task",
+                json!({"objective": "beta work", "idempotency_key": "k2", PROJECT_ARG: "beta"}),
+                &ctx("alice"),
+            )
+            .await
+            .unwrap();
+
+        let acme = registry
+            .invoke("list_tasks", json!({PROJECT_ARG: "acme"}), &ctx("alice"))
+            .await
+            .expect("list_tasks should succeed");
+        let acme_items = acme.data["items"].as_array().unwrap();
+        assert_eq!(acme_items.len(), 1, "acme token must not see beta's task");
+        assert_eq!(acme_items[0]["objective"], json!("acme work"));
+
+        let beta = registry
+            .invoke("list_tasks", json!({PROJECT_ARG: "beta"}), &ctx("alice"))
+            .await
+            .unwrap();
+        let beta_items = beta.data["items"].as_array().unwrap();
+        assert_eq!(beta_items.len(), 1, "beta token must not see acme's task");
+        assert_eq!(beta_items[0]["objective"], json!("beta work"));
+    }
+
+    /// A token with no project keeps the pre-existing behavior on both paths:
+    /// creation is untagged, and listing is not narrowed — it sees the
+    /// project-tagged tasks too, exactly as `GET /v1/tasks` does for a
+    /// credential with no tag.
+    #[tokio::test]
+    async fn a_token_without_a_project_is_not_narrowed() {
+        let (_f, state) = test_state().await;
+        let registry = build_registry(state);
+
+        registry
+            .invoke(
+                "create_task",
+                json!({"objective": "acme work", "idempotency_key": "k1", PROJECT_ARG: "acme"}),
+                &ctx("alice"),
+            )
+            .await
+            .unwrap();
+        registry
+            .invoke(
+                "create_task",
+                json!({"objective": "untagged work", "idempotency_key": "k2"}),
+                &ctx("alice"),
+            )
+            .await
+            .unwrap();
+
+        let all = registry
+            .invoke("list_tasks", json!({}), &ctx("alice"))
+            .await
+            .unwrap();
+        assert_eq!(all.data["items"].as_array().unwrap().len(), 2);
+
+        // ...while the acme token still sees only its own.
+        let acme = registry
+            .invoke("list_tasks", json!({PROJECT_ARG: "acme"}), &ctx("alice"))
+            .await
+            .unwrap();
+        assert_eq!(acme.data["items"].as_array().unwrap().len(), 1);
+    }
+
+    /// A blank tag is treated as absent rather than as a project literally
+    /// named `""`, so a misconfigured token cannot create a hidden bucket that
+    /// no other query can reach.
+    #[tokio::test]
+    async fn a_blank_project_tag_is_treated_as_absent() {
+        let (_f, state) = test_state().await;
+        let registry = build_registry(state);
+
+        registry
+            .invoke(
+                "create_task",
+                json!({"objective": "a", "idempotency_key": "k1", PROJECT_ARG: "   "}),
+                &ctx("alice"),
+            )
+            .await
+            .unwrap();
+
+        let all = registry
+            .invoke("list_tasks", json!({PROJECT_ARG: "  "}), &ctx("alice"))
+            .await
+            .unwrap();
+        assert_eq!(all.data["items"].as_array().unwrap().len(), 1);
     }
 }

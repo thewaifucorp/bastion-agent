@@ -51,6 +51,13 @@ um plano/DAG armazenado.
 
 Os comandos `/schedule` criam agendamentos pessoais duráveis e isolados pelo
 dono; eles sobrevivem a reinícios e seguem o mesmo caminho adaptativo.
+`every`/`once` são durações puras, então fuso não se aplica a eles. `daily
+<HH:MM[±HH:MM]>` é ancorado no relógio de parede e o offset é explícito ou é
+UTC (`09:00-03:00` = 09:00 em UTC-03:00) — nunca o fuso local do host, que é
+invisível para quem digitou o comando. Um slot `daily` perdido nunca é
+reexecutado em série: o agendamento dispara no máximo uma vez e realinha.
+Zonas IANA nomeadas (com horário de verão) ainda não são suportadas — exigem
+uma base de fusos (`chrono-tz`) que este build não carrega.
 
 Dentro de uma tarefa, Bastion oferece navegador governado, runtimes externos
 delegados para trabalho de código (com diffs e artefatos como evidência) e

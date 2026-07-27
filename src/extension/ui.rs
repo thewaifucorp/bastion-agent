@@ -20,10 +20,34 @@
 //! response headers are asserted directly (the CSP/sandbox contract a
 //! compliant browser enforces), and the mediation chokepoint is asserted by
 //! calling it directly, the same style `tests/extension_adversarial.rs`
-//! already uses for the non-UI mechanisms. Wiring a per-owner instance of
-//! this host into `main.rs`'s axum router is a follow-up once a real UI
-//! consumer exists (same "mechanism now, product wiring later" pattern
-//! M4-09/M4-10 already used in this codebase).
+//! already uses for the non-UI mechanisms.
+//!
+//! # Mounting
+//!
+//! [`router`] is mounted by `main.rs` onto the daemon's axum router (the
+//! third pre-built router `channel::webhook::serve_with_mesh` merges,
+//! distinct from `/ui`'s dashboard route and `/app`'s embedded SPA), behind
+//! two gates:
+//!
+//! - `[extension_ui] enabled` in `bastion.toml`, default false — an existing
+//!   deployment gains no new surface by upgrading;
+//! - `operational::require_daemon_access`, the same fail-closed
+//!   `BASTION_DAEMON_TOKEN` bearer check `/lifecycle/*` uses — with no token
+//!   configured every request is refused, because `/invoke` below reaches the
+//!   real `CapabilityRegistry`.
+//!
+//! The gate lives at the mount site rather than in this module: this module
+//! owns the isolation contract (what a served bundle may do), the layer owns
+//! network reachability (who may talk to the surface at all).
+//!
+//! A mounted host starts empty — [`ExtensionUiHost::register`] is the entry
+//! point an install path for `provides: Ui` extensions calls, and until
+//! something registers a bundle, assets 404 and `/invoke` answers
+//! [`ExtensionError::NotFound`]. Note what is still missing before a real
+//! browser consumer can use this end to end: sandboxed script runs in an
+//! opaque origin and therefore cannot be handed the operator's daemon token,
+//! so a per-bundle, short-lived invoke credential is the next piece of the
+//! design — not something this wiring silently assumes.
 //!
 //! # Isolation mechanism
 //!

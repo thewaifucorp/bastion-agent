@@ -18,11 +18,18 @@
 //! zero rows changed), optimistic-concurrency (OCC) revision bumps, and
 //! `serde_json` TEXT columns for the structured enums.
 //!
-//! ## Timezone (stubbed)
-//! `ScheduleSpec::tz` is persisted but not yet honored: fire times are
-//! computed purely in nanoseconds-since-epoch. DST/tz-aware slot expansion is
-//! a documented TODO — it would require `chrono-tz`, which we deliberately do
-//! **not** pull in here.
+//! ## Timezone
+//! `OneShot`/`Every` are pure durations, so a timezone cannot change when they
+//! fire — there is no wall-clock anchor to shift. [`ScheduleKind::DailyAt`]
+//! adds that anchor: an hour/minute in a FIXED UTC offset, resolved through
+//! `chrono::FixedOffset` (already a dependency).
+//!
+//! What a fixed offset deliberately does NOT cover: a named IANA zone whose
+//! offset changes across a DST boundary, where "every day at 09:00 in
+//! Sao_Paulo" is not a constant offset from UTC. Honoring
+//! [`ScheduleSpec::tz`] that way needs a tz database (`chrono-tz`), which is
+//! not a dependency here; until it is, `tz` stays persisted-but-unread and a
+//! caller that needs local time states the offset it means.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -50,6 +57,22 @@ pub enum ScheduleKind {
     OneShot { at_nanos: i64 },
     /// Fire every `interval_secs` seconds, indefinitely (until revoked).
     Every { interval_secs: u64 },
+    /// Fire every day at `hour`:`minute` wall-clock in a fixed UTC offset
+    /// (`offset_minutes`, e.g. `-180` for UTC-03:00), indefinitely.
+    ///
+    /// Unlike `Every`, the slot is anchored to a wall clock: an interval-based
+    /// daily schedule drifts the moment the daemon is down across a fire, and
+    /// can never mean "09:00 local" in the first place. The offset is FIXED —
+    /// see the module doc for why a DST-aware named zone is not covered.
+    DailyAt {
+        /// 0..=23. Out-of-range values make the schedule degenerate (no next
+        /// fire) rather than panic — same discipline as a zero `interval_secs`.
+        hour: u32,
+        /// 0..=59, same out-of-range rule.
+        minute: u32,
+        /// Offset east of UTC in minutes, `-1439..=1439`.
+        offset_minutes: i32,
+    },
 }
 
 /// What to do about fires that were missed while the scheduler was down
@@ -107,7 +130,51 @@ pub fn compute_next_fire(kind: &ScheduleKind, fired_at_nanos: i64) -> Option<i64
                 Some(fired_at_nanos.saturating_add(interval_nanos))
             }
         }
+        ScheduleKind::DailyAt {
+            hour,
+            minute,
+            offset_minutes,
+        } => next_daily_fire(*hour, *minute, *offset_minutes, fired_at_nanos),
     }
+}
+
+/// The first instant strictly after `after_nanos` whose wall-clock time in
+/// `offset_minutes` is `hour`:`minute`:00 (US-205 timezone follow-up).
+///
+/// Returns `None` for an unrepresentable hour/minute/offset or a timestamp
+/// chrono cannot represent, which callers treat as a degenerate schedule (fire
+/// once, revoke) rather than a panic or a spin.
+pub fn next_daily_fire(
+    hour: u32,
+    minute: u32,
+    offset_minutes: i32,
+    after_nanos: i64,
+) -> Option<i64> {
+    use chrono::{DateTime, Duration, FixedOffset, NaiveTime, TimeZone, Utc};
+
+    let offset = FixedOffset::east_opt(offset_minutes.checked_mul(60)?)?;
+    let target = NaiveTime::from_hms_opt(hour, minute, 0)?;
+
+    let secs = after_nanos.div_euclid(1_000_000_000);
+    let nsecs = after_nanos.rem_euclid(1_000_000_000) as u32;
+    let after: DateTime<Utc> = DateTime::from_timestamp(secs, nsecs)?;
+    let local = after.with_timezone(&offset);
+
+    // Today's slot if it is still ahead, otherwise tomorrow's. A fixed offset
+    // has no gap/overlap, so `single()` always resolves — unlike a DST-aware
+    // zone, where this same loop would have to decide what "02:30 on a spring
+    // forward day" means. That decision is part of what the chrono-tz work
+    // owes; it is not silently guessed here.
+    for day_offset in [0_i64, 1] {
+        let date = (local + Duration::days(day_offset)).date_naive();
+        let candidate = offset
+            .from_local_datetime(&date.and_time(target))
+            .single()?;
+        if candidate > local {
+            return candidate.timestamp_nanos_opt();
+        }
+    }
+    None
 }
 
 /// The outcome of servicing one due schedule at a given `now` (US-205).
@@ -172,6 +239,39 @@ pub fn plan_fire(
             FirePlan {
                 fire_count,
                 next_fire_nanos: Some(next_future),
+            }
+        }
+        ScheduleKind::DailyAt {
+            hour,
+            minute,
+            offset_minutes,
+        } => {
+            let next = next_daily_fire(*hour, *minute, *offset_minutes, now);
+            match next {
+                // A daily slot cannot be "caught up" the way an interval can:
+                // there is at most one occurrence per day, and firing N times
+                // for N missed days would run the same intent repeatedly with
+                // no way to tell those runs apart. So the backlog collapses to
+                // at most one fire, and `Skip` still drops it when the missed
+                // slot is more than a day stale.
+                Some(next_fire) => {
+                    let a_day_nanos = 24 * 60 * 60 * 1_000_000_000_i64;
+                    let stale = now.saturating_sub(next_fire_nanos) >= a_day_nanos;
+                    let fire_count = match missed {
+                        MissedPolicy::Skip if stale => 0,
+                        _ => 1,
+                    };
+                    FirePlan {
+                        fire_count,
+                        next_fire_nanos: Some(next_fire),
+                    }
+                }
+                // Unrepresentable hour/minute/offset: fire once and revoke
+                // rather than keep a row that can never compute a slot.
+                None => FirePlan {
+                    fire_count: 1,
+                    next_fire_nanos: None,
+                },
             }
         }
     }
@@ -614,6 +714,140 @@ mod tests {
         let on_time = plan_fire(&kind, &MissedPolicy::Skip, 0, sec / 2);
         assert_eq!(on_time.fire_count, 1);
         assert_eq!(on_time.next_fire_nanos, Some(sec));
+    }
+
+    // ---- DailyAt (wall-clock anchored) ---------------------------------
+
+    /// 1970-01-02T00:00:00Z, a stable reference point that needs no clock.
+    const DAY_ONE: i64 = 24 * 60 * 60 * 1_000_000_000;
+
+    fn utc_nanos(day: i64, hour: i64, minute: i64) -> i64 {
+        (day * 86_400 + hour * 3_600 + minute * 60) * 1_000_000_000
+    }
+
+    #[test]
+    fn daily_fire_picks_todays_slot_when_it_is_still_ahead() {
+        // 06:00 UTC, asking for 09:00 UTC → same day.
+        let after = utc_nanos(1, 6, 0);
+        assert_eq!(
+            next_daily_fire(9, 0, 0, after),
+            Some(utc_nanos(1, 9, 0)),
+            "a slot later today must not skip to tomorrow"
+        );
+    }
+
+    #[test]
+    fn daily_fire_rolls_to_tomorrow_once_todays_slot_has_passed() {
+        let after = utc_nanos(1, 9, 0); // exactly the slot: strictly-after
+        assert_eq!(next_daily_fire(9, 0, 0, after), Some(utc_nanos(2, 9, 0)));
+
+        let later = utc_nanos(1, 23, 30);
+        assert_eq!(next_daily_fire(9, 0, 0, later), Some(utc_nanos(2, 9, 0)));
+    }
+
+    /// The whole point of the offset: 09:00 at UTC-03:00 is 12:00 UTC, so the
+    /// same declared time resolves to a different instant than 09:00 UTC.
+    #[test]
+    fn daily_fire_honors_a_fixed_offset() {
+        let after = utc_nanos(1, 0, 0);
+        assert_eq!(
+            next_daily_fire(9, 0, -180, after),
+            Some(utc_nanos(1, 12, 0))
+        );
+        assert_eq!(next_daily_fire(9, 0, 330, after), Some(utc_nanos(1, 3, 30)));
+    }
+
+    /// A slot that has passed in UTC but not yet in the requested offset (and
+    /// vice versa) — the case an offset-blind implementation gets wrong.
+    #[test]
+    fn daily_fire_compares_in_the_requested_offset_not_in_utc() {
+        // 13:00 UTC = 10:00 at UTC-03:00, so today's 09:00-03:00 (12:00 UTC)
+        // is already behind us and the answer is tomorrow.
+        let after = utc_nanos(1, 13, 0);
+        assert_eq!(
+            next_daily_fire(9, 0, -180, after),
+            Some(utc_nanos(2, 12, 0))
+        );
+    }
+
+    #[test]
+    fn daily_fire_refuses_an_unrepresentable_slot() {
+        assert_eq!(next_daily_fire(24, 0, 0, DAY_ONE), None);
+        assert_eq!(next_daily_fire(9, 60, 0, DAY_ONE), None);
+        assert_eq!(next_daily_fire(9, 0, 100_000, DAY_ONE), None);
+    }
+
+    #[test]
+    fn compute_next_fire_for_daily_advances_a_day() {
+        let kind = ScheduleKind::DailyAt {
+            hour: 9,
+            minute: 0,
+            offset_minutes: 0,
+        };
+        assert_eq!(
+            compute_next_fire(&kind, utc_nanos(1, 9, 0)),
+            Some(utc_nanos(2, 9, 0))
+        );
+    }
+
+    /// A daily backlog collapses: N missed days never produce N runs of the
+    /// same intent, and `Skip` drops a slot that is more than a day stale.
+    #[test]
+    fn plan_fire_for_daily_collapses_the_backlog() {
+        let kind = ScheduleKind::DailyAt {
+            hour: 9,
+            minute: 0,
+            offset_minutes: 0,
+        };
+        let due = utc_nanos(1, 9, 0);
+
+        // Just due: fires once under every policy.
+        for missed in [
+            MissedPolicy::Skip,
+            MissedPolicy::RunOnce,
+            MissedPolicy::CatchUpBounded { max: 10 },
+        ] {
+            let plan = plan_fire(&kind, &missed, due, due + 60 * 1_000_000_000);
+            assert_eq!(plan.fire_count, 1, "{missed:?}");
+            assert_eq!(plan.next_fire_nanos, Some(utc_nanos(2, 9, 0)));
+        }
+
+        // Three days late: bounded catch-up still fires once, not three times.
+        let late = utc_nanos(4, 10, 0);
+        let bounded = plan_fire(&kind, &MissedPolicy::CatchUpBounded { max: 10 }, due, late);
+        assert_eq!(bounded.fire_count, 1);
+        assert_eq!(bounded.next_fire_nanos, Some(utc_nanos(5, 9, 0)));
+
+        // ...and Skip drops the stale slot entirely, while still realigning.
+        let skipped = plan_fire(&kind, &MissedPolicy::Skip, due, late);
+        assert_eq!(skipped.fire_count, 0);
+        assert_eq!(skipped.next_fire_nanos, Some(utc_nanos(5, 9, 0)));
+    }
+
+    #[test]
+    fn plan_fire_revokes_a_daily_slot_that_can_never_resolve() {
+        let kind = ScheduleKind::DailyAt {
+            hour: 99,
+            minute: 0,
+            offset_minutes: 0,
+        };
+        let plan = plan_fire(&kind, &MissedPolicy::Skip, DAY_ONE, DAY_ONE + 1);
+        assert_eq!(plan.fire_count, 1);
+        assert_eq!(
+            plan.next_fire_nanos, None,
+            "an unresolvable schedule must be revoked, never left to spin"
+        );
+    }
+
+    #[test]
+    fn daily_kind_survives_a_json_round_trip() {
+        let kind = ScheduleKind::DailyAt {
+            hour: 9,
+            minute: 30,
+            offset_minutes: -180,
+        };
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(serde_json::from_str::<ScheduleKind>(&json).unwrap(), kind);
     }
 
     #[tokio::test]

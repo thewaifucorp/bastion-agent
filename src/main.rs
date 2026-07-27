@@ -865,6 +865,35 @@ async fn main() -> anyhow::Result<()> {
             bastion::agent::skills::SkillReloadObserver,
         )),
     );
+    // A4.5 `compaction` routing class: point `AutoCompact::compact`'s
+    // summarization at its own provider instead of the turn's conversational
+    // one (bastion-core 0.3.0's `with_compaction_provider` seam). Same
+    // degrade-don't-abort discipline as the `chat_turn` rule above — a rule
+    // whose provider cannot be built logs and leaves compaction on the loop's
+    // provider, which is byte-identical to the pre-seam behavior.
+    if let Some(model) = routing_table.model_for(bastion::routing::RouteClass::Compaction) {
+        let kind = bastion_providers::registry::resolve_provider_kind(model);
+        let connected = bastion::model_catalog::env_key_for_provider(kind)
+            .is_none_or(|env_key| std::env::var(env_key).is_ok_and(|v| !v.is_empty()));
+        let resolved = if connected {
+            resolve_provider(model)
+        } else {
+            Err(anyhow::anyhow!("provider '{kind}' is not connected"))
+        };
+        match resolved {
+            Ok(p) => {
+                tracing::info!(event = "routing_compaction_applied", model = %model);
+                agent = agent
+                    .with_compaction_provider(std::sync::Arc::new(tokio::sync::RwLock::new(p)));
+            }
+            Err(e) => tracing::warn!(
+                event = "routing_compaction_failed",
+                model = %model,
+                error = %e,
+                "compaction routing rule unusable — compaction stays on the loop's provider",
+            ),
+        }
+    }
     // BIG-1 (Gap 2): one McpToolAdapter per connected MCP tool, into the SAME
     // registry instance the loop owns (moved verbatim out of `AgentLoop::new`).
     bastion_mcp::registry_setup::register_mcp_tools(&mut agent.capability_registry, &mcp_client);
@@ -1352,6 +1381,9 @@ async fn daemon_loop(
     let proposal_apply_resources = bastion::proposals::ApplyResources {
         config_store: Some(config_store.clone()),
         provider: Some(provider.clone()),
+        // The loop's OWN ladder handle (not a copy of the config value), so an
+        // approved `model_config` reaches the running loop between turns.
+        fallback_models: Some(agent.fallback_models.clone()),
         pending_secrets: pending_secret_values.clone(),
         secrets_dir: std::env::var("BASTION_SECRETS_DIR")
             .ok()
@@ -1400,7 +1432,9 @@ async fn daemon_loop(
             .ok()
             .map(|v| v.expose_secret().to_string()),
     );
-    let lifecycle = bastion::channel::operational::LifecycleControl::new(lifecycle_auth);
+    // Cloned rather than moved: the same fail-closed bearer check also gates
+    // the optional extension-UI surface further down (`extension_ui_routes`).
+    let lifecycle = bastion::channel::operational::LifecycleControl::new(lifecycle_auth.clone());
     // Public release discovery is deliberately decoupled from agent readiness:
     // a temporary GitHub outage must never stop a personal runtime. The shared
     // snapshot feeds /status, /update, and the TUI command path.
@@ -1785,6 +1819,47 @@ async fn daemon_loop(
                 // all share one in-process writer.
                 companion_handle,
             ));
+            // Extension UI: the mechanism (`extension::ui::router`) shipped
+            // with its isolation contract already tested, but was never
+            // mounted — `provides: Ui` extensions had nowhere to be served
+            // from. Mounted here as the third pre-built router
+            // `serve_with_mesh` merges, distinct from both `/ui` (dashboard
+            // route) and `/app` (embedded SPA).
+            //
+            // Two gates, because this surface's `POST {mount}/{id}/invoke`
+            // reaches the SAME `CapabilityRegistry` the daemon uses:
+            //   1. opt-in — `[extension_ui] enabled` (default false) mounts
+            //      nothing at all, so no deployment gains a surface by
+            //      upgrading;
+            //   2. `require_daemon_access` — the same fail-closed bearer check
+            //      `/lifecycle/*` uses, so with `BASTION_DAEMON_TOKEN` unset
+            //      every request is refused rather than served open.
+            //
+            // The host starts with zero registered extensions: `register` is
+            // the entry point a future `provides: Ui` install path calls, and
+            // until something calls it every asset request is a 404 while the
+            // invoke bridge answers `NotFound`. That keeps this wiring inert
+            // by construction instead of speculatively granting reach.
+            let extension_ui_routes = if cfg.extension_ui.enabled {
+                let host = bastion::extension::ui::ExtensionUiHost::new(
+                    Arc::new(agent.capability_registry.clone()),
+                    std::env::var("BASTION_OWNER_ID").unwrap_or_else(|_| {
+                        bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string()
+                    }),
+                );
+                let mount_path = cfg.extension_ui.mount_path.clone();
+                tracing::info!(event = "extension_ui_mounted", mount_path = %mount_path);
+                Some(
+                    axum::Router::new()
+                        .nest(&mount_path, bastion::extension::ui::router(host))
+                        .layer(axum::middleware::from_fn_with_state(
+                            lifecycle_auth.clone(),
+                            bastion::channel::operational::require_daemon_access,
+                        )),
+                )
+            } else {
+                None
+            };
             // US External Control Plane and SDK: `/v1/*` routes, built over
             // their own `ControlPlaneState` and merged into the webhook app
             // exactly like `mcp_routes` above.
@@ -1796,6 +1871,16 @@ async fn daemon_loop(
                     webhook_delivery_store: control_plane_webhook_delivery_store.clone(),
                 },
                 rate_limiter.clone(),
+                // Remote credential issuance is mounted only when the operator
+                // asks for it. The route's authority is the daemon token, not a
+                // Control Plane credential — see its handler for why minting
+                // must not be delegable to an integration token.
+                if cfg.control_plane.remote_credential_issuance {
+                    tracing::info!(event = "control_plane_remote_credential_issuance_mounted");
+                    Some(lifecycle_auth.clone())
+                } else {
+                    None
+                },
             ));
             // Phase 4: background sweep of the durable delivery queue —
             // mirrors how `adaptive::schedule::run_scheduler` is spawned
@@ -1825,6 +1910,7 @@ async fn daemon_loop(
                     mcp_routes,
                     control_plane_routes,
                     loadout_routes,
+                    extension_ui_routes,
                     whatsapp_config,
                     composio_oauth.clone(),
                     readiness_for_webhook,
@@ -3014,6 +3100,7 @@ fn build_token_perms(
                         bastion_memory::PrivacyTier::LocalOnly
                     },
                     control_plane_scopes,
+                    control_plane_project: t.control_plane_project.clone(),
                 },
             )
         })

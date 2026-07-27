@@ -15,8 +15,9 @@ use std::collections::BTreeSet;
 
 use bastion::control_plane::dto::{
     AttemptListResponse, AttemptSummaryDto, BudgetSummaryDto, CreateTaskBoundsDto,
-    CreateTaskRequest, ErrorEnvelope, StopReasonDto, TaskEventEnvelope, TaskListResponse, TaskMode,
-    TaskResource, TaskStatusDto, WebhookSubscriptionRequest, WebhookSubscriptionResource,
+    CreateTaskRequest, CredentialIssueRequest, CredentialIssueResponse, ErrorEnvelope,
+    StopReasonDto, TaskEventEnvelope, TaskListResponse, TaskMode, TaskResource, TaskStatusDto,
+    WebhookSubscriptionListResponse, WebhookSubscriptionRequest, WebhookSubscriptionResource,
 };
 use serde_json::Value;
 
@@ -253,6 +254,40 @@ fn error_envelope_matches_fixture() {
 }
 
 #[test]
+fn credential_issue_request_matches_fixture() {
+    let sample = CredentialIssueRequest {
+        owner_id: "alice".into(),
+        project: Some("acme".into()),
+        scopes: vec!["tasks:read".into()],
+        label: "paperclip".into(),
+    };
+    let keys = serialized_keys(&sample);
+    assert_serialized_keys_are_declared("CredentialIssueRequest", &keys);
+    assert_required_are_present("CredentialIssueRequest", &keys);
+}
+
+#[test]
+fn credential_issue_response_matches_fixture_and_omits_an_absent_project() {
+    let sample = CredentialIssueResponse {
+        id: "cred_1".into(),
+        owner_id: "alice".into(),
+        project: None,
+        scopes: vec!["tasks:read".into()],
+        label: "paperclip".into(),
+        token: "bcp_shown-once".into(),
+    };
+    let keys = serialized_keys(&sample);
+    assert_serialized_keys_are_declared("CredentialIssueResponse", &keys);
+    assert_required_are_present("CredentialIssueResponse", &keys);
+
+    let json = serde_json::to_value(&sample).unwrap();
+    assert!(
+        json.as_object().unwrap().get("project").is_none(),
+        "project must be omitted entirely when none was requested, not null"
+    );
+}
+
+#[test]
 fn webhook_subscription_request_matches_fixture() {
     let sample = WebhookSubscriptionRequest {
         target_url: "https://example.com/hooks/bastion".into(),
@@ -271,6 +306,7 @@ fn webhook_subscription_resource_matches_fixture() {
         target_url: "https://example.com/hooks/bastion".into(),
         event_types: vec!["task.created".into()],
         created_at: 1,
+        revoked_at: None,
         secret: Some("shown-once".into()),
     };
     let keys = serialized_keys(&sample);
@@ -291,6 +327,7 @@ fn webhook_subscription_resource_omits_secret_key_when_none() {
         target_url: "https://example.com/hooks/bastion".into(),
         event_types: vec![],
         created_at: 1,
+        revoked_at: None,
         secret: None,
     };
     let json = serde_json::to_value(&sample).unwrap();
@@ -298,6 +335,33 @@ fn webhook_subscription_resource_omits_secret_key_when_none() {
         json.as_object().unwrap().get("secret").is_none(),
         "secret key must be entirely absent when None, not present as null"
     );
+    assert!(
+        json.as_object().unwrap().get("revoked_at").is_none(),
+        "revoked_at key must be entirely absent while the subscription is active"
+    );
+}
+
+#[test]
+fn webhook_subscription_list_response_matches_fixture() {
+    let sample = WebhookSubscriptionListResponse {
+        items: vec![WebhookSubscriptionResource {
+            id: "sub_1".into(),
+            owner_id: "alice".into(),
+            target_url: "https://example.com/hooks/bastion".into(),
+            event_types: vec!["task.created".into()],
+            created_at: 1,
+            revoked_at: Some(2),
+            secret: None,
+        }],
+    };
+    let keys = serialized_keys(&sample);
+    assert_serialized_keys_are_declared("WebhookSubscriptionListResponse", &keys);
+    assert_required_are_present("WebhookSubscriptionListResponse", &keys);
+
+    // A revoked item DOES carry the timestamp — the list is how an operator
+    // tells "never registered" from "registered and later revoked".
+    let json = serde_json::to_value(&sample).unwrap();
+    assert_eq!(json["items"][0]["revoked_at"], serde_json::json!(2));
 }
 
 #[test]
