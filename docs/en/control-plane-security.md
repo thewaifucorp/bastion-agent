@@ -366,9 +366,25 @@ Two of the original gaps were closed by the observability frontend work
   authentication (`mcp::server::call_tool`), so a flood of invalid tokens is
   bounded too; every other MCP tool is unaffected.
 
+- ~~Issuing a credential requires a shell on the daemon's host~~ — CLOSED,
+  opt-in. `POST /v1/credentials` (mounted only when `[control_plane]
+  remote_credential_issuance` is set) issues a credential for a named owner,
+  optional project and explicit scopes, returning the plaintext token exactly
+  once. Its authority is the OPERATOR's `BASTION_DAEMON_TOKEN` — the same
+  fail-closed bearer check `/lifecycle/*` uses — and deliberately NOT a
+  Control Plane credential: if a credential could mint credentials, a leaked
+  integration token could widen itself and re-mint after revocation. A valid
+  `x-bastion-token` with every scope is still refused here (tested:
+  `a_control_plane_credential_cannot_mint_credentials`), an unset daemon token
+  refuses everything, and an unknown scope name refuses the whole request
+  rather than issuing with fewer grants than asked for. The response crosses
+  the network, so the config field's documentation requires TLS termination in
+  front of the daemon before enabling it.
+
 Still open:
-- Issuing a Control Plane credential remains a trusted-host operation
-  (console-only `/credential`); there is no remote issuance surface.
+- The plaintext token in that response is only as protected as the transport
+  in front of the daemon; there is no signed/expiring one-time retrieval
+  handoff yet.
 
 ## Closed since Phase 5
 - **Python SDK** (was: "spec asked for Python second, only TS shipped") —

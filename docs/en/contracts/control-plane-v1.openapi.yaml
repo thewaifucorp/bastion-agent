@@ -369,6 +369,47 @@ paths:
         default:
           $ref: '#/components/responses/Error'
 
+  /credentials:
+    post:
+      operationId: issueCredential
+      summary: Issue a Control Plane credential (operator token, opt-in route).
+      description: >
+        Mounted only when the operator sets [control_plane]
+        remote_credential_issuance in bastion.toml. Its authority is the
+        operator's daemon token (Authorization: Bearer $BASTION_DAEMON_TOKEN),
+        NOT a Control Plane credential: a leaked integration token must never
+        be able to mint itself a wider credential, or a fresh one after
+        revocation. With BASTION_DAEMON_TOKEN unset, every request is refused.
+        The response carries the plaintext token exactly once — only its hash
+        is stored — so terminate TLS in front of the daemon before enabling it.
+      security:
+        - daemonToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialIssueRequest'
+      responses:
+        '201':
+          description: Credential issued. The plaintext token appears only here.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialIssueResponse'
+        '400':
+          description: >
+            Empty owner_id/label/scopes, or an unknown scope name (which
+            refuses the whole request rather than dropping that scope).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        default:
+          $ref: '#/components/responses/Error'
+
   /openapi.yaml:
     get:
       operationId: getOpenApiSpec
@@ -424,6 +465,14 @@ components:
         channel, the MCP server, and now here), resolved in
         docs/en/control-plane-security.md's "which header" decision.
         Not OAuth. Scopes: tasks:read, tasks:create, tasks:control, webhooks:manage.
+    daemonToken:
+      type: http
+      scheme: bearer
+      description: >
+        The OPERATOR's daemon token (BASTION_DAEMON_TOKEN), the same credential
+        /lifecycle/stop and /lifecycle/reload require. Used by exactly one /v1
+        route — POST /credentials — because minting credentials must not be
+        delegable to a credential. Fails closed when unset.
 
   parameters:
     TaskId:
@@ -622,6 +671,54 @@ components:
         items:
           type: array
           items: { $ref: '#/components/schemas/WebhookSubscriptionResource' }
+
+    CredentialIssueRequest:
+      type: object
+      required: [owner_id, scopes, label]
+      properties:
+        owner_id:
+          type: string
+          description: >
+            Supplied by the caller here — sound only because this route's
+            authority is the operator's daemon token. Every OTHER route derives
+            the owner from the authenticated credential and never trusts a
+            client-supplied value.
+        project:
+          type: string
+          description: >
+            Optional project tag baked into the credential; the same tag
+            create/list narrow by. Immutable — a different project means a
+            different credential.
+        scopes:
+          type: array
+          description: >
+            Wire scope names. An unknown name refuses the whole request; an
+            empty list is refused too.
+          items:
+            type: string
+            enum: [tasks:read, tasks:create, tasks:control, webhooks:manage]
+        label:
+          type: string
+
+    CredentialIssueResponse:
+      type: object
+      required: [id, owner_id, scopes, label, token]
+      properties:
+        id: { type: string }
+        owner_id: { type: string }
+        project:
+          type: string
+          description: Absent (key omitted, not null) when no project was requested.
+        scopes:
+          type: array
+          items: { type: string }
+        label: { type: string }
+        token:
+          type: string
+          description: >
+            The plaintext bearer, present exactly once, in this response. Only
+            its hash is stored — a lost token cannot be recovered, only
+            replaced.
 
     ErrorEnvelope:
       type: object

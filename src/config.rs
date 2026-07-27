@@ -93,12 +93,38 @@ pub struct BastionConfig {
     /// empty map — byte-identical behavior for every existing deployment.
     #[serde(default)]
     pub routing: RoutingConfig,
+    /// Optional `[control_plane]` table. Absent entirely =
+    /// `#[serde(default)]`, which keeps every Control Plane behavior exactly
+    /// as it was.
+    #[serde(default)]
+    pub control_plane: ControlPlaneConfig,
     /// Optional `[extension_ui]` table — mounts the extension-UI surface
     /// (`/ext-ui/*`) on the daemon's axum router. Absent entirely =
     /// `#[serde(default)]` disabled, which mounts nothing: byte-identical to
     /// every deployment predating this field.
     #[serde(default)]
     pub extension_ui: ExtensionUiConfig,
+}
+
+/// The `[control_plane]` table.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ControlPlaneConfig {
+    /// Mount `POST /v1/credentials`, letting an operator issue a Control Plane
+    /// credential without a shell on the daemon's host. Default false: the
+    /// console `/credential` command remains the only issuance path unless
+    /// this is turned on.
+    ///
+    /// The route's authority is `BASTION_DAEMON_TOKEN` (the same fail-closed
+    /// bearer check `/lifecycle/*` uses), NOT a Control Plane credential — a
+    /// leaked integration token must never be able to mint itself a wider one.
+    /// With that token unset, every request is refused even when this is
+    /// enabled.
+    ///
+    /// The response carries a freshly minted plaintext token exactly once, so
+    /// enabling this over plain HTTP exposes it in flight: terminate TLS in
+    /// front of the daemon (see `docs/en/vps-setup.md`) before turning it on.
+    #[serde(default)]
+    pub remote_credential_issuance: bool,
 }
 
 /// The `[extension_ui]` table. The surface it mounts serves extension-provided

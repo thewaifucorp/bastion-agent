@@ -320,6 +320,46 @@ pub struct WebhookSubscriptionListResponse {
     pub items: Vec<WebhookSubscriptionResource>,
 }
 
+/// `POST /v1/credentials` request — remote credential issuance.
+///
+/// `owner_id` is supplied by the CALLER, which is only sound because this
+/// route's authority is the operator's daemon token, not a Control Plane
+/// credential: the "client-supplied owner_id is never trusted" rule applies to
+/// integration credentials acting on their own behalf, and an operator
+/// minting a credential for one of their owners is the one case where naming
+/// the owner IS the operation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CredentialIssueRequest {
+    pub owner_id: String,
+    /// Optional project tag baked into the credential — the same tag
+    /// `create_task`/`list_tasks` narrow by. Cannot be changed afterwards; a
+    /// different project means a different credential.
+    #[serde(default)]
+    pub project: Option<String>,
+    /// Wire scope names (`tasks:read`, `tasks:create`, `tasks:control`,
+    /// `webhooks:manage`). An unknown name rejects the whole request rather
+    /// than being dropped, so a caller never receives a credential with
+    /// silently fewer grants than it asked for. An empty list is refused: a
+    /// credential that can do nothing is a mistake, not a default.
+    pub scopes: Vec<String>,
+    /// Operator-facing label, for telling credentials apart when listing.
+    pub label: String,
+}
+
+/// `POST /v1/credentials` response. `token` appears exactly once, here —
+/// only its hash is stored, so a lost token cannot be recovered, only
+/// replaced.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CredentialIssueResponse {
+    pub id: String,
+    pub owner_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    pub scopes: Vec<String>,
+    pub label: String,
+    pub token: String,
+}
+
 /// One outbound event envelope, matching the spec's "Events" section 1:1:
 /// `event_id`, schema version, owner-scoped task id, monotonic task
 /// revision, timestamp, safe payload.

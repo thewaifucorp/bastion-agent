@@ -20,8 +20,52 @@ pub enum Scope {
     TasksCreate,
     /// `POST /v1/tasks/{id}:pause|:resume|:steer|:cancel`.
     TasksControl,
-    /// `POST /v1/webhook-subscriptions` and its management (list/revoke, once added).
+    /// `POST /v1/webhook-subscriptions`, `GET /v1/webhook-subscriptions` and
+    /// `DELETE /v1/webhook-subscriptions/{id}`.
     WebhooksManage,
+}
+
+impl Scope {
+    /// The operator/wire-facing name (`docs/en/control-plane-security.md`'s
+    /// 4-scope vocabulary) — what `/credential issue` accepts and what
+    /// `POST /v1/credentials` accepts and echoes back.
+    ///
+    /// Distinct from this type's `Serialize` form (the variant name, e.g.
+    /// `TasksRead`), which is what `bastion.toml`'s
+    /// `[mcp_server.tokens.<token>] control_plane_scopes` and the stored
+    /// `scopes_json` column already use — those are persisted shapes that
+    /// cannot be renamed without a migration, so the wire name lives here as
+    /// its own mapping rather than as a `#[serde(rename)]` that would silently
+    /// change both.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Scope::TasksRead => "tasks:read",
+            Scope::TasksCreate => "tasks:create",
+            Scope::TasksControl => "tasks:control",
+            Scope::WebhooksManage => "webhooks:manage",
+        }
+    }
+
+    /// Inverse of [`Scope::wire_name`]. `None` for an unknown name — callers
+    /// reject the whole request rather than silently dropping a scope the
+    /// caller believed it was asking for.
+    pub fn from_wire_name(name: &str) -> Option<Scope> {
+        match name {
+            "tasks:read" => Some(Scope::TasksRead),
+            "tasks:create" => Some(Scope::TasksCreate),
+            "tasks:control" => Some(Scope::TasksControl),
+            "webhooks:manage" => Some(Scope::WebhooksManage),
+            _ => None,
+        }
+    }
+
+    /// Every scope, in the order the operator-facing help lists them.
+    pub const ALL: [Scope; 4] = [
+        Scope::TasksRead,
+        Scope::TasksCreate,
+        Scope::TasksControl,
+        Scope::WebhooksManage,
+    ];
 }
 
 /// A credential's granted scopes. Order-insensitive, duplicate-tolerant —
@@ -65,6 +109,20 @@ pub fn require_scope(scopes: &ScopeSet, required: Scope) -> Result<(), MissingSc
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wire_names_round_trip_for_every_scope() {
+        for scope in Scope::ALL {
+            assert_eq!(Scope::from_wire_name(scope.wire_name()), Some(scope));
+        }
+    }
+
+    #[test]
+    fn an_unknown_wire_name_is_rejected_not_ignored() {
+        assert_eq!(Scope::from_wire_name("tasks:delete"), None);
+        assert_eq!(Scope::from_wire_name("TasksRead"), None);
+        assert_eq!(Scope::from_wire_name(""), None);
+    }
 
     #[test]
     fn has_true_for_granted_scope() {

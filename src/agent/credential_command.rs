@@ -45,27 +45,17 @@ pub async fn handle(
 const ALL_SCOPE_NAMES: &str = "tasks:read,tasks:create,tasks:control,webhooks:manage";
 const DEFAULT_SCOPES: &str = "tasks:read";
 
-/// The wire-facing scope names (`docs/en/control-plane-security.md`), mapped
-/// to [`Scope`]. Kept here (not in `control_plane::scope`) because only this
-/// operator-facing parser needs the string form — `/v1` auth compares
-/// [`ScopeSet`]s, never names.
+/// The wire-facing scope names now live on [`Scope`] itself
+/// (`Scope::from_wire_name`/`Scope::wire_name`), because the remote issuance
+/// route (`POST /v1/credentials`) has to accept and echo the SAME vocabulary
+/// this console parser does — two copies would drift the moment a scope is
+/// added. These thin aliases keep this module's call sites reading as before.
 fn parse_scope(name: &str) -> Option<Scope> {
-    match name {
-        "tasks:read" => Some(Scope::TasksRead),
-        "tasks:create" => Some(Scope::TasksCreate),
-        "tasks:control" => Some(Scope::TasksControl),
-        "webhooks:manage" => Some(Scope::WebhooksManage),
-        _ => None,
-    }
+    Scope::from_wire_name(name)
 }
 
 fn scope_name(scope: Scope) -> &'static str {
-    match scope {
-        Scope::TasksRead => "tasks:read",
-        Scope::TasksCreate => "tasks:create",
-        Scope::TasksControl => "tasks:control",
-        Scope::WebhooksManage => "webhooks:manage",
-    }
+    scope.wire_name()
 }
 
 fn parse_scopes(csv: &str) -> Result<ScopeSet, String> {

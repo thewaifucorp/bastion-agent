@@ -15,7 +15,8 @@ use std::collections::BTreeSet;
 
 use bastion::control_plane::dto::{
     AttemptListResponse, AttemptSummaryDto, BudgetSummaryDto, CreateTaskBoundsDto,
-    CreateTaskRequest, ErrorEnvelope, StopReasonDto, TaskEventEnvelope, TaskListResponse, TaskMode,
+    CreateTaskRequest, CredentialIssueRequest, CredentialIssueResponse, ErrorEnvelope,
+    StopReasonDto, TaskEventEnvelope, TaskListResponse, TaskMode,
     TaskResource, TaskStatusDto, WebhookSubscriptionListResponse, WebhookSubscriptionRequest,
     WebhookSubscriptionResource,
 };
@@ -251,6 +252,40 @@ fn error_envelope_matches_fixture() {
     let keys = serialized_keys(&sample);
     assert_serialized_keys_are_declared("ErrorEnvelope", &keys);
     assert_required_are_present("ErrorEnvelope", &keys);
+}
+
+#[test]
+fn credential_issue_request_matches_fixture() {
+    let sample = CredentialIssueRequest {
+        owner_id: "alice".into(),
+        project: Some("acme".into()),
+        scopes: vec!["tasks:read".into()],
+        label: "paperclip".into(),
+    };
+    let keys = serialized_keys(&sample);
+    assert_serialized_keys_are_declared("CredentialIssueRequest", &keys);
+    assert_required_are_present("CredentialIssueRequest", &keys);
+}
+
+#[test]
+fn credential_issue_response_matches_fixture_and_omits_an_absent_project() {
+    let sample = CredentialIssueResponse {
+        id: "cred_1".into(),
+        owner_id: "alice".into(),
+        project: None,
+        scopes: vec!["tasks:read".into()],
+        label: "paperclip".into(),
+        token: "bcp_shown-once".into(),
+    };
+    let keys = serialized_keys(&sample);
+    assert_serialized_keys_are_declared("CredentialIssueResponse", &keys);
+    assert_required_are_present("CredentialIssueResponse", &keys);
+
+    let json = serde_json::to_value(&sample).unwrap();
+    assert!(
+        json.as_object().unwrap().get("project").is_none(),
+        "project must be omitted entirely when none was requested, not null"
+    );
 }
 
 #[test]

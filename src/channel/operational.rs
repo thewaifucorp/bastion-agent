@@ -136,7 +136,13 @@ impl DaemonAccessAuth {
     /// Same constant-time bearer check as `src/api/infer.rs`'s
     /// `InferState` — length is allowed to leak (fixed-length bearer
     /// token), the comparison itself never short-circuits.
-    fn authorized(&self, headers: &HeaderMap) -> bool {
+    ///
+    /// `pub` because two surfaces outside this module gate on the same
+    /// operator token: [`require_daemon_access`] (as a layer) and the
+    /// Control Plane's optional `POST /v1/credentials` (inside its handler,
+    /// which needs to answer in that route's own `ErrorEnvelope` shape rather
+    /// than the layer's empty body).
+    pub fn authorized(&self, headers: &HeaderMap) -> bool {
         let expected = match &self.token {
             Some(t) => t,
             None => return false, // fail closed: unconfigured means refused, never open

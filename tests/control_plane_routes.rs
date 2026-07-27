@@ -63,6 +63,7 @@ async fn build_app() -> (
             webhook_delivery_store,
         },
         RateLimiter::new(),
+        None,
     );
 
     (f, task_store, credential_store, app)
@@ -113,6 +114,7 @@ async fn build_app_with_webhook_stores() -> (
             webhook_delivery_store: webhook_delivery_store.clone(),
         },
         RateLimiter::new(),
+        None,
     );
 
     (
@@ -322,6 +324,252 @@ async fn create_task_enqueues_a_task_created_delivery_for_a_matching_subscriptio
     assert_eq!(
         due, 1,
         "a task.created delivery must be enqueued for the matching subscription"
+    );
+}
+
+// ─── POST /v1/credentials (remote issuance, operator-token gated) ──────────
+
+/// Like [`build_app`], but with remote credential issuance mounted under the
+/// given operator token. A separate helper so every existing test keeps
+/// asserting the default: the route is not mounted at all.
+async fn build_app_with_remote_issuance(
+    daemon_token: Option<&str>,
+) -> (NamedTempFile, Arc<SqliteCredentialStore>, axum::Router) {
+    let f = NamedTempFile::new().expect("tempfile");
+    let path = f.path().to_str().expect("utf8 path").to_owned();
+
+    let task_store = Arc::new(SqliteTaskStore::new(path.clone()));
+    task_store.init_schema().await.expect("task store schema");
+    let credential_store = Arc::new(SqliteCredentialStore::new(path.clone()));
+    credential_store
+        .init_schema()
+        .await
+        .expect("credential store schema");
+    let webhook_subscription_store = Arc::new(SqliteWebhookSubscriptionStore::new(path.clone()));
+    webhook_subscription_store
+        .init_schema()
+        .await
+        .expect("webhook subscription store schema");
+    let webhook_delivery_store = Arc::new(SqliteWebhookDeliveryStore::new(path));
+    webhook_delivery_store
+        .init_schema()
+        .await
+        .expect("webhook delivery store schema");
+
+    let app = router(
+        ControlPlaneState {
+            task_store: task_store.clone() as Arc<dyn TaskStore>,
+            credential_store: credential_store.clone(),
+            webhook_subscription_store,
+            webhook_delivery_store,
+        },
+        RateLimiter::new(),
+        Some(bastion::channel::operational::DaemonAccessAuth::new(
+            daemon_token.map(str::to_string),
+        )),
+    );
+    (f, credential_store, app)
+}
+
+fn issue_req(body: Value, bearer: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/v1/credentials")
+        .header("content-type", "application/json");
+    if let Some(token) = bearer {
+        builder = builder.header("authorization", format!("Bearer {token}"));
+    }
+    builder.body(Body::from(body.to_string())).unwrap()
+}
+
+fn valid_issue_body() -> Value {
+    serde_json::json!({
+        "owner_id": "alice",
+        "scopes": ["tasks:read", "tasks:create"],
+        "label": "paperclip"
+    })
+}
+
+/// The default: an operator who has not opted in has no issuance route at all,
+/// so issuance stays console-only exactly as before.
+#[tokio::test]
+async fn credential_issuance_is_not_mounted_by_default() {
+    let (_f, _task_store, _cred_store, app) = build_app().await;
+    let resp = app
+        .oneshot(issue_req(valid_issue_body(), Some("anything")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn credential_issuance_without_a_configured_token_refuses_everything() {
+    let (_f, _cred_store, app) = build_app_with_remote_issuance(None).await;
+    let resp = app
+        .oneshot(issue_req(valid_issue_body(), Some("anything")))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "mounting the route without BASTION_DAEMON_TOKEN must fail closed"
+    );
+}
+
+#[tokio::test]
+async fn credential_issuance_rejects_a_wrong_or_missing_operator_token() {
+    let (_f, _cred_store, app) = build_app_with_remote_issuance(Some("right")).await;
+    let wrong = app
+        .clone()
+        .oneshot(issue_req(valid_issue_body(), Some("wrong")))
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+
+    let missing = app
+        .oneshot(issue_req(valid_issue_body(), None))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// A Control Plane credential must never be able to mint credentials: minting
+/// authority is the operator token alone, so presenting a perfectly valid
+/// `x-bastion-token` (even one with every scope) is still unauthorized here.
+#[tokio::test]
+async fn a_control_plane_credential_cannot_mint_credentials() {
+    let (_f, cred_store, app) = build_app_with_remote_issuance(Some("right")).await;
+    let token = issue_token(
+        &cred_store,
+        "alice",
+        &[
+            Scope::TasksRead,
+            Scope::TasksCreate,
+            Scope::TasksControl,
+            Scope::WebhooksManage,
+        ],
+    )
+    .await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/credentials")
+        .header("content-type", "application/json")
+        .header("x-bastion-token", token)
+        .body(Body::from(valid_issue_body().to_string()))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// End to end: the issued token actually authenticates on another `/v1` route,
+/// with exactly the scopes that were asked for and no more.
+#[tokio::test]
+async fn an_issued_credential_authenticates_with_exactly_the_requested_scopes() {
+    let (_f, _cred_store, app) = build_app_with_remote_issuance(Some("right")).await;
+    let resp = app
+        .clone()
+        .oneshot(issue_req(valid_issue_body(), Some("right")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let json = body_json(resp).await;
+    assert_eq!(json["owner_id"], "alice");
+    assert_eq!(json["scopes"], serde_json::json!(["tasks:read", "tasks:create"]));
+    assert!(json.get("project").is_none(), "no project asked, none echoed");
+    let token = json["token"].as_str().expect("token returned once").to_owned();
+    assert!(!token.is_empty());
+
+    // Granted scope works...
+    let listed = app
+        .clone()
+        .oneshot(get_req("/v1/tasks", &token))
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+
+    // ...and a scope that was NOT asked for is still denied.
+    let denied = app
+        .oneshot(delete_req("/v1/webhook-subscriptions/whatever", &token))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn an_issued_credential_carries_its_project_tag() {
+    let (_f, _cred_store, app) = build_app_with_remote_issuance(Some("right")).await;
+    let body = serde_json::json!({
+        "owner_id": "alice",
+        "project": "acme",
+        "scopes": ["tasks:create"],
+        "label": "acme-integration"
+    });
+    let resp = app
+        .clone()
+        .oneshot(issue_req(body, Some("right")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let json = body_json(resp).await;
+    assert_eq!(json["project"], "acme");
+
+    // The tag is live, not decorative: a task created with this credential is
+    // only visible to a project-scoped list for the same project.
+    let token = json["token"].as_str().unwrap().to_owned();
+    let created = app
+        .clone()
+        .oneshot(post_json(
+            "/v1/tasks",
+            &token,
+            Some("k1"),
+            serde_json::json!({ "objective": "ship it" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn credential_issuance_validates_its_body() {
+    let (_f, _cred_store, app) = build_app_with_remote_issuance(Some("right")).await;
+
+    let cases = [
+        serde_json::json!({ "owner_id": "  ", "scopes": ["tasks:read"], "label": "l" }),
+        serde_json::json!({ "owner_id": "alice", "scopes": [], "label": "l" }),
+        serde_json::json!({ "owner_id": "alice", "scopes": ["tasks:read"], "label": " " }),
+    ];
+    for body in cases {
+        let resp = app
+            .clone()
+            .oneshot(issue_req(body.clone(), Some("right")))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "body should have been refused: {body}"
+        );
+    }
+}
+
+/// An unknown scope name refuses the whole request — issuing a credential with
+/// silently fewer grants than asked for would surface later as a puzzling 403.
+#[tokio::test]
+async fn credential_issuance_refuses_an_unknown_scope_instead_of_dropping_it() {
+    let (_f, _cred_store, app) = build_app_with_remote_issuance(Some("right")).await;
+    let body = serde_json::json!({
+        "owner_id": "alice",
+        "scopes": ["tasks:read", "tasks:delete"],
+        "label": "l"
+    });
+    let resp = app.oneshot(issue_req(body, Some("right"))).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let json = body_json(resp).await;
+    assert_eq!(json["code"], "invalid_scope");
+    assert!(
+        json["message"].as_str().unwrap().contains("tasks:delete"),
+        "the message must name the offending scope: {json}"
     );
 }
 

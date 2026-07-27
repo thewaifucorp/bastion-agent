@@ -1838,6 +1838,16 @@ async fn daemon_loop(
                     webhook_delivery_store: control_plane_webhook_delivery_store.clone(),
                 },
                 rate_limiter.clone(),
+                // Remote credential issuance is mounted only when the operator
+                // asks for it. The route's authority is the daemon token, not a
+                // Control Plane credential — see its handler for why minting
+                // must not be delegable to an integration token.
+                if cfg.control_plane.remote_credential_issuance {
+                    tracing::info!(event = "control_plane_remote_credential_issuance_mounted");
+                    Some(lifecycle_auth.clone())
+                } else {
+                    None
+                },
             ));
             // Phase 4: background sweep of the durable delivery queue —
             // mirrors how `adaptive::schedule::run_scheduler` is spawned

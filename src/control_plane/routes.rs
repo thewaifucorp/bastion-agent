@@ -43,8 +43,9 @@ use bastion_runtime::task::{StopReason, TaskStatus, TaskStore};
 use super::core_ops::{self, CoreOpError, CoreOpsState};
 use super::credential::{AuthenticatedCredential, SqliteCredentialStore};
 use super::dto::{
-    CreateTaskRequest, ErrorEnvelope, RevisionGuardedRequest, SteerRequest,
-    WebhookSubscriptionListResponse, WebhookSubscriptionRequest, WebhookSubscriptionResource,
+    CreateTaskRequest, CredentialIssueRequest, CredentialIssueResponse, ErrorEnvelope,
+    RevisionGuardedRequest, SteerRequest, WebhookSubscriptionListResponse,
+    WebhookSubscriptionRequest, WebhookSubscriptionResource,
 };
 use super::scope::{require_scope, Scope};
 use super::webhook_delivery::SqliteWebhookDeliveryStore;
@@ -105,8 +106,17 @@ impl ControlPlaneState {
 /// separate token spaces with no overlapping values, so one instance vs. two
 /// behaves identically either way — sharing is simpler, not a fix for a
 /// real double-budget scenario in the CURRENT architecture.
-pub fn router(state: ControlPlaneState, rate_limiter: super::rate_limit::RateLimiter) -> Router {
-    Router::new()
+///
+/// `remote_credential_issuance`: `Some(auth)` mounts
+/// `POST /v1/credentials` gated by that operator token (see
+/// [`credentials_router`]); `None` — the default — does not mount it at all,
+/// so issuance stays console-only exactly as before.
+pub fn router(
+    state: ControlPlaneState,
+    rate_limiter: super::rate_limit::RateLimiter,
+    remote_credential_issuance: Option<crate::channel::operational::DaemonAccessAuth>,
+) -> Router {
+    let app = Router::new()
         .route("/v1/tasks", get(list_tasks).post(create_task))
         .route("/v1/tasks/{id}", get(get_task).post(task_action))
         .route("/v1/tasks/{id}/attempts", get(get_task_attempts))
@@ -122,10 +132,199 @@ pub fn router(state: ControlPlaneState, rate_limiter: super::rate_limit::RateLim
         // Applied to every /v1/* route, before the ControlPlaneState below —
         // its own state (RateLimiter) is independent, see rate_limit.rs.
         .layer(axum::middleware::from_fn_with_state(
+            rate_limiter.clone(),
+            super::rate_limit::enforce,
+        ))
+        .with_state(state.clone());
+    match remote_credential_issuance {
+        Some(auth) => app.merge(credentials_router(
+            state.credential_store.clone(),
+            auth,
+            rate_limiter,
+        )),
+        None => app,
+    }
+}
+
+/// State for the one remotely-issuable-credential route. Separate from
+/// [`ControlPlaneState`] because its authority is different in kind: every
+/// other `/v1/*` route authenticates a Control Plane credential
+/// (`x-bastion-token`), while this one authenticates the OPERATOR
+/// (`Authorization: Bearer $BASTION_DAEMON_TOKEN`, the same fail-closed check
+/// `/lifecycle/*` uses).
+///
+/// That asymmetry is the point. If a Control Plane credential could mint
+/// credentials, any leaked integration token would be able to mint itself a
+/// wider one and a fresh one after revocation — a privilege-escalation and
+/// persistence path. Minting authority therefore stays with the operator
+/// secret, and this route only changes WHERE the operator can be (a remote
+/// deployment they hold the token for) rather than WHAT can mint.
+#[derive(Clone)]
+struct CredentialIssuanceState {
+    credential_store: Arc<SqliteCredentialStore>,
+    auth: crate::channel::operational::DaemonAccessAuth,
+}
+
+/// The `POST /v1/credentials` sub-router, with its own state and the same
+/// rate-limit layer the rest of `/v1/*` carries.
+///
+/// The limiter keys on `x-bastion-token`, which this route does not use, so
+/// every issuance attempt shares one bucket. That is the desired shape here:
+/// a bounded number of attempts per window against the operator token,
+/// regardless of who is guessing.
+fn credentials_router(
+    credential_store: Arc<SqliteCredentialStore>,
+    auth: crate::channel::operational::DaemonAccessAuth,
+    rate_limiter: super::rate_limit::RateLimiter,
+) -> Router {
+    Router::new()
+        .route("/v1/credentials", post(issue_credential))
+        .layer(axum::middleware::from_fn_with_state(
             rate_limiter,
             super::rate_limit::enforce,
         ))
-        .with_state(state)
+        .with_state(CredentialIssuanceState {
+            credential_store,
+            auth,
+        })
+}
+
+/// `POST /v1/credentials` — issue a Control Plane credential without a shell
+/// on the daemon's host.
+///
+/// Closes the "issuance is console-only" gap for an operator running Bastion
+/// on a VPS/container they cannot conveniently attach a console to, WITHOUT
+/// widening what a Control Plane credential itself can do: the caller proves
+/// operator authority with the daemon token, and an under-scoped or absent
+/// token gets `401` from the same fail-closed check `/lifecycle/*` uses
+/// (unconfigured token = every request refused).
+///
+/// The plaintext token is in the response body exactly once — only its hash is
+/// stored, mirroring the console command. Unlike the console, that body
+/// crosses the network, so this route is only mounted when the operator opts
+/// in (`[control_plane] remote_credential_issuance`), and the response is
+/// worth the same care as any other secret in transit: over plain HTTP it is
+/// readable in flight, which is why the config field's documentation says to
+/// terminate TLS in front of the daemon before enabling it.
+async fn issue_credential(
+    State(state): State<CredentialIssuanceState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    if !state.auth.authorized(&headers) {
+        tracing::warn!(event = "v1_credential_issue_unauthorized");
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "this route requires the operator's daemon token",
+        );
+    }
+
+    let req: CredentialIssueRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_body",
+                &format!("invalid request body: {e}"),
+            )
+        }
+    };
+
+    let owner_id = req.owner_id.trim();
+    if owner_id.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_body",
+            "owner_id must not be empty",
+        );
+    }
+    let label = req.label.trim();
+    if label.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_body",
+            "label must not be empty",
+        );
+    }
+    // An empty scope list would mint a credential that authenticates and can
+    // do nothing — always a mistake at the call site, never a useful default.
+    if req.scopes.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_body",
+            "scopes must not be empty",
+        );
+    }
+    // One unknown name rejects the whole request: silently dropping it would
+    // hand back a credential with fewer grants than the caller believes it
+    // has, which surfaces later as a confusing 403.
+    let mut scopes = Vec::with_capacity(req.scopes.len());
+    for name in &req.scopes {
+        match Scope::from_wire_name(name) {
+            Some(scope) => scopes.push(scope),
+            None => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_scope",
+                    &format!(
+                        "unknown scope '{name}' (known: {})",
+                        Scope::ALL
+                            .iter()
+                            .map(|s| s.wire_name())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )
+            }
+        }
+    }
+    let project = req
+        .project
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
+
+    match state
+        .credential_store
+        .issue(
+            owner_id,
+            project,
+            super::scope::ScopeSet::new(scopes.iter().copied()),
+            label,
+        )
+        .await
+    {
+        Ok((id, token)) => {
+            // Owner/label/scopes/id are logged; the token never is.
+            tracing::info!(
+                event = "control_plane_credential_issued_remotely",
+                credential_id = %id,
+                owner = %owner_id,
+                label = %label,
+            );
+            (
+                StatusCode::CREATED,
+                Json(CredentialIssueResponse {
+                    id,
+                    owner_id: owner_id.to_string(),
+                    project: project.map(str::to_string),
+                    scopes: scopes.iter().map(|s| s.wire_name().to_string()).collect(),
+                    label: label.to_string(),
+                    token,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!(event = "v1_credential_issue_failed", error = %e);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "internal error",
+            )
+        }
+    }
 }
 
 fn error_response(status: StatusCode, code: &str, message: &str) -> axum::response::Response {
