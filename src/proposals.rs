@@ -568,6 +568,53 @@ async fn apply_routing_config(
     Ok(lines.join(" | "))
 }
 
+/// Make `env_key` usable by a provider constructed in THIS process, resolving
+/// it from the environment first and from `secrets_dir/<env_key>` second —
+/// the same order (and the same trailing-newline handling) as the
+/// [`crate::secret::LayeredSecretResolver`] the daemon builds at boot.
+///
+/// Returns `Err(())` when neither source yields a non-empty value; the caller
+/// turns that into the operator-facing "not connected" message, so no secret
+/// material can reach an error string.
+///
+/// Why publish into the environment at all: provider constructors live in
+/// `bastion-providers` and read `std::env` themselves
+/// (`AnthropicProvider::new` and friends), so there is no argument to pass a
+/// resolved `SecretValue` through. Publishing is therefore the narrowest
+/// bridge available from this crate, and it is deliberately conditional — an
+/// env var that is already set is never overwritten, so this can only ever
+/// ADD a key the process was missing, never change which credential a running
+/// provider uses.
+///
+/// `set_var` mutates process-global state that other threads may be reading
+/// concurrently; this is why it is confined to this one path (an operator-
+/// driven approve, not a request handler) and to keys that are absent. A
+/// proper fix belongs upstream: provider constructors taking an injected
+/// secret instead of reading the environment.
+fn resolve_provider_secret(env_key: &str, secrets_dir: Option<&std::path::Path>) -> Result<(), ()> {
+    if std::env::var(env_key).is_ok_and(|v| !v.is_empty()) {
+        return Ok(());
+    }
+    let dir = secrets_dir.ok_or(())?;
+    let resolved = {
+        use bastion_types::SecretResolver;
+        crate::secret::MountedFileSecretResolver::new(dir)
+            .resolve(env_key)
+            .map_err(|_| ())?
+    };
+    let value = resolved.expose_secret().to_string();
+    if value.is_empty() {
+        return Err(());
+    }
+    std::env::set_var(env_key, value);
+    // Name only — never the value, and never its length.
+    tracing::info!(
+        event = "provider_secret_published_from_secrets_dir",
+        env_key = %env_key,
+    );
+    Ok(())
+}
+
 async fn apply_model_config(
     default_model: Option<&str>,
     fallback_models: Option<&[String]>,
@@ -590,28 +637,27 @@ async fn apply_model_config(
         // Fail-closed connectivity guard BEFORE resolve_provider: some
         // bastion-core provider constructors panic on a missing/empty env
         // key (`ANTHROPIC_API_KEY required`), which must never take the
-        // daemon down from an approve. NOTE this checks the ENV VAR only —
-        // providers read env directly at construction, so a key that exists
-        // solely as a BASTION_SECRETS_DIR file (visible as connected on
-        // GET /providers) is not enough to hot-swap yet.
-        // TODO(A4 seam): route provider construction through the daemon's
-        // SecretResolver in bastion-core so secrets-dir keys work here too.
-        // EVALUATED 2026-07-25 (fabric-readiness pass, bastion-core/docs/
-        // VERSIONING.md §6): consciously deferred — this isn't actually a
-        // bastion-core Kernel seam (provider construction from env vars
-        // already lives entirely in this crate/`bastion-providers`, both
-        // Extension-tier); it's a `bastion-agent`-side wiring gap that
-        // shared the `TODO(A4 seam)` tag with two real core seams. Does not
-        // gate the kernel's path to 1.0.
+        // daemon down from an approve.
+        //
+        // The guard used to check the ENV VAR only, which made an approve
+        // fail for a key that existed solely as a `BASTION_SECRETS_DIR` file
+        // — the shape a mounted Kubernetes/Compose secret takes, and the
+        // shape an approved `secret_set` proposal itself writes. Such a key
+        // reads as connected on `GET /providers` while the hot-swap it is
+        // supposed to enable refused. `resolve_provider_secret` below closes
+        // that: the secrets-dir value is resolved and published into this
+        // process's environment, because provider construction lives in
+        // `bastion-providers` and reads `std::env` directly — there is no
+        // per-call injection point to hand a resolved secret to.
         let kind = bastion_providers::registry::resolve_provider_kind(model);
         if let Some(env_key) = crate::model_catalog::env_key_for_provider(kind) {
-            let present = std::env::var(env_key).is_ok_and(|v| !v.is_empty());
-            if !present {
-                anyhow::bail!(
-                    "provider '{kind}' is not connected in this process ({env_key} is not set \
-                     in the daemon's environment) — set it and re-approve, or pick another model"
-                );
-            }
+            resolve_provider_secret(env_key, res.secrets_dir.as_deref()).map_err(|_| {
+                anyhow::anyhow!(
+                    "provider '{kind}' is not connected in this process ({env_key} is set \
+                     neither in the daemon's environment nor as a file in BASTION_SECRETS_DIR) \
+                     — set it and re-approve, or pick another model"
+                )
+            })?;
         }
         // Same order as `/model` (`switch_model`): resolve (validates the
         // id), persist, then swap the live provider between turns.
@@ -1079,10 +1125,105 @@ mod tests {
         assert_eq!(history[0].actor.as_deref(), Some("alice"));
     }
 
-    // `std::env` is process-global — serialize the one test that touches a
+    // `std::env` is process-global — serialize the tests that touch a
     // provider key and save/restore its prior value (same discipline as
     // `secret.rs`'s ENV_LOCK).
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Runs `f` with `key` absent from the environment, restoring whatever
+    /// was there afterwards. Serialized against every other env-touching test
+    /// in this module.
+    fn with_env_key_absent<T>(key: &str, f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let saved = std::env::var(key).ok();
+        std::env::remove_var(key);
+        let out = f();
+        match saved {
+            Some(prev) => std::env::set_var(key, prev),
+            None => std::env::remove_var(key),
+        }
+        out
+    }
+
+    #[test]
+    fn provider_secret_from_the_environment_is_accepted_as_is() {
+        with_env_key_absent("BASTION_TEST_PROVIDER_KEY_A", || {
+            std::env::set_var("BASTION_TEST_PROVIDER_KEY_A", "from-env");
+            assert!(resolve_provider_secret("BASTION_TEST_PROVIDER_KEY_A", None).is_ok());
+            assert_eq!(
+                std::env::var("BASTION_TEST_PROVIDER_KEY_A").unwrap(),
+                "from-env"
+            );
+        });
+    }
+
+    /// The gap this closes: a key that exists ONLY as a secrets-dir file (a
+    /// mounted secret, or the file an approved `secret_set` proposal just
+    /// wrote) is now resolvable, and is published so a provider constructed
+    /// afterwards in this process can actually read it.
+    #[test]
+    fn provider_secret_is_resolved_from_the_secrets_dir_and_published() {
+        let dir = tempfile::tempdir().unwrap();
+        // Trailing newline is what `echo` and most secret volumes produce.
+        std::fs::write(dir.path().join("BASTION_TEST_PROVIDER_KEY_B"), "from-file\n").unwrap();
+
+        with_env_key_absent("BASTION_TEST_PROVIDER_KEY_B", || {
+            assert!(
+                resolve_provider_secret("BASTION_TEST_PROVIDER_KEY_B", Some(dir.path())).is_ok()
+            );
+            assert_eq!(
+                std::env::var("BASTION_TEST_PROVIDER_KEY_B").unwrap(),
+                "from-file",
+                "the value must be published trimmed, so the provider does not send a newline"
+            );
+        });
+    }
+
+    /// Publishing can only ever ADD a missing key: an env var that is already
+    /// set wins, so this path can never redirect a running provider at a
+    /// different credential.
+    #[test]
+    fn an_existing_env_value_is_never_overwritten_by_the_secrets_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("BASTION_TEST_PROVIDER_KEY_C"), "from-file").unwrap();
+
+        with_env_key_absent("BASTION_TEST_PROVIDER_KEY_C", || {
+            std::env::set_var("BASTION_TEST_PROVIDER_KEY_C", "from-env");
+            assert!(
+                resolve_provider_secret("BASTION_TEST_PROVIDER_KEY_C", Some(dir.path())).is_ok()
+            );
+            assert_eq!(
+                std::env::var("BASTION_TEST_PROVIDER_KEY_C").unwrap(),
+                "from-env"
+            );
+        });
+    }
+
+    #[test]
+    fn provider_secret_absent_everywhere_fails_and_publishes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        with_env_key_absent("BASTION_TEST_PROVIDER_KEY_D", || {
+            assert!(resolve_provider_secret("BASTION_TEST_PROVIDER_KEY_D", None).is_err());
+            assert!(
+                resolve_provider_secret("BASTION_TEST_PROVIDER_KEY_D", Some(dir.path())).is_err(),
+                "an empty secrets dir must fail the same way as no dir at all"
+            );
+            assert!(std::env::var("BASTION_TEST_PROVIDER_KEY_D").is_err());
+        });
+    }
+
+    #[test]
+    fn a_blank_secrets_dir_file_is_treated_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("BASTION_TEST_PROVIDER_KEY_E"), "\n").unwrap();
+        with_env_key_absent("BASTION_TEST_PROVIDER_KEY_E", || {
+            assert!(
+                resolve_provider_secret("BASTION_TEST_PROVIDER_KEY_E", Some(dir.path())).is_err(),
+                "a file holding only a newline must not count as a connected provider"
+            );
+            assert!(std::env::var("BASTION_TEST_PROVIDER_KEY_E").is_err());
+        });
+    }
 
     #[tokio::test]
     async fn model_config_apply_guards_empty_and_disconnected() {
