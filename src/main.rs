@@ -865,6 +865,36 @@ async fn main() -> anyhow::Result<()> {
             bastion::agent::skills::SkillReloadObserver,
         )),
     );
+    // A4.5 `compaction` routing class: point `AutoCompact::compact`'s
+    // summarization at its own provider instead of the turn's conversational
+    // one (bastion-core 0.3.0's `with_compaction_provider` seam). Same
+    // degrade-don't-abort discipline as the `chat_turn` rule above — a rule
+    // whose provider cannot be built logs and leaves compaction on the loop's
+    // provider, which is byte-identical to the pre-seam behavior.
+    if let Some(model) = routing_table.model_for(bastion::routing::RouteClass::Compaction) {
+        let kind = bastion_providers::registry::resolve_provider_kind(model);
+        let connected = bastion::model_catalog::env_key_for_provider(kind)
+            .is_none_or(|env_key| std::env::var(env_key).is_ok_and(|v| !v.is_empty()));
+        let resolved = if connected {
+            resolve_provider(model)
+        } else {
+            Err(anyhow::anyhow!("provider '{kind}' is not connected"))
+        };
+        match resolved {
+            Ok(p) => {
+                tracing::info!(event = "routing_compaction_applied", model = %model);
+                agent = agent.with_compaction_provider(std::sync::Arc::new(
+                    tokio::sync::RwLock::new(p),
+                ));
+            }
+            Err(e) => tracing::warn!(
+                event = "routing_compaction_failed",
+                model = %model,
+                error = %e,
+                "compaction routing rule unusable — compaction stays on the loop's provider",
+            ),
+        }
+    }
     // BIG-1 (Gap 2): one McpToolAdapter per connected MCP tool, into the SAME
     // registry instance the loop owns (moved verbatim out of `AgentLoop::new`).
     bastion_mcp::registry_setup::register_mcp_tools(&mut agent.capability_registry, &mcp_client);
@@ -1352,6 +1382,9 @@ async fn daemon_loop(
     let proposal_apply_resources = bastion::proposals::ApplyResources {
         config_store: Some(config_store.clone()),
         provider: Some(provider.clone()),
+        // The loop's OWN ladder handle (not a copy of the config value), so an
+        // approved `model_config` reaches the running loop between turns.
+        fallback_models: Some(agent.fallback_models.clone()),
         pending_secrets: pending_secret_values.clone(),
         secrets_dir: std::env::var("BASTION_SECRETS_DIR")
             .ok()

@@ -42,15 +42,14 @@
 //!   (fabric-readiness pass, `bastion-core/docs/VERSIONING.md` §6):
 //!   consciously deferred — `bastion-personas` is Extension-tier, not
 //!   Kernel, same reasoning as `pursue_task` above.
-//! - `compaction` — NOT supported (agent-side wiring, not a missing core
-//!   seam anymore): `AutoCompact::compact` is called with the loop's live
-//!   provider inside the kernel turn (bastion-runtime `agent/loop_.rs`).
-//!   RESOLVED IN CORE 2026-07-25 (fabric-readiness pass,
-//!   `bastion-core/docs/VERSIONING.md` §6): `AgentLoop::compaction_provider`
-//!   and `with_compaction_provider` now exist — this crate just hasn't
-//!   wired a `RoutingProviderResolver` through to it yet. Marking
-//!   `compaction` `supported: true` is a small, separate follow-up in
-//!   `bastion-agent`, not a `bastion-core` change.
+//! - `compaction` — SUPPORTED (next restart): `AutoCompact::compact`'s
+//!   summarization call runs on `AgentLoop::compaction_provider` when one is
+//!   set (bastion-core 0.3.0's `with_compaction_provider` seam), instead of
+//!   the turn's conversational provider. `main.rs` builds it from this class's
+//!   rule at daemon start; the loop holds it as a constructor-time field, so a
+//!   runtime change lands on the NEXT restart. No rule (or a rule whose
+//!   provider cannot be built) leaves compaction on the loop's own provider —
+//!   byte-identical to the pre-seam behavior.
 //!
 //! Rules for unsupported classes are still validated, persisted and
 //! reported (`supported: false` on `GET /routing`) so the configuration is
@@ -105,12 +104,16 @@ impl RouteClass {
     /// core seam each unsupported class waits on). Hard-coded reachability,
     /// asserted in tests — never derived from config.
     pub fn supported(&self) -> bool {
-        matches!(self, RouteClass::ChatTurn | RouteClass::Reflection)
+        matches!(
+            self,
+            RouteClass::ChatTurn | RouteClass::Reflection | RouteClass::Compaction
+        )
     }
 
     /// Whether an applied rule takes effect without a restart. Only
     /// meaningful for supported classes: `chat_turn` hot-swaps the live
-    /// `SharedProvider`; `reflection` is read once at daemon start.
+    /// `SharedProvider`; `reflection` and `compaction` are read once at
+    /// daemon start (constructor arguments, not runtime setters).
     pub fn hot(&self) -> bool {
         matches!(self, RouteClass::ChatTurn)
     }
@@ -249,10 +252,15 @@ mod tests {
             .filter(RouteClass::supported)
             .map(|c| c.as_str())
             .collect();
-        assert_eq!(supported, vec!["chat_turn", "reflection"]);
-        // And only chat_turn applies hot (reflection is startup-read).
+        assert_eq!(supported, vec!["chat_turn", "reflection", "compaction"]);
+        // And only chat_turn applies hot — reflection and compaction are both
+        // read once at daemon start (constructor arguments).
         assert!(RouteClass::ChatTurn.hot());
         assert!(!RouteClass::Reflection.hot());
+        assert!(!RouteClass::Compaction.hot());
+        // The two that still wait on a core seam of their own.
+        assert!(!RouteClass::PursueTask.supported());
+        assert!(!RouteClass::Cabinet.supported());
     }
 
     #[test]

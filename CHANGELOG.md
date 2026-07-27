@@ -45,6 +45,18 @@ security gaps, two were mechanisms shipped without wiring.
   is still missing for a browser consumer (sandboxed script cannot hold the
   operator token, so a per-bundle short-lived invoke credential is the next
   piece).
+- **The two core seams from 0.3.0 are wired.** `model_config` approve now
+  writes the running loop's fallback ladder through
+  `AgentLoop::fallback_models` (the shared handle `main.rs` clones at
+  construction), so an approved ladder takes effect on the next turn instead
+  of the next restart — the comment claiming this needed a kernel seam was
+  stale. And the `compaction` routing class became SUPPORTED: `main.rs` builds
+  a dedicated provider from its rule and passes it through
+  `with_compaction_provider`, so summarization no longer has to run on the
+  turn's conversational provider. Both degrade the same way `chat_turn`
+  already did — an unbuildable rule logs and leaves previous behavior intact.
+  `pursue_task` and `cabinet` remain unsupported: they wait on seams in
+  `bastion-agent-runtime` and `bastion-personas` respectively.
 - **Wall-clock daily schedules**: `/schedule add daily <HH:MM[±HH:MM]>
   <intent>` and `ScheduleKind::DailyAt`, resolved through
   `chrono::FixedOffset`. A bare time means UTC, never the host's local zone.

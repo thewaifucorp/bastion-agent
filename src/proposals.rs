@@ -182,6 +182,12 @@ pub struct ApplyResources {
     /// an approved default model takes effect immediately, exactly like
     /// `/model`. `None` = persist only (takes effect next restart).
     pub provider: Option<bastion_providers::SharedProvider>,
+    /// The running `AgentLoop`'s fallback ladder, as the shared handle the
+    /// loop itself reads (`AgentLoop::fallback_models`, cloned at
+    /// construction). `Some` in the daemon: an approved ladder takes effect
+    /// on the next turn, with no `&mut AgentLoop` and no restart. `None` =
+    /// persist only.
+    pub fallback_models: Option<bastion_runtime::agent::loop_::SharedFallbackModels>,
     /// The holding pen the web POST filled for `secret_set` proposals.
     pub pending_secrets: PendingSecretValues,
     /// Resolved `BASTION_SECRETS_DIR` (read once at daemon start). `None` =
@@ -691,15 +697,33 @@ async fn apply_model_config(
                 actor,
             )
             .await?;
-        // TODO(A4 seam): the running AgentLoop's fallback ladder is passed
-        // at construction (main.rs `AgentLoop::new`) with no runtime setter
-        // — hot-swapping it needs a kernel seam in bastion-core. Persisted
-        // here; the startup loader reads KEY_MODEL_FALLBACKS.
-        lines.push(format!(
-            "{} fallback model(s) persisted; the ladder is loaded at startup, so it takes \
-             effect on the next restart",
-            fallbacks.len()
-        ));
+        // Hot-swapped through the kernel seam `SharedFallbackModels`
+        // (bastion-core 0.3.0): the ladder the running loop reads is an
+        // `Arc<RwLock<Vec<String>>>` whose handle `main.rs` clones at
+        // construction, so writing here lands on the next turn with no
+        // `&mut AgentLoop` and no restart — the same shape `provider` above
+        // already had. Persisting still happens either way, so a daemon
+        // without the handle (or a restart) reloads the same ladder from
+        // KEY_MODEL_FALLBACKS.
+        match &res.fallback_models {
+            Some(handle) => {
+                *handle.write().await = fallbacks.to_vec();
+                tracing::info!(
+                    event = "fallback_ladder_swapped",
+                    count = fallbacks.len(),
+                    origin = "web"
+                );
+                lines.push(format!(
+                    "{} fallback model(s) applied to the running ladder (live)",
+                    fallbacks.len()
+                ));
+            }
+            None => lines.push(format!(
+                "{} fallback model(s) persisted; no live ladder handle here — takes effect \
+                 next restart",
+                fallbacks.len()
+            )),
+        }
     }
 
     Ok(lines.join(" | "))
@@ -1123,6 +1147,47 @@ mod tests {
         let history = store.history(KEY_MODEL_SELECTED, 1).await.unwrap();
         assert_eq!(history[0].origin, "web");
         assert_eq!(history[0].actor.as_deref(), Some("alice"));
+    }
+
+    /// The ladder the running loop reads is a cloned handle, so an approved
+    /// proposal must land on it live — the seam bastion-core 0.3.0 added.
+    #[tokio::test]
+    async fn approved_fallback_ladder_lands_on_the_live_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_f, mut res) = resources_with_store().await;
+        let handle: bastion_runtime::agent::loop_::SharedFallbackModels =
+            std::sync::Arc::new(tokio::sync::RwLock::new(vec!["old-model".to_string()]));
+        res.fallback_models = Some(handle.clone());
+
+        let payload = ProposalPayload::ModelConfig {
+            default_model: None,
+            fallback_models: Some(vec!["gpt-4o".into(), "gpt-4o-mini".into()]),
+        };
+        let summary = apply(dir.path(), "p", &payload, &res).await.unwrap();
+        assert!(summary.contains("(live)"), "{summary}");
+        assert_eq!(
+            *handle.read().await,
+            vec!["gpt-4o".to_string(), "gpt-4o-mini".to_string()]
+        );
+
+        // Persisted too, so a restart reloads the same ladder.
+        let store = res.config_store.as_ref().unwrap();
+        assert!(store.latest(KEY_MODEL_FALLBACKS).await.unwrap().is_some());
+    }
+
+    /// No handle (a context that never wired one) still persists and says so
+    /// instead of claiming a live swap.
+    #[tokio::test]
+    async fn without_a_ladder_handle_the_summary_says_next_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_f, res) = resources_with_store().await;
+        let payload = ProposalPayload::ModelConfig {
+            default_model: None,
+            fallback_models: Some(vec!["gpt-4o".into()]),
+        };
+        let summary = apply(dir.path(), "p", &payload, &res).await.unwrap();
+        assert!(summary.contains("next restart"), "{summary}");
+        assert!(!summary.contains("(live)"), "{summary}");
     }
 
     // `std::env` is process-global — serialize the tests that touch a
