@@ -292,15 +292,32 @@ pub struct WebhookSubscriptionResource {
     pub target_url: String,
     pub event_types: Vec<String>,
     pub created_at: i64,
+    /// When this subscription was revoked, or `None` while it is still
+    /// active. Only `GET /v1/webhook-subscriptions` ever carries it: the
+    /// `POST` response describes a subscription that was just created, so the
+    /// field is omitted there (`skip_serializing_if`) rather than serialized
+    /// as a redundant `null`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<i64>,
     /// The HMAC signing secret (`webhook_delivery::sign_payload`'s key) —
     /// present ONLY in the response to the `POST` call that created this
-    /// subscription; `None` everywhere else (a future list-subscriptions
-    /// endpoint reusing this same DTO must never populate it). Mirrors
+    /// subscription; `None` everywhere else (`GET
+    /// /v1/webhook-subscriptions` constructs every item with `secret: None`).
+    /// Mirrors
     /// [`super::credential::SqliteCredentialStore::issue`]'s
     /// plaintext-token-shown-once pattern — there is no way to retrieve a
     /// lost secret; the subscription must be re-created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
+}
+
+/// `GET /v1/webhook-subscriptions` response envelope. No `next_cursor`: a
+/// subscription list is bounded by how many targets one owner registers by
+/// hand (single digits in practice), unlike the task list, which grows
+/// without an operator in the loop and therefore paginates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebhookSubscriptionListResponse {
+    pub items: Vec<WebhookSubscriptionResource>,
 }
 
 /// One outbound event envelope, matching the spec's "Events" section 1:1:

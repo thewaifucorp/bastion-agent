@@ -44,7 +44,7 @@ use super::core_ops::{self, CoreOpError, CoreOpsState};
 use super::credential::{AuthenticatedCredential, SqliteCredentialStore};
 use super::dto::{
     CreateTaskRequest, ErrorEnvelope, RevisionGuardedRequest, SteerRequest,
-    WebhookSubscriptionRequest, WebhookSubscriptionResource,
+    WebhookSubscriptionListResponse, WebhookSubscriptionRequest, WebhookSubscriptionResource,
 };
 use super::scope::{require_scope, Scope};
 use super::webhook_delivery::SqliteWebhookDeliveryStore;
@@ -112,7 +112,11 @@ pub fn router(state: ControlPlaneState, rate_limiter: super::rate_limit::RateLim
         .route("/v1/tasks/{id}/attempts", get(get_task_attempts))
         .route(
             "/v1/webhook-subscriptions",
-            post(create_webhook_subscription),
+            get(list_webhook_subscriptions).post(create_webhook_subscription),
+        )
+        .route(
+            "/v1/webhook-subscriptions/{id}",
+            axum::routing::delete(revoke_webhook_subscription),
         )
         .route("/v1/openapi.yaml", get(get_openapi_spec))
         // Applied to every /v1/* route, before the ControlPlaneState below —
@@ -410,6 +414,7 @@ async fn create_webhook_subscription(
                     target_url: req.target_url,
                     event_types: req.event_types,
                     created_at: now_nanos(),
+                    revoked_at: None,
                     secret: Some(secret),
                 }),
             )
@@ -423,6 +428,131 @@ async fn create_webhook_subscription(
                 "target_url failed validation (must be a public http(s) URL)",
             )
         }
+    }
+}
+
+/// `GET /v1/webhook-subscriptions` — this owner's subscriptions, newest
+/// first, revoked ones included (with `revoked_at` set) so an operator can
+/// tell "never registered" from "registered and later revoked".
+///
+/// The signing secret is NEVER present here: it exists in exactly one
+/// response, the `POST` that created the subscription
+/// (`WebhookSubscriptionResource::secret`'s doc comment), so every item
+/// below is constructed with `secret: None`. Owner scoping comes from the
+/// authenticated credential, never from a query parameter —
+/// `list_for_owner`'s `WHERE owner_id = ?1` is the isolation boundary.
+async fn list_webhook_subscriptions(
+    State(state): State<ControlPlaneState>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    let cred = match resolve_credential_or_401(
+        &headers,
+        &state.credential_store,
+        "v1_webhook_subscription_unauthorized",
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = require_scope_or_403(&cred, Scope::WebhooksManage) {
+        return *resp;
+    }
+
+    match state
+        .webhook_subscription_store
+        .list_for_owner(&cred.owner_id)
+        .await
+    {
+        Ok(subscriptions) => {
+            let items: Vec<WebhookSubscriptionResource> = subscriptions
+                .into_iter()
+                .map(|s| WebhookSubscriptionResource {
+                    id: s.id,
+                    owner_id: s.owner_id,
+                    target_url: s.target_url,
+                    event_types: s.event_types,
+                    created_at: s.created_at,
+                    revoked_at: s.revoked_at,
+                    secret: None,
+                })
+                .collect();
+            Json(WebhookSubscriptionListResponse { items }).into_response()
+        }
+        Err(e) => {
+            tracing::error!(event = "v1_webhook_subscription_list_failed", error = %e);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "internal error",
+            )
+        }
+    }
+}
+
+/// `DELETE /v1/webhook-subscriptions/{id}` — stop delivering to a target.
+///
+/// Revocation is a tombstone (`revoked_at`), not a row deletion, so the
+/// subscription keeps showing up in the list with its timestamp. The store's
+/// `UPDATE ... WHERE id = ?1 AND owner_id = ?2` is the IDOR guard: another
+/// owner's id answers `404 not_found`, indistinguishable from an id that
+/// never existed, so this route cannot be used to probe for other owners'
+/// subscription ids. Revoking twice is `409 already_revoked` rather than a
+/// silent success — an idempotent-looking `204` would hide the fact that the
+/// second caller was acting on stale state.
+async fn revoke_webhook_subscription(
+    State(state): State<ControlPlaneState>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    let cred = match resolve_credential_or_401(
+        &headers,
+        &state.credential_store,
+        "v1_webhook_subscription_unauthorized",
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = require_scope_or_403(&cred, Scope::WebhooksManage) {
+        return *resp;
+    }
+
+    match state
+        .webhook_subscription_store
+        .revoke(&cred.owner_id, &id)
+        .await
+    {
+        Ok(()) => {
+            tracing::info!(
+                event = "control_plane_webhook_subscription_revoked",
+                owner = %cred.owner_id,
+                subscription_id = %id,
+                credential_id = %cred.credential_id,
+            );
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => match e.downcast_ref::<super::webhook_subscription::RevokeError>() {
+            Some(super::webhook_subscription::RevokeError::NotFound) => error_response(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "no webhook subscription with that id is visible to this owner",
+            ),
+            Some(super::webhook_subscription::RevokeError::AlreadyRevoked) => error_response(
+                StatusCode::CONFLICT,
+                "already_revoked",
+                "this webhook subscription is already revoked",
+            ),
+            None => {
+                tracing::error!(event = "v1_webhook_subscription_revoke_failed", error = %e);
+                error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal_error",
+                    "internal error",
+                )
+            }
+        },
     }
 }
 

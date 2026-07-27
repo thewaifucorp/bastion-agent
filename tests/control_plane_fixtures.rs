@@ -16,7 +16,8 @@ use std::collections::BTreeSet;
 use bastion::control_plane::dto::{
     AttemptListResponse, AttemptSummaryDto, BudgetSummaryDto, CreateTaskBoundsDto,
     CreateTaskRequest, ErrorEnvelope, StopReasonDto, TaskEventEnvelope, TaskListResponse, TaskMode,
-    TaskResource, TaskStatusDto, WebhookSubscriptionRequest, WebhookSubscriptionResource,
+    TaskResource, TaskStatusDto, WebhookSubscriptionListResponse, WebhookSubscriptionRequest,
+    WebhookSubscriptionResource,
 };
 use serde_json::Value;
 
@@ -271,6 +272,7 @@ fn webhook_subscription_resource_matches_fixture() {
         target_url: "https://example.com/hooks/bastion".into(),
         event_types: vec!["task.created".into()],
         created_at: 1,
+        revoked_at: None,
         secret: Some("shown-once".into()),
     };
     let keys = serialized_keys(&sample);
@@ -291,6 +293,7 @@ fn webhook_subscription_resource_omits_secret_key_when_none() {
         target_url: "https://example.com/hooks/bastion".into(),
         event_types: vec![],
         created_at: 1,
+        revoked_at: None,
         secret: None,
     };
     let json = serde_json::to_value(&sample).unwrap();
@@ -298,6 +301,33 @@ fn webhook_subscription_resource_omits_secret_key_when_none() {
         json.as_object().unwrap().get("secret").is_none(),
         "secret key must be entirely absent when None, not present as null"
     );
+    assert!(
+        json.as_object().unwrap().get("revoked_at").is_none(),
+        "revoked_at key must be entirely absent while the subscription is active"
+    );
+}
+
+#[test]
+fn webhook_subscription_list_response_matches_fixture() {
+    let sample = WebhookSubscriptionListResponse {
+        items: vec![WebhookSubscriptionResource {
+            id: "sub_1".into(),
+            owner_id: "alice".into(),
+            target_url: "https://example.com/hooks/bastion".into(),
+            event_types: vec!["task.created".into()],
+            created_at: 1,
+            revoked_at: Some(2),
+            secret: None,
+        }],
+    };
+    let keys = serialized_keys(&sample);
+    assert_serialized_keys_are_declared("WebhookSubscriptionListResponse", &keys);
+    assert_required_are_present("WebhookSubscriptionListResponse", &keys);
+
+    // A revoked item DOES carry the timestamp — the list is how an operator
+    // tells "never registered" from "registered and later revoked".
+    let json = serde_json::to_value(&sample).unwrap();
+    assert_eq!(json["items"][0]["revoked_at"], serde_json::json!(2));
 }
 
 #[test]

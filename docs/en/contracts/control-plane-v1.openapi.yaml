@@ -288,6 +288,27 @@ paths:
           $ref: '#/components/responses/Error'
 
   /webhook-subscriptions:
+    get:
+      operationId: listWebhookSubscriptions
+      summary: This owner's subscriptions, newest first, revoked ones included.
+      security:
+        - bastionToken: [webhooks:manage]
+      responses:
+        '200':
+          description: >
+            The caller's subscriptions. The HMAC signing secret is never
+            present here — it exists only in the response to the POST that
+            created the subscription.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscriptionListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ScopeDenied'
+        default:
+          $ref: '#/components/responses/Error'
     post:
       operationId: createWebhookSubscription
       summary: Register a signed event target.
@@ -310,6 +331,41 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/ScopeDenied'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /webhook-subscriptions/{id}:
+    delete:
+      operationId: revokeWebhookSubscription
+      summary: Stop delivering to a target.
+      description: >
+        Revocation writes a tombstone (revoked_at) rather than deleting the
+        row, so the subscription stays visible in the list with its
+        timestamp. Another owner's id answers 404, indistinguishable from an
+        id that never existed, so this route cannot be used to probe for
+        other owners' subscription ids.
+      security:
+        - bastionToken: [webhooks:manage]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204':
+          description: Revoked. No body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ScopeDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The subscription is already revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         default:
           $ref: '#/components/responses/Error'
 
@@ -539,14 +595,33 @@ components:
           type: array
           items: { type: string }
         created_at: { type: integer, format: int64 }
+        revoked_at:
+          type: integer
+          format: int64
+          description: >
+            When this subscription was revoked. Absent (key omitted entirely,
+            not null) while it is still active, and absent from the POST
+            response, which describes a subscription that was just created.
         secret:
           type: string
           description: >
             The HMAC signing secret, present ONLY in the response to the
             POST call that created this subscription. Absent (key omitted
-            entirely, not null) in any other response reusing this schema
-            (e.g. a future list-subscriptions endpoint). There is no way to
+            entirely, not null) in any other response reusing this schema —
+            GET /webhook-subscriptions never carries it. There is no way to
             retrieve a lost secret — re-create the subscription.
+
+    WebhookSubscriptionListResponse:
+      type: object
+      required: [items]
+      description: >
+        Not cursor-paginated, unlike TaskListResponse: the number of
+        subscriptions is bounded by how many targets one owner registers by
+        hand, while tasks accumulate without an operator in the loop.
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/WebhookSubscriptionResource' }
 
     ErrorEnvelope:
       type: object

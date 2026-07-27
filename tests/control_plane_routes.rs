@@ -325,6 +325,250 @@ async fn create_task_enqueues_a_task_created_delivery_for_a_matching_subscriptio
     );
 }
 
+// ─── GET /v1/webhook-subscriptions + DELETE /v1/webhook-subscriptions/{id} ─
+
+/// Seeds a subscription row directly, bypassing the SSRF-gated `issue()` —
+/// same reasoning as the delivery test above: these tests are about listing
+/// and revoking, and must not depend on DNS.
+fn seed_subscription(
+    sub_store: &SqliteWebhookSubscriptionStore,
+    id: &str,
+    owner: &str,
+    revoked_at: Option<i64>,
+) {
+    let conn = rusqlite::Connection::open(sub_store.db_path()).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS webhook_subscriptions (
+            id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, target_url TEXT NOT NULL,
+            event_types TEXT NOT NULL, secret TEXT NOT NULL, created_at INTEGER NOT NULL,
+            revoked_at INTEGER
+         );",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO webhook_subscriptions VALUES (?1, ?2, 'https://example.com/hook', \
+         '[\"task.created\"]', 'shh', 1, ?3)",
+        rusqlite::params![id, owner, revoked_at],
+    )
+    .unwrap();
+}
+
+fn delete_req(uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("DELETE")
+        .uri(uri)
+        .header("x-bastion-token", token)
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn get_req(uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header("x-bastion-token", token)
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn list_webhook_subscriptions_requires_auth() {
+    let (_f, _task_store, _cred_store, _sub_store, _delivery_store, app) =
+        build_app_with_webhook_stores().await;
+    let req = Request::builder()
+        .uri("/v1/webhook-subscriptions")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn list_webhook_subscriptions_requires_webhooks_manage_scope() {
+    let (_f, _task_store, cred_store, _sub_store, _delivery_store, app) =
+        build_app_with_webhook_stores().await;
+    let token = issue_token(&cred_store, "alice", &[Scope::TasksRead]).await;
+    let resp = app
+        .oneshot(get_req("/v1/webhook-subscriptions", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+/// Owner isolation plus the secret contract: another owner's subscription is
+/// invisible, and no item ever carries the signing secret — it exists only in
+/// the response to the POST that created it.
+#[tokio::test]
+async fn list_webhook_subscriptions_is_owner_scoped_and_never_returns_the_secret() {
+    let (_f, _task_store, cred_store, sub_store, _delivery_store, app) =
+        build_app_with_webhook_stores().await;
+    seed_subscription(&sub_store, "sub-alice", "alice", None);
+    seed_subscription(&sub_store, "sub-mallory", "mallory", None);
+
+    let token = issue_token(&cred_store, "alice", &[Scope::WebhooksManage]).await;
+    let resp = app
+        .oneshot(get_req("/v1/webhook-subscriptions", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    let items = json["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "alice must not see mallory's subscription");
+    assert_eq!(items[0]["id"], "sub-alice");
+    assert!(
+        items[0].as_object().unwrap().get("secret").is_none(),
+        "the signing secret must never appear in a list response"
+    );
+    assert!(
+        items[0].as_object().unwrap().get("revoked_at").is_none(),
+        "an active subscription omits revoked_at entirely"
+    );
+}
+
+#[tokio::test]
+async fn list_webhook_subscriptions_includes_revoked_ones_with_their_timestamp() {
+    let (_f, _task_store, cred_store, sub_store, _delivery_store, app) =
+        build_app_with_webhook_stores().await;
+    seed_subscription(&sub_store, "sub-gone", "alice", Some(42));
+
+    let token = issue_token(&cred_store, "alice", &[Scope::WebhooksManage]).await;
+    let resp = app
+        .oneshot(get_req("/v1/webhook-subscriptions", &token))
+        .await
+        .unwrap();
+    let json = body_json(resp).await;
+    let items = json["items"].as_array().unwrap();
+    assert_eq!(
+        items.len(),
+        1,
+        "a revoked subscription stays listed — an operator has to be able to \
+         tell 'never registered' from 'registered and later revoked'"
+    );
+    assert_eq!(items[0]["revoked_at"], serde_json::json!(42));
+}
+
+#[tokio::test]
+async fn revoke_webhook_subscription_requires_webhooks_manage_scope() {
+    let (_f, _task_store, cred_store, sub_store, _delivery_store, app) =
+        build_app_with_webhook_stores().await;
+    seed_subscription(&sub_store, "sub-alice", "alice", None);
+    let token = issue_token(&cred_store, "alice", &[Scope::TasksRead]).await;
+    let resp = app
+        .oneshot(delete_req("/v1/webhook-subscriptions/sub-alice", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+/// The delivery loop only ever loads `revoked_at IS NULL` rows
+/// (`active_matching`), so a successful revoke must make the subscription stop
+/// matching — asserted through the store, not just through the HTTP status.
+#[tokio::test]
+async fn revoke_webhook_subscription_stops_delivery_and_shows_up_in_the_list() {
+    let (_f, _task_store, cred_store, sub_store, _delivery_store, app) =
+        build_app_with_webhook_stores().await;
+    seed_subscription(&sub_store, "sub-alice", "alice", None);
+    assert_eq!(
+        sub_store
+            .active_matching("alice", "task.created")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let token = issue_token(&cred_store, "alice", &[Scope::WebhooksManage]).await;
+    let resp = app
+        .clone()
+        .oneshot(delete_req("/v1/webhook-subscriptions/sub-alice", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    assert!(
+        sub_store
+            .active_matching("alice", "task.created")
+            .await
+            .unwrap()
+            .is_empty(),
+        "a revoked subscription must no longer be an active delivery target"
+    );
+
+    let listed = body_json(
+        app.oneshot(get_req("/v1/webhook-subscriptions", &token))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        listed["items"][0]["revoked_at"].is_i64(),
+        "the tombstone must be visible in the list, not deleted"
+    );
+}
+
+/// IDOR: another owner's id answers 404 — indistinguishable from an id that
+/// never existed, so this route cannot be used to probe for other owners'
+/// subscription ids. The victim's subscription stays deliverable.
+#[tokio::test]
+async fn revoke_webhook_subscription_cannot_touch_another_owners_subscription() {
+    let (_f, _task_store, cred_store, sub_store, _delivery_store, app) =
+        build_app_with_webhook_stores().await;
+    seed_subscription(&sub_store, "sub-mallory", "mallory", None);
+
+    let token = issue_token(&cred_store, "alice", &[Scope::WebhooksManage]).await;
+    let resp = app
+        .oneshot(delete_req("/v1/webhook-subscriptions/sub-mallory", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let json = body_json(resp).await;
+    assert_eq!(json["code"], "not_found");
+
+    assert_eq!(
+        sub_store
+            .active_matching("mallory", "task.created")
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "mallory's subscription must be untouched"
+    );
+}
+
+#[tokio::test]
+async fn revoke_webhook_subscription_twice_is_a_conflict_not_a_silent_success() {
+    let (_f, _task_store, cred_store, sub_store, _delivery_store, app) =
+        build_app_with_webhook_stores().await;
+    seed_subscription(&sub_store, "sub-alice", "alice", None);
+    let token = issue_token(&cred_store, "alice", &[Scope::WebhooksManage]).await;
+
+    let first = app
+        .clone()
+        .oneshot(delete_req("/v1/webhook-subscriptions/sub-alice", &token))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::NO_CONTENT);
+
+    let second = app
+        .oneshot(delete_req("/v1/webhook-subscriptions/sub-alice", &token))
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::CONFLICT);
+    let json = body_json(second).await;
+    assert_eq!(json["code"], "already_revoked");
+}
+
+#[tokio::test]
+async fn revoke_webhook_subscription_for_an_unknown_id_is_not_found() {
+    let (_f, _task_store, cred_store, _sub_store, _delivery_store, app) =
+        build_app_with_webhook_stores().await;
+    let token = issue_token(&cred_store, "alice", &[Scope::WebhooksManage]).await;
+    let resp = app
+        .oneshot(delete_req("/v1/webhook-subscriptions/nope", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
 // ─── Phase 3: POST /v1/tasks (create) ──────────────────────────────────────
 
 #[tokio::test]
