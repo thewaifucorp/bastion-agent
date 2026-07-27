@@ -89,7 +89,7 @@ security gaps, two were mechanisms shipped without wiring.
 
 ### Changed
 
-- Core pin advances to `bastion-core` 0.3.0, which brings the persona contract
+- Core pin advances to `bastion-core` 0.3.0 (`8164f3c`, tagged `v0.3.0`), which brings the persona contract
   v2 tool-authority gate (Policy 0) — including the `run_provider_fallback`
   path — the hot-swappable fallback ladder and compaction-provider seams,
   persona-tagged stigmergy reinforce/weaken, and the fix for Cabinet personas
