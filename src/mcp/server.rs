@@ -167,6 +167,12 @@ pub struct BastionMcpServer {
     goals: GoalEngine,
     token_permissions: HashMap<String, TokenPermissions>,
     local_owner: String,
+    /// Backlog: "rate limiting no Control Plane e nas tools MCP" — the SAME
+    /// instance `control_plane::routes::router` uses, constructed once in
+    /// `main.rs`. Only applied to the 5 `control_plane_registry` tools in
+    /// `call_tool` below, matching what the HTTP `/v1/*` routes limit; every
+    /// other (shared-registry) MCP tool call is unaffected.
+    rate_limiter: crate::control_plane::rate_limit::RateLimiter,
 }
 
 impl BastionMcpServer {
@@ -179,6 +185,7 @@ impl BastionMcpServer {
         goals: GoalEngine,
         token_permissions: HashMap<String, TokenPermissions>,
         local_owner: String,
+        rate_limiter: crate::control_plane::rate_limit::RateLimiter,
     ) -> Self {
         Self {
             registry,
@@ -188,6 +195,7 @@ impl BastionMcpServer {
             goals,
             token_permissions,
             local_owner,
+            rate_limiter,
         }
     }
 }
@@ -202,6 +210,7 @@ impl Clone for BastionMcpServer {
             goals: self.goals.clone(),
             token_permissions: self.token_permissions.clone(),
             local_owner: self.local_owner.clone(),
+            rate_limiter: self.rate_limiter.clone(),
         }
     }
 }
@@ -264,8 +273,36 @@ impl ServerHandler for BastionMcpServer {
         let registry = self.registry.clone();
         let control_plane_registry = self.control_plane_registry.clone();
         let token_permissions = self.token_permissions.clone();
+        let rate_limiter = self.rate_limiter.clone();
 
         async move {
+            // Rate limit BEFORE authentication — same ordering as the HTTP
+            // `/v1/*` layer (a `tower::Layer` wrapping the whole router,
+            // ahead of that surface's own credential resolution), so a flood
+            // of invalid/garbage tokens is bounded too, not just abuse by an
+            // already-valid one. Scoped to the 5 Control Plane tools only
+            // (the same boolean `dispatches_to_control_plane` below reuses),
+            // matching exactly what the HTTP side limits — every other MCP
+            // tool call is unaffected.
+            let dispatches_to_control_plane_for_limit =
+                control_plane_registry.list_names().contains(&name.as_ref());
+            if dispatches_to_control_plane_for_limit {
+                let presented_token = meta
+                    .as_ref()
+                    .and_then(|m| m.get("x-bastion-token"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if !rate_limiter.check(&presented_token).await {
+                    tracing::warn!(event = "mcp_rate_limited");
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "rate limited: more than {} requests in the current 60s window for \
+                         this credential",
+                        crate::control_plane::rate_limit::MAX_REQUESTS_PER_WINDOW
+                    ))]));
+                }
+            }
+
             let perms = authenticate_token(&token_permissions, meta.as_ref())?;
 
             if perms.read_only {
@@ -450,6 +487,7 @@ pub fn build_mcp_axum_router(
     goals: GoalEngine,
     tokens: HashMap<String, TokenPermissions>,
     local_owner: String,
+    rate_limiter: crate::control_plane::rate_limit::RateLimiter,
     mount_path: &str,
 ) -> Router {
     let server = BastionMcpServer::new(
@@ -460,6 +498,7 @@ pub fn build_mcp_axum_router(
         goals,
         tokens,
         local_owner,
+        rate_limiter,
     );
     let session_manager = Arc::new(LocalSessionManager::default());
 

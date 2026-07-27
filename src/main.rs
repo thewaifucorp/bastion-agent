@@ -589,6 +589,10 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(store)
     };
 
+    // M5 (hedge-fund-committee backlog): `/committee` decision log, same
+    // shared-file-different-schema-owner precedent as SqliteTaskStore above.
+    bastion::agent::committee_store::init_schema(&db_path).await?;
+
     // US External Control Plane and SDK, Phase 2: same fail-closed criticality
     // tier as `task_store` above — the `/v1/*` routes' entire auth story rests
     // on this store, so a schema-init failure here refuses to start rather
@@ -1085,6 +1089,9 @@ async fn main() -> anyhow::Result<()> {
                         webhook_delivery_store: control_plane_webhook_delivery_store.clone(),
                     },
                 ));
+            // `McpStdio` is its own process (spawned per stdio client), never
+            // sharing memory with a `Daemon` process — so this limiter has
+            // nothing to share with; it's just this process's own budget.
             let mcp_server = bastion::mcp::server::BastionMcpServer::new(
                 Arc::new(agent.capability_registry.clone()),
                 control_plane_mcp_registry,
@@ -1093,6 +1100,7 @@ async fn main() -> anyhow::Result<()> {
                 goals_for_product.clone(),
                 token_perms,
                 local_owner,
+                bastion::control_plane::rate_limit::RateLimiter::new(),
             );
             let (stdin, stdout) = rmcp::transport::stdio();
             tracing::info!(event = "mcp_stdio_started", "MCP stdio server starting");
@@ -1216,6 +1224,34 @@ async fn main() -> anyhow::Result<()> {
     let _ = _otel_provider.shutdown();
 
     Ok(())
+}
+
+/// Whitelist of "read-only" (command, subcommand) console lines safe to run
+/// while a `PendingConsolePrompt` is active — checked against
+/// `command_catalog.rs`'s own description of each command before being
+/// added here, not just "seems harmless." Deliberately narrow: a command
+/// only belongs on this list if EVERY listed subcommand form genuinely
+/// never mutates state or starts a new multi-step flow of its own (which
+/// would have nowhere to go — only one `PendingConsolePrompt` slot exists
+/// at a time). `/task`, `/schedule`, `/credential`, `/extension`,
+/// `/proposal` all have OTHER subcommands that DO mutate — those forms
+/// fall through to the normal (destructive-looking) `/`-while-pending
+/// handling, only the exact forms matched here are exempted.
+fn is_read_only_while_prompt_pending(line: &str) -> bool {
+    let trimmed = line.trim();
+    let (cmd, rest) = trimmed
+        .split_once(char::is_whitespace)
+        .unwrap_or((trimmed, ""));
+    let rest = rest.trim();
+    match cmd {
+        "/help" | "/logs" | "/connect" => true,
+        "/model" | "/backend" => rest.is_empty(),
+        "/update" => rest.is_empty() || rest == "status",
+        "/task" => rest == "list" || rest.starts_with("inspect "),
+        "/schedule" | "/credential" | "/extension" => rest == "list",
+        "/proposal" => rest == "list" || rest.starts_with("show "),
+        _ => false,
+    }
 }
 
 /// REPL daemon loop: stdin line by line, slash commands, graceful shutdown (D-01).
@@ -1541,6 +1577,15 @@ async fn daemon_loop(
             let agent_name =
                 std::env::var("BASTION_AGENT_NAME").unwrap_or_else(|_| "bastion".to_string());
 
+            // Backlog: "rate limiting no Control Plane e nas tools MCP" — ONE
+            // instance for this whole daemon process, shared by the `/v1/*`
+            // HTTP layer below and (when `mcp-server` is enabled) the 5
+            // Control Plane MCP tools, so both surfaces count against the
+            // same budget per credential. See `rate_limit.rs`'s module doc
+            // for why this is simpler-not-a-fix (HTTP and MCP tokens are
+            // separate spaces today, so nothing double-spends either way).
+            let rate_limiter = bastion::control_plane::rate_limit::RateLimiter::new();
+
             // Build MCP Streamable HTTP server if enabled.
             // M3-05: compiled only under the `mcp-server` feature; without it,
             // `mcp_routes` is always `None` (and an enabled config is warned about).
@@ -1583,6 +1628,7 @@ async fn daemon_loop(
                     goals,
                     token_perms,
                     local_owner,
+                    rate_limiter.clone(),
                     &cfg.mcp_server.mount_path,
                 );
                 tracing::info!(
@@ -1750,6 +1796,7 @@ async fn daemon_loop(
                     webhook_subscription_store: control_plane_webhook_subscription_store.clone(),
                     webhook_delivery_store: control_plane_webhook_delivery_store.clone(),
                 },
+                rate_limiter.clone(),
             ));
             // Phase 4: background sweep of the durable delivery queue —
             // mirrors how `adaptive::schedule::run_scheduler` is spawned
@@ -2213,6 +2260,14 @@ async fn daemon_loop(
     // whether stdin is still live and disable that select arm on EOF instead of exiting.
     let mut stdin_open = true;
     let mut sigterm = signal(SignalKind::terminate())?;
+    // Backlog: "mecanismo de prompt interativo no console" — the console
+    // asked something on a previous iteration and is waiting for THIS
+    // iteration's line to be the answer, not a new command or chat message.
+    // See `agent::console_prompt`'s module doc for the full design;
+    // `None` (every iteration before/after a pending prompt) is
+    // byte-identical to the console's behavior before this state existed.
+    let mut pending_console_prompt: Option<bastion::agent::console_prompt::PendingConsolePrompt> =
+        None;
 
     // Loop 3-D: every configured channel above has finished its spawn
     // attempt (success or logged failure) — `/readyz` can now report ready.
@@ -2230,6 +2285,69 @@ async fn daemon_loop(
                         // keep serving channels, proactive nudges, and signals. The daemon exits
                         // only on SIGTERM/Ctrl-C — NOT on stdin EOF (D-01 long-running invariant).
                         stdin_open = false;
+                        // A pending prompt with stdin now closed simply never resolves — the
+                        // daemon keeps running for other channels regardless (same D-01
+                        // invariant); nothing to clean up, `pending_console_prompt` just stays
+                        // Some forever on this now-dead arm.
+                    }
+                    // Checked BEFORE the empty-line/`/`-dispatch guards below: a line answering
+                    // a pending prompt is consumed here, never treated as a new command or chat
+                    // message — including an EMPTY line (a valid "none" reply to a persona-
+                    // selection menu) and a line that happens to start with `/`.
+                    //
+                    // Exception (2026-07-25): a line that's a known READ-ONLY lookup
+                    // (`/extension list`, `/task list`, etc. — see
+                    // `is_read_only_while_prompt_pending`'s own doc) does NOT match this
+                    // guard at all, so it falls through untouched to the normal `/`-dispatch
+                    // arm below — the pending prompt is never `.take()`n, stays exactly as
+                    // it was, and the operator can still answer it on their next line. Found
+                    // via a real UX walkthrough: without this, "just checking something"
+                    // (e.g. `/extension list` to see what's already installed before
+                    // answering a persona-selection menu) silently threw the menu away.
+                    Some(s)
+                        if pending_console_prompt.is_some()
+                            && !is_read_only_while_prompt_pending(&s) =>
+                    {
+                        let prompt = pending_console_prompt
+                            .take()
+                            .expect("checked Some in this arm's guard");
+                        let personas_dir = bastion::config::personas_install_dir();
+                        let bastion_toml_path = std::env::var("BASTION_CONFIG")
+                            .unwrap_or_else(|_| "bastion.toml".to_owned());
+                        if s.trim().starts_with('/') {
+                            // Decision recorded here (the spec left this open): a new `/`
+                            // command while a prompt is pending resolves the prompt with an
+                            // implicit "none" (matches the required-only, nothing-optional
+                            // outcome) rather than either silently discarding the operator's
+                            // command as garbage input to the prompt, or leaving the prompt
+                            // dangling forever. The typed command itself is NOT dispatched this
+                            // round — the operator re-sends it on the next line.
+                            let msg = bastion::agent::console_prompt::resolve(
+                                prompt,
+                                "none",
+                                &mut extension_host,
+                                &personas_dir,
+                                &bastion_toml_path,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                            )
+                            .await;
+                            println!("{msg}");
+                            println!(
+                                "(pending prompt auto-resolved with 'none' — resend '{}' now)",
+                                s.trim()
+                            );
+                        } else {
+                            let msg = bastion::agent::console_prompt::resolve(
+                                prompt,
+                                &s,
+                                &mut extension_host,
+                                &personas_dir,
+                                &bastion_toml_path,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                            )
+                            .await;
+                            println!("{msg}");
+                        }
                     }
                     Some(s) if s.trim().is_empty() => continue,
                     Some(s) if s.trim().starts_with('/') => {
@@ -2296,7 +2414,7 @@ async fn daemon_loop(
                         // /credential; no remote channel reaches it).
                         if first_token == "/extension" {
                             let ext_arg = trimmed.split_once(' ').map(|x| x.1);
-                            let personas_dir = bastion::config::personas_dir();
+                            let personas_dir = bastion::config::personas_install_dir();
                             let bastion_toml_path = std::env::var("BASTION_CONFIG")
                                 .unwrap_or_else(|_| "bastion.toml".to_owned());
                             match bastion::agent::extension_command::handle(
@@ -2308,7 +2426,82 @@ async fn daemon_loop(
                             )
                             .await
                             {
-                                Ok(msg) => println!("{msg}"),
+                                Ok(bastion::agent::extension_command::HandleOutcome::Done(
+                                    msg,
+                                )) => println!("{msg}"),
+                                Ok(
+                                    bastion::agent::extension_command::HandleOutcome::AwaitingPersonaSelection {
+                                        report,
+                                        pack_dir,
+                                        required,
+                                        optional,
+                                    },
+                                ) => {
+                                    println!("{report}");
+                                    pending_console_prompt = Some(
+                                        bastion::agent::console_prompt::PendingConsolePrompt::ExtensionInstallPersonaSelection {
+                                            pack_dir,
+                                            required,
+                                            optional,
+                                        },
+                                    );
+                                }
+                                Ok(
+                                    bastion::agent::extension_command::HandleOutcome::AwaitingRevokeConfirmation {
+                                        report,
+                                        id,
+                                    },
+                                ) => {
+                                    println!("{report}");
+                                    pending_console_prompt = Some(
+                                        bastion::agent::console_prompt::PendingConsolePrompt::ExtensionRevokeConfirmation {
+                                            id,
+                                        },
+                                    );
+                                }
+                                Err(e) => println!("Erro no comando: {e}"),
+                            }
+                            continue;
+                        }
+                        // Backlog M4 (hedge-fund-committee): 2-stage Cabinet
+                        // composition (signal gate -> conditional debate ->
+                        // Risk Manager -> Portfolio Manager) — console only,
+                        // same trusted-host tier as /extension above.
+                        if first_token == "/committee" {
+                            let committee_arg = trimmed.split_once(' ').map(|x| x.1);
+                            // M5: `/committee outcome <id> <helpful|harmful|neutral>` grades a
+                            // past run instead of starting a new one — same command prefix,
+                            // routed to a different handler before the pipeline's own
+                            // (question-required) parsing sees it.
+                            let outcome_arg = committee_arg
+                                .and_then(|a| a.strip_prefix("outcome"))
+                                .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace));
+                            if let Some(outcome_arg) = outcome_arg {
+                                match bastion::agent::committee::handle_outcome(
+                                    &cfg.session.db_path,
+                                    agent.memory.clone(),
+                                    bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                                    Some(outcome_arg.trim()),
+                                )
+                                .await
+                                {
+                                    Ok(report) => println!("{report}"),
+                                    Err(e) => println!("Erro no comando: {e}"),
+                                }
+                                continue;
+                            }
+                            match bastion::agent::committee::handle(
+                                &registry_for_product,
+                                provider.clone(),
+                                &mut agent.capability_registry,
+                                committee_arg,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                                &cfg.session.db_path,
+                                agent.memory.clone(),
+                            )
+                            .await
+                            {
+                                Ok(report) => println!("{report}"),
                                 Err(e) => println!("Erro no comando: {e}"),
                             }
                             continue;
@@ -2832,6 +3025,59 @@ fn build_token_perms(
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+
+    #[test]
+    fn read_only_while_pending_accepts_exactly_the_listed_forms() {
+        for line in [
+            "/help",
+            "/logs",
+            "/connect",
+            "/connect gemini",
+            "/model",
+            "/backend",
+            "/update",
+            "/update status",
+            "/task list",
+            "/task inspect abc123",
+            "/schedule list",
+            "/credential list",
+            "/extension list",
+            "/proposal list",
+            "/proposal show abc123",
+        ] {
+            assert!(
+                is_read_only_while_prompt_pending(line),
+                "{line} should be treated as read-only"
+            );
+        }
+    }
+
+    #[test]
+    fn read_only_while_pending_rejects_mutating_forms() {
+        for line in [
+            "/model gemini-2.5-flash",
+            "/backend use claude",
+            "/update apply",
+            "/task cancel abc123",
+            "/task pause abc123",
+            "/schedule cancel abc123",
+            "/credential issue foo",
+            "/credential revoke abc123",
+            "/extension install /some/path",
+            "/extension revoke acme/pack",
+            "/proposal approve abc123",
+            "/as some-persona",
+            "/cabinet fundamentalist",
+            "/stop",
+            "/committee something",
+            "chat message, not a command",
+        ] {
+            assert!(
+                !is_read_only_while_prompt_pending(line),
+                "{line} must NOT be treated as read-only"
+            );
+        }
+    }
 
     #[test]
     fn default_control_plane_scopes_matches_pre_existing_read_only_semantics() {

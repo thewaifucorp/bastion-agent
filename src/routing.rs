@@ -28,18 +28,29 @@
 //!   field — the harness picks its own model.
 //!   TODO(core seam): add a model hint to `SessionSpec`/`TaskInput` in
 //!   bastion-core's `bastion-agent-runtime` and thread it through
-//!   `RuntimeTaskExecutor::execute`.
+//!   `RuntimeTaskExecutor::execute`. EVALUATED 2026-07-25 (fabric-readiness
+//!   pass, `bastion-core/docs/VERSIONING.md` §6): consciously deferred —
+//!   `bastion-agent-runtime` is Extension-tier, not Kernel, so this does not
+//!   gate the kernel's path to 1.0; picked up on `bastion-agent-runtime`'s
+//!   own 0.x schedule.
 //! - `cabinet` — NOT supported: Cabinet legs run on the SAME
 //!   `SharedProvider` as chat turns (bastion-personas `persona/runner.rs`
 //!   receives the loop's handle) — swapping it would re-route chat too,
 //!   never class-scoped.
 //!   TODO(core seam): a per-mode provider override on `PersonaResponder` /
-//!   the Cabinet orchestrator in bastion-core.
-//! - `compaction` — NOT supported: `AutoCompact::compact` is called with
-//!   the loop's live provider inside the kernel turn
-//!   (bastion-runtime `agent/loop_.rs`) with no injection point.
-//!   TODO(core seam): a dedicated compaction provider field on `AgentLoop`
-//!   in bastion-core.
+//!   the Cabinet orchestrator in bastion-core. EVALUATED 2026-07-25
+//!   (fabric-readiness pass, `bastion-core/docs/VERSIONING.md` §6):
+//!   consciously deferred — `bastion-personas` is Extension-tier, not
+//!   Kernel, same reasoning as `pursue_task` above.
+//! - `compaction` — NOT supported (agent-side wiring, not a missing core
+//!   seam anymore): `AutoCompact::compact` is called with the loop's live
+//!   provider inside the kernel turn (bastion-runtime `agent/loop_.rs`).
+//!   RESOLVED IN CORE 2026-07-25 (fabric-readiness pass,
+//!   `bastion-core/docs/VERSIONING.md` §6): `AgentLoop::compaction_provider`
+//!   and `with_compaction_provider` now exist — this crate just hasn't
+//!   wired a `RoutingProviderResolver` through to it yet. Marking
+//!   `compaction` `supported: true` is a small, separate follow-up in
+//!   `bastion-agent`, not a `bastion-core` change.
 //!
 //! Rules for unsupported classes are still validated, persisted and
 //! reported (`supported: false` on `GET /routing`) so the configuration is

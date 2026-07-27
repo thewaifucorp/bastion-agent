@@ -97,7 +97,15 @@ impl ControlPlaneState {
 /// `docs/en/control-plane-security.md`'s Phase 2 design note (where this was
 /// first flagged) for the alternative considered and rejected
 /// (`/tasks/{id}/pause`, which would break the frozen contract's paths).
-pub fn router(state: ControlPlaneState) -> Router {
+/// `rate_limiter`: caller-supplied so `main.rs` can construct ONE instance
+/// and share it with `mcp::server::BastionMcpServer` too — the 5 Control
+/// Plane MCP tools get rate-limited the same way. Sharing is correct but not
+/// load-bearing today: HTTP `/v1/*` credentials (`SqliteCredentialStore`,
+/// `bcp_*` tokens) and MCP's own `TokenPermissions` (static config) are
+/// separate token spaces with no overlapping values, so one instance vs. two
+/// behaves identically either way — sharing is simpler, not a fix for a
+/// real double-budget scenario in the CURRENT architecture.
+pub fn router(state: ControlPlaneState, rate_limiter: super::rate_limit::RateLimiter) -> Router {
     Router::new()
         .route("/v1/tasks", get(list_tasks).post(create_task))
         .route("/v1/tasks/{id}", get(get_task).post(task_action))
@@ -107,6 +115,12 @@ pub fn router(state: ControlPlaneState) -> Router {
             post(create_webhook_subscription),
         )
         .route("/v1/openapi.yaml", get(get_openapi_spec))
+        // Applied to every /v1/* route, before the ControlPlaneState below —
+        // its own state (RateLimiter) is independent, see rate_limit.rs.
+        .layer(axum::middleware::from_fn_with_state(
+            rate_limiter,
+            super::rate_limit::enforce,
+        ))
         .with_state(state)
 }
 
@@ -126,7 +140,7 @@ fn error_response(status: StatusCode, code: &str, message: &str) -> axum::respon
 /// token, just a grep handle between a client-reported error and the daemon
 /// log. Same "no UUID crate dependency" reasoning as
 /// `credential::uuid_like_id`.
-fn uuid_like_request_id() -> String {
+pub(super) fn uuid_like_request_id() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 8];
     rand::thread_rng().fill_bytes(&mut bytes);
@@ -255,6 +269,7 @@ async fn list_tasks(
         &cred.owner_id,
         q.status.as_deref(),
         q.cursor.as_deref(),
+        cred.project.as_deref(),
     )
     .await
     {
@@ -470,7 +485,15 @@ async fn create_task(
         }
     };
 
-    match core_ops::create_task(&state.core(), &cred.owner_id, &idempotency_key, req).await {
+    match core_ops::create_task(
+        &state.core(),
+        &cred.owner_id,
+        &idempotency_key,
+        req,
+        cred.project.as_deref(),
+    )
+    .await
+    {
         Ok(outcome) => {
             let status = if outcome.created {
                 StatusCode::CREATED

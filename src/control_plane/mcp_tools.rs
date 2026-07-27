@@ -198,7 +198,14 @@ impl Capability for CreateTaskCapability {
             bounds,
         };
 
-        let outcome = core_ops::create_task(&self.state, &ctx.owner, &idempotency_key, req)
+        // `InvokeCtx` (bastion-core) carries owner/tier/allowed_tools, not a
+        // Control Plane `project` tag — that's resolved from an
+        // `AuthenticatedCredential`, a concept this native capability-registry
+        // MCP path doesn't have (unlike the HTTP `/v1/*` routes, which do).
+        // Known, disclosed gap: MCP-created tasks are never project-tagged
+        // yet, so `project_filter` in `list_tasks` below only ever narrows
+        // tasks the HTTP surface created.
+        let outcome = core_ops::create_task(&self.state, &ctx.owner, &idempotency_key, req, None)
             .await
             .map_err(map_core_op_error)?;
 
@@ -300,7 +307,9 @@ impl Capability for ListTasksCapability {
     async fn invoke(&self, args: Value, ctx: &InvokeCtx) -> anyhow::Result<Value> {
         let status = args.get("status").and_then(Value::as_str);
         let cursor = args.get("cursor").and_then(Value::as_str);
-        let resp = core_ops::list_tasks(&self.state, &ctx.owner, status, cursor)
+        // No project scoping on this path yet (see create_task's comment
+        // above) — an MCP caller always sees every task the owner can see.
+        let resp = core_ops::list_tasks(&self.state, &ctx.owner, status, cursor, None)
             .await
             .map_err(map_core_op_error)?;
         Ok(serde_json::to_value(resp)?)

@@ -133,7 +133,14 @@ pub struct AuthenticatedCredential {
     /// Project-namespace tag, carried only at this layer — `bastion-core`'s
     /// `TaskCase`/`SqliteTaskStore` have no `project` concept and are not
     /// modified to add one (see the plan doc's "project isolation" decision).
-    /// Phase 1 stores this field; no query anywhere filters by it yet.
+    /// Stamped onto a created task's `business_state` at creation time
+    /// (`control_plane::business_state::new_business_state`) and filtered on
+    /// in `core_ops::list_tasks` — but only on the HTTP `/v1/*` surface
+    /// (`routes.rs` reads this field); the equivalent MCP tools
+    /// (`mcp_tools.rs`) resolve auth through `InvokeCtx`, which has no
+    /// project concept, so MCP-created/listed tasks are not project-scoped
+    /// yet. `None` here (the common case) always sees everything the owner
+    /// can see, unchanged from before this field was enforced.
     pub project: Option<String>,
     pub scopes: ScopeSet,
 }

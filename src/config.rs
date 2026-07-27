@@ -737,12 +737,28 @@ fn set_env_default(key: &str, value: &str) {
     }
 }
 
-/// Directory `PersonaRegistry::load_dir` reads from — `BASTION_PERSONAS_DIR`
+/// Root `PersonaRegistry::load_dir` reads from — `BASTION_PERSONAS_DIR`
 /// when set (directly, or defaulted by `apply_data_dir_defaults` from
 /// `BASTION_DATA_DIR`), falling back to `"."` (today's behavior, unaffected
-/// when neither is set).
+/// when neither is set). `load_dir` itself joins `"personas"` onto this —
+/// callers that need the actual directory persona files live IN (e.g.
+/// `/extension install`'s copy destination) want [`personas_install_dir`],
+/// not this function directly; conflating the two was a real bug (personas
+/// copied straight into this root never actually loaded, since the
+/// registry only ever scanned `root/personas/`).
 pub fn personas_dir() -> String {
     std::env::var("BASTION_PERSONAS_DIR").unwrap_or_else(|_| ".".to_string())
+}
+
+/// The directory persona folders actually live in — `personas_dir()` joined
+/// with `"personas"`, matching exactly what `PersonaRegistry::load_dir`
+/// scans. Use this (not `personas_dir()` directly) anywhere that COPIES a
+/// persona onto disk, e.g. `/extension install`.
+pub fn personas_install_dir() -> String {
+    std::path::Path::new(&personas_dir())
+        .join("personas")
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Load BastionConfig from a TOML file, with env var overrides.

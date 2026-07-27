@@ -11,6 +11,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use bastion::control_plane::credential::SqliteCredentialStore;
+use bastion::control_plane::rate_limit::RateLimiter;
 use bastion::control_plane::routes::{router, ControlPlaneState};
 use bastion::control_plane::scope::{Scope, ScopeSet};
 use bastion::control_plane::webhook_delivery::SqliteWebhookDeliveryStore;
@@ -54,12 +55,15 @@ async fn build_app() -> (
         .await
         .expect("webhook delivery store schema");
 
-    let app = router(ControlPlaneState {
-        task_store: task_store.clone() as Arc<dyn TaskStore>,
-        credential_store: credential_store.clone(),
-        webhook_subscription_store,
-        webhook_delivery_store,
-    });
+    let app = router(
+        ControlPlaneState {
+            task_store: task_store.clone() as Arc<dyn TaskStore>,
+            credential_store: credential_store.clone(),
+            webhook_subscription_store,
+            webhook_delivery_store,
+        },
+        RateLimiter::new(),
+    );
 
     (f, task_store, credential_store, app)
 }
@@ -101,12 +105,15 @@ async fn build_app_with_webhook_stores() -> (
         .await
         .expect("webhook delivery store schema");
 
-    let app = router(ControlPlaneState {
-        task_store: task_store.clone() as Arc<dyn TaskStore>,
-        credential_store: credential_store.clone(),
-        webhook_subscription_store: webhook_subscription_store.clone(),
-        webhook_delivery_store: webhook_delivery_store.clone(),
-    });
+    let app = router(
+        ControlPlaneState {
+            task_store: task_store.clone() as Arc<dyn TaskStore>,
+            credential_store: credential_store.clone(),
+            webhook_subscription_store: webhook_subscription_store.clone(),
+            webhook_delivery_store: webhook_delivery_store.clone(),
+        },
+        RateLimiter::new(),
+    );
 
     (
         f,
@@ -700,6 +707,7 @@ async fn steer_appends_a_note_and_preserves_external_ref() {
     let mut case = sample_case("alice", "t1", 100);
     case.business_state = OpaqueState(bastion::control_plane::business_state::new_business_state(
         Some("paperclip-issue-42"),
+        None,
     ));
     task_store
         .create_case(&case, "idem-1")
@@ -822,6 +830,97 @@ async fn list_tasks_returns_only_the_authenticated_owners_tasks() {
             .len(),
         0,
         "list endpoint must not embed attempts (N+1 avoidance)"
+    );
+}
+
+/// Task 4 (backlog: "campo project enforced"): a credential's `project` tag
+/// narrows visibility WITHIN one owner's tasks — not a substitute for owner
+/// isolation (already proven by the test above), but a real second filter.
+#[tokio::test]
+async fn list_tasks_filters_by_the_issuing_credentials_project() {
+    let (_f, _task_store, cred_store, app) = build_app().await;
+
+    let (_id, acme_create_token) = cred_store
+        .issue(
+            "alice",
+            Some("acme"),
+            ScopeSet::new([Scope::TasksCreate, Scope::TasksRead]),
+            "acme-integration",
+        )
+        .await
+        .expect("issue acme token");
+    let (_id, beta_create_token) = cred_store
+        .issue(
+            "alice",
+            Some("beta"),
+            ScopeSet::new([Scope::TasksCreate, Scope::TasksRead]),
+            "beta-integration",
+        )
+        .await
+        .expect("issue beta token");
+    let (_id, unscoped_token) = cred_store
+        .issue(
+            "alice",
+            None,
+            ScopeSet::new([Scope::TasksRead]),
+            "console-wide",
+        )
+        .await
+        .expect("issue unscoped token");
+
+    // One task created under each project-tagged credential.
+    for (token, key, objective) in [
+        (&acme_create_token, "acme-key", "acme's task"),
+        (&beta_create_token, "beta-key", "beta's task"),
+    ] {
+        let req = post_json(
+            "/v1/tasks",
+            token,
+            Some(key),
+            serde_json::json!({ "objective": objective }),
+        );
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    let list_with = |token: String| {
+        let app = app.clone();
+        async move {
+            let req = Request::builder()
+                .uri("/v1/tasks")
+                .header("x-bastion-token", token)
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            body_json(resp).await
+        }
+    };
+
+    let acme_view = list_with(acme_create_token).await;
+    let acme_items = acme_view["items"].as_array().unwrap();
+    assert_eq!(
+        acme_items.len(),
+        1,
+        "acme credential must see only its own task"
+    );
+    assert_eq!(acme_items[0]["objective"], "acme's task");
+
+    let beta_view = list_with(beta_create_token).await;
+    let beta_items = beta_view["items"].as_array().unwrap();
+    assert_eq!(
+        beta_items.len(),
+        1,
+        "beta credential must see only its own task"
+    );
+    assert_eq!(beta_items[0]["objective"], "beta's task");
+
+    let unscoped_view = list_with(unscoped_token).await;
+    let unscoped_items = unscoped_view["items"].as_array().unwrap();
+    assert_eq!(
+        unscoped_items.len(),
+        2,
+        "a credential with no project tag must keep seeing everything the owner can see"
     );
 }
 
@@ -1063,4 +1162,76 @@ async fn revoked_credential_is_rejected_by_a_live_route() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// Task 5 (backlog: "rate limiting no Control Plane"): the layer is wired
+/// into the REAL router (not just unit-tested against `RateLimiter` in
+/// isolation) — this is what actually proves `router()` applies it.
+#[tokio::test]
+async fn requests_over_the_limit_get_429_same_credential() {
+    let (_f, _task_store, cred_store, app) = build_app().await;
+    let token = issue_token(&cred_store, "alice", &[Scope::TasksRead]).await;
+
+    let get_tasks = |token: String| {
+        let app = app.clone();
+        async move {
+            let req = Request::builder()
+                .uri("/v1/tasks")
+                .header("x-bastion-token", token)
+                .body(Body::empty())
+                .unwrap();
+            app.oneshot(req).await.unwrap()
+        }
+    };
+
+    for i in 0..bastion::control_plane::rate_limit::MAX_REQUESTS_PER_WINDOW {
+        let resp = get_tasks(token.clone()).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "request {i} (within the limit) must succeed"
+        );
+    }
+
+    let resp = get_tasks(token.clone()).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the request past the limit must be rejected"
+    );
+    let json = body_json(resp).await;
+    assert_eq!(json["code"], "rate_limited");
+}
+
+#[tokio::test]
+async fn rate_limit_is_isolated_per_credential() {
+    let (_f, _task_store, cred_store, app) = build_app().await;
+    let token_a = issue_token(&cred_store, "alice", &[Scope::TasksRead]).await;
+    let token_b = issue_token(&cred_store, "alice", &[Scope::TasksRead]).await;
+
+    let get_tasks = |token: String| {
+        let app = app.clone();
+        async move {
+            let req = Request::builder()
+                .uri("/v1/tasks")
+                .header("x-bastion-token", token)
+                .body(Body::empty())
+                .unwrap();
+            app.oneshot(req).await.unwrap()
+        }
+    };
+
+    for _ in 0..bastion::control_plane::rate_limit::MAX_REQUESTS_PER_WINDOW {
+        assert_eq!(get_tasks(token_a.clone()).await.status(), StatusCode::OK);
+    }
+    assert_eq!(
+        get_tasks(token_a.clone()).await.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "token_a must now be over its own limit"
+    );
+    assert_eq!(
+        get_tasks(token_b.clone()).await.status(),
+        StatusCode::OK,
+        "a different credential must have its own, untouched budget"
+    );
 }

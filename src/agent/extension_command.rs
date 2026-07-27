@@ -16,9 +16,30 @@
 //! but bastion-agent doesn't scan a skills directory at startup yet
 //! (`SkillsLoader::load_all` exists but nothing calls it from `main()`) — a
 //! pre-existing gap this command surfaces rather than silently papering over.
+//!
+//! Optional persona selection (backlog: "seletor de persona no /extension
+//! install"): a pack's `pack.toml` may declare `[personas_selection]
+//! required = [...]` — any name in `personas` not listed there is optional,
+//! shown as a numbered menu, chosen interactively by the operator via
+//! [`crate::agent::console_prompt::PendingConsolePrompt`]. Mirrors the exact
+//! pattern `crate::extension::mcp_reconciler::parse_mcp_dependencies` already
+//! established for `mcp_dependencies`: `bastion_extension_protocol::
+//! PackManifest` is NOT modified to model this (a `bastion-core` change,
+//! deliberately out of scope) — parsed directly from the pack's raw TOML
+//! text instead. A pack with no `[personas_selection]` table (every pack
+//! that exists today: `software-sdlc`, `finance-research`, `agent-payments`)
+//! installs with EXACTLY the same behavior as before this feature existed —
+//! `install` commits immediately, no prompt, `required` defaults to every
+//! name in `personas`.
+//!
+//! `/extension revoke` reuses the exact same preview/commit split and the
+//! same `PendingConsolePrompt` mechanism (`revoke_preview`/`revoke_commit`,
+//! `HandleOutcome::AwaitingRevokeConfirmation`) — the second real consumer,
+//! validating the mechanism generalizes past the one it was originally
+//! built for.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bastion_extension_protocol::{
@@ -28,6 +49,36 @@ use bastion_extension_protocol::{
 use crate::extension::declarative::DeclarativeExtension;
 use crate::extension::{CliCapability, ExtensionHost, ExtensionInstance, HostFacade};
 
+/// Result of `/extension <sub>`. `install` can produce `AwaitingPersonaSelection`
+/// (when the pack declares `[personas_selection]` and has at least one optional
+/// persona); `revoke` on an id that's actually installed produces
+/// `AwaitingRevokeConfirmation` — everything else (including `revoke` on an
+/// unknown id, and `install` on a pack with nothing optional to choose)
+/// produces `Done`.
+///
+/// `AwaitingRevokeConfirmation` is the SECOND real consumer of
+/// [`crate::agent::console_prompt::PendingConsolePrompt`] (the first being
+/// `AwaitingPersonaSelection`) — deliberately built to validate that the
+/// pending-prompt mechanism generalizes past its original single use case,
+/// per the backlog task's own open question about proving genericity now
+/// vs. later. Revoke is a real, already-existing, already-destructive
+/// action (it deactivates a capability a persona may be relying on) — not a
+/// prompt invented just to have a second consumer.
+#[derive(Debug, PartialEq)]
+pub enum HandleOutcome {
+    Done(String),
+    AwaitingPersonaSelection {
+        report: String,
+        pack_dir: PathBuf,
+        required: Vec<String>,
+        optional: Vec<String>,
+    },
+    AwaitingRevokeConfirmation {
+        report: String,
+        id: String,
+    },
+}
+
 /// Handle `/extension <sub> [args]`.
 pub async fn handle(
     host: &mut ExtensionHost,
@@ -35,19 +86,34 @@ pub async fn handle(
     bastion_toml_path: &str,
     arg: Option<&str>,
     owner: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<HandleOutcome> {
     let arg = arg.unwrap_or("").trim();
     let (sub, rest) = match arg.split_once(char::is_whitespace) {
         Some((s, r)) => (s, r.trim()),
         None => (arg, ""),
     };
     match sub {
-        "" | "list" => Ok(list(host)),
-        "install" => Ok(install(host, personas_dir, bastion_toml_path, owner, rest).await),
-        "revoke" => Ok(revoke(host, rest).await),
-        other => Ok(format!(
+        "" | "list" => Ok(HandleOutcome::Done(list(host))),
+        "install" => Ok(
+            match install(host, personas_dir, bastion_toml_path, owner, rest).await {
+                InstallOutcome::Done(msg) => HandleOutcome::Done(msg),
+                InstallOutcome::AwaitingPersonaSelection {
+                    report,
+                    pack_dir,
+                    required,
+                    optional,
+                } => HandleOutcome::AwaitingPersonaSelection {
+                    report,
+                    pack_dir,
+                    required,
+                    optional,
+                },
+            },
+        ),
+        "revoke" => Ok(revoke_preview(host, rest)),
+        other => Ok(HandleOutcome::Done(format!(
             "unknown /extension subcommand '{other}'. Use: install <path> | list | revoke <id>"
-        )),
+        ))),
     }
 }
 
@@ -63,17 +129,121 @@ fn list(host: &ExtensionHost) -> String {
     out.trim_end().to_string()
 }
 
+/// Outcome of the "preview" phase (`install`, below). `Done` needs no further
+/// input — either nothing was optional, or the install failed outright.
+/// `AwaitingPersonaSelection` means the report was already printed (the
+/// menu) and NO file was copied yet; the caller (`main.rs`) is expected to
+/// hold `pack_dir`/`required`/`optional` until the operator's next line
+/// answers it, then call [`install_commit`] itself.
+#[derive(Debug, PartialEq)]
+enum InstallOutcome {
+    Done(String),
+    AwaitingPersonaSelection {
+        report: String,
+        pack_dir: PathBuf,
+        required: Vec<String>,
+        optional: Vec<String>,
+    },
+}
+
+/// Preview phase: parse the pack, decide whether there's anything optional
+/// to ask about. A pack with no `[personas_selection]` table — every pack
+/// that exists today — has `optional` come out empty and goes straight to
+/// [`install_commit`], byte-for-byte the same report shape this function
+/// produced before persona selection existed.
 async fn install(
     host: &mut ExtensionHost,
     personas_dir: &str,
     bastion_toml_path: &str,
     owner: &str,
     path: &str,
-) -> String {
+) -> InstallOutcome {
     if path.is_empty() {
-        return "usage: /extension install <path>".to_string();
+        return InstallOutcome::Done("usage: /extension install <path>".to_string());
     }
     let pack_dir = Path::new(path);
+    let pack_toml_path = pack_dir.join("pack.toml");
+    let raw = match std::fs::read_to_string(&pack_toml_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return InstallOutcome::Done(format!("cannot read {}: {e}", pack_toml_path.display()))
+        }
+    };
+    let pack: PackManifest = match toml::from_str(&raw) {
+        Ok(p) => p,
+        Err(e) => {
+            return InstallOutcome::Done(format!(
+                "invalid pack.toml at {}: {e}",
+                pack_toml_path.display()
+            ))
+        }
+    };
+
+    // Table absent/malformed -> every persona is required, exactly today's
+    // behavior — this is what keeps every existing pack.toml (none of which
+    // declare this table) installing unchanged.
+    let required = parse_personas_selection(&raw).unwrap_or_else(|| pack.personas.clone());
+    let optional: Vec<String> = pack
+        .personas
+        .iter()
+        .filter(|p| !required.contains(p))
+        .cloned()
+        .collect();
+
+    if optional.is_empty() {
+        let report = install_commit(
+            host,
+            personas_dir,
+            bastion_toml_path,
+            owner,
+            pack_dir,
+            &required,
+            &[],
+        )
+        .await;
+        return InstallOutcome::Done(report);
+    }
+
+    let mut report = format!("installing {} v{}\n", pack.id, pack.version);
+    report.push_str(&format!(
+        "  required (always installed): {}\n",
+        if required.is_empty() {
+            "(none)".to_string()
+        } else {
+            required.join(", ")
+        }
+    ));
+    report.push_str("  optional — pick which to also install:\n");
+    for (i, name) in optional.iter().enumerate() {
+        report.push_str(&format!("    {}. {name}\n", i + 1));
+    }
+    report.push_str(
+        "  reply with numbers and/or names, comma-separated (e.g. \"1,3\" or \"burry,ackman\"), \
+         \"all\", or \"none\"",
+    );
+
+    InstallOutcome::AwaitingPersonaSelection {
+        report,
+        pack_dir: pack_dir.to_path_buf(),
+        required,
+        optional,
+    }
+}
+
+/// Commit phase: re-reads and re-parses `pack.toml` from `pack_dir` (cheap,
+/// and avoids needing to carry a whole `PackManifest` across the pending-
+/// prompt boundary between `install`'s preview and this call) and copies
+/// `required` ∪ `selection` — this is the body `install` itself used to run
+/// unconditionally before persona selection existed.
+pub(crate) async fn install_commit(
+    host: &mut ExtensionHost,
+    personas_dir: &str,
+    bastion_toml_path: &str,
+    owner: &str,
+    pack_dir: &Path,
+    required: &[String],
+    selection: &[String],
+) -> String {
     let pack_toml_path = pack_dir.join("pack.toml");
     let raw = match std::fs::read_to_string(&pack_toml_path) {
         Ok(s) => s,
@@ -86,9 +256,17 @@ async fn install(
 
     let mut report = format!("installing {} v{}\n", pack.id, pack.version);
 
-    let personas_copied = copy_pack_members(&pack_dir.join("personas"), &pack.personas, |name| {
-        Path::new(personas_dir).join(name)
-    });
+    let mut personas_to_install: Vec<String> = required.to_vec();
+    for name in selection {
+        if !personas_to_install.contains(name) {
+            personas_to_install.push(name.clone());
+        }
+    }
+
+    let personas_copied =
+        copy_pack_members(&pack_dir.join("personas"), &personas_to_install, |name| {
+            Path::new(personas_dir).join(name)
+        });
     for (name, error) in &personas_copied.failed {
         report.push_str(&format!("  ! persona {name}: failed to copy — {error}\n"));
     }
@@ -122,6 +300,89 @@ async fn install(
     }
 
     report.trim_end().to_string()
+}
+
+/// One `pack.toml`'s `[personas_selection]` table. `bastion_extension_protocol::
+/// PackManifest` doesn't model this at all (deliberately — see module doc);
+/// parsed straight from the raw TOML text, mirroring
+/// `crate::extension::mcp_reconciler::parse_mcp_dependencies`'s exact
+/// pattern for the same reason.
+#[derive(serde::Deserialize, Default)]
+struct ManifestPersonasSelection {
+    #[serde(default)]
+    personas_selection: Option<PersonasSelectionTable>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct PersonasSelectionTable {
+    #[serde(default)]
+    required: Vec<String>,
+}
+
+/// Extracts `[personas_selection].required` from a raw `pack.toml` string.
+/// `None` — the table is absent, or the raw text doesn't parse at all under
+/// this narrower shape — means "every persona is required", not "zero
+/// personas required": callers must NOT treat `None` and `Some(vec![])` the
+/// same way. A malformed table is never the reason a whole install fails.
+fn parse_personas_selection(raw_pack_toml: &str) -> Option<Vec<String>> {
+    toml::from_str::<ManifestPersonasSelection>(raw_pack_toml)
+        .ok()
+        .and_then(|m| m.personas_selection)
+        .map(|t| t.required)
+}
+
+/// What the operator's reply line resolved to: which optional personas were
+/// selected, and which tokens in the reply didn't match anything (reported
+/// back, never silently dropped — backlog requirement).
+#[derive(Debug, PartialEq, Default)]
+pub(crate) struct PersonaSelectionResult {
+    pub selected: Vec<String>,
+    pub ignored: Vec<String>,
+}
+
+/// Parses an operator's reply to the persona-selection menu against
+/// `optional` (the exact list `install`'s menu was numbered from — indices
+/// are always relative to THIS list, 1-indexed). Accepts, per token: a
+/// 1-indexed number, or a persona name (case-insensitive), comma-separated;
+/// the whole reply may instead be `all` or `none`/empty (case-insensitive).
+/// A duplicate selection (same persona picked twice, by number and by name)
+/// is de-duplicated, not reported as an error.
+pub(crate) fn parse_persona_selection(reply: &str, optional: &[String]) -> PersonaSelectionResult {
+    let reply = reply.trim();
+    if reply.is_empty() || reply.eq_ignore_ascii_case("none") {
+        return PersonaSelectionResult::default();
+    }
+    if reply.eq_ignore_ascii_case("all") {
+        return PersonaSelectionResult {
+            selected: optional.to_vec(),
+            ignored: Vec::new(),
+        };
+    }
+
+    let mut result = PersonaSelectionResult::default();
+    for token in reply.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let matched = if let Ok(idx) = token.parse::<usize>() {
+            idx.checked_sub(1).and_then(|i| optional.get(i)).cloned()
+        } else {
+            optional
+                .iter()
+                .find(|name| name.eq_ignore_ascii_case(token))
+                .cloned()
+        };
+        match matched {
+            Some(name) => {
+                if !result.selected.contains(&name) {
+                    result.selected.push(name);
+                }
+            }
+            None => result.ignored.push(token.to_string()),
+        }
+    }
+    result
 }
 
 /// `bastion/git-capability`'s `crate_name` — the one `native_crate` mapping
@@ -261,14 +522,46 @@ async fn install_git_capability(
     }
 }
 
-async fn revoke(host: &mut ExtensionHost, id: &str) -> String {
+/// Preview phase: an unknown/empty id fails immediately (nothing to confirm).
+/// A real installed id asks for confirmation instead of revoking on the
+/// spot — revoke deactivates a capability that some persona's turn may
+/// currently depend on, so a mistyped id or a slip of the finger shouldn't
+/// be irreversible with zero chance to back out.
+fn revoke_preview(host: &ExtensionHost, id: &str) -> HandleOutcome {
     if id.is_empty() {
-        return "usage: /extension revoke <id>".to_string();
+        return HandleOutcome::Done("usage: /extension revoke <id>".to_string());
     }
+    if !host.is_installed(id) {
+        return HandleOutcome::Done(format!("cannot revoke {id}: not installed"));
+    }
+    HandleOutcome::AwaitingRevokeConfirmation {
+        report: format!("revoke {id}? this deactivates it immediately. reply yes/no (or sim/não)"),
+        id: id.to_string(),
+    }
+}
+
+/// Commit phase: called from [`crate::agent::console_prompt::resolve`] once
+/// the operator's reply is parsed. Only ever invoked after `revoke_preview`
+/// already confirmed `id` is installed — a second check here is still
+/// correct defense (nothing else can uninstall it in between on this
+/// single-threaded REPL loop, but `host.revoke` is the actual source of
+/// truth either way).
+pub(crate) async fn revoke_commit(host: &mut ExtensionHost, id: &str) -> String {
     match host.revoke(id).await {
         Ok(()) => format!("extension {id} revoked."),
         Err(e) => format!("cannot revoke {id}: {e}"),
     }
+}
+
+/// Parses an operator's yes/no reply to a revoke confirmation. Anything that
+/// isn't a recognized affirmative is treated as "no" — same v1 philosophy as
+/// `parse_persona_selection`: a prompt is never re-asked on a bad reply, it
+/// just resolves to the safe (non-destructive) outcome.
+pub(crate) fn parse_revoke_confirmation(reply: &str) -> bool {
+    matches!(
+        reply.trim().to_ascii_lowercase().as_str(),
+        "yes" | "y" | "sim" | "s"
+    )
 }
 
 struct CopyResults {
@@ -436,14 +729,17 @@ mod tests {
         );
 
         let mut host = ExtensionHost::new();
-        let report = install(
+        let InstallOutcome::Done(report) = install(
             &mut host,
             personas_dest.path().to_str().unwrap(),
             "/nonexistent/bastion.toml",
             "alice",
             pack_root.path().to_str().unwrap(),
         )
-        .await;
+        .await
+        else {
+            panic!("pack has no [personas_selection] — must commit immediately")
+        };
 
         assert!(report.contains("acme/noop-mcp: installed"), "{report}");
         assert!(report.contains("personas copied: tech-lead"), "{report}");
@@ -496,14 +792,17 @@ mod tests {
         );
 
         let mut host = ExtensionHost::new();
-        let report = install(
+        let InstallOutcome::Done(report) = install(
             &mut host,
             personas_dest.path().to_str().unwrap(),
             "/nonexistent/bastion.toml",
             "alice",
             pack_root.path().to_str().unwrap(),
         )
-        .await;
+        .await
+        else {
+            panic!("pack has no [personas_selection] — must commit immediately")
+        };
 
         assert!(
             report.contains(
@@ -559,14 +858,17 @@ mod tests {
         );
 
         let mut host = ExtensionHost::new();
-        let report = install(
+        let InstallOutcome::Done(report) = install(
             &mut host,
             ".",
             "/nonexistent/bastion.toml",
             "alice",
             pack_root.path().to_str().unwrap(),
         )
-        .await;
+        .await
+        else {
+            panic!("pack has no [personas_selection] — must commit immediately")
+        };
 
         assert!(
             report.contains("bastion/git-capability: installed"),
@@ -634,14 +936,17 @@ mod tests {
         );
 
         let mut host = ExtensionHost::new();
-        let report = install(
+        let InstallOutcome::Done(report) = install(
             &mut host,
             ".",
             bastion_toml.to_str().unwrap(),
             "alice",
             pack_root.path().to_str().unwrap(),
         )
-        .await;
+        .await
+        else {
+            panic!("pack has no [personas_selection] — must commit immediately")
+        };
 
         assert!(report.contains("added [mcp.servers.context7]"), "{report}");
         assert!(
@@ -656,14 +961,17 @@ mod tests {
         // Re-installing (e.g. a second pack member reusing the same server)
         // must not duplicate the entry.
         let mut host2 = ExtensionHost::new();
-        let report2 = install(
+        let InstallOutcome::Done(report2) = install(
             &mut host2,
             ".",
             bastion_toml.to_str().unwrap(),
             "alice",
             pack_root.path().to_str().unwrap(),
         )
-        .await;
+        .await
+        else {
+            panic!("pack has no [personas_selection] — must commit immediately")
+        };
         assert!(
             report2.contains("mcp dependencies already present"),
             "{report2}"
@@ -676,14 +984,17 @@ mod tests {
     async fn install_reports_missing_pack_toml_clearly() {
         let empty = TempDir::new().unwrap();
         let mut host = ExtensionHost::new();
-        let report = install(
+        let InstallOutcome::Done(report) = install(
             &mut host,
             ".",
             "/nonexistent/bastion.toml",
             "alice",
             empty.path().to_str().unwrap(),
         )
-        .await;
+        .await
+        else {
+            panic!("missing pack.toml — must fail immediately, not await a prompt")
+        };
         assert!(report.starts_with("cannot read"), "{report}");
     }
 
@@ -752,8 +1063,52 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(out, "extension acme/noop-mcp revoked.");
+        let HandleOutcome::AwaitingRevokeConfirmation { report, id } = out else {
+            panic!(
+                "revoking an installed id must ask for confirmation first, not revoke immediately"
+            )
+        };
+        assert_eq!(id, "acme/noop-mcp");
+        assert!(report.contains("acme/noop-mcp"), "{report}");
+        // Confirmation not yet given — still installed.
+        assert_eq!(
+            list(&host),
+            "installed extensions:\n  acme/noop-mcp  v1.0.0"
+        );
+
+        let report = revoke_commit(&mut host, &id).await;
+        assert_eq!(report, "extension acme/noop-mcp revoked.");
         assert_eq!(list(&host), "no extensions installed.");
+    }
+
+    #[tokio::test]
+    async fn revoke_of_unknown_id_fails_immediately_without_asking() {
+        let mut host = ExtensionHost::new();
+        let out = handle(
+            &mut host,
+            ".",
+            "/nonexistent/bastion.toml",
+            Some("revoke nope"),
+            "alice",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out,
+            HandleOutcome::Done("cannot revoke nope: not installed".to_string())
+        );
+    }
+
+    #[test]
+    fn revoke_confirmation_accepts_only_recognized_affirmatives() {
+        assert!(parse_revoke_confirmation("yes"));
+        assert!(parse_revoke_confirmation("Y"));
+        assert!(parse_revoke_confirmation("sim"));
+        assert!(parse_revoke_confirmation(" S "));
+        assert!(!parse_revoke_confirmation("no"));
+        assert!(!parse_revoke_confirmation("nao"));
+        assert!(!parse_revoke_confirmation(""));
+        assert!(!parse_revoke_confirmation("yesplease"));
     }
 
     #[test]
@@ -792,14 +1147,17 @@ mod tests {
         );
 
         let mut host = ExtensionHost::new();
-        let report = install(
+        let InstallOutcome::Done(report) = install(
             &mut host,
             personas_dest.path().to_str().unwrap(),
             "/nonexistent/bastion.toml",
             "alice",
             pack_root.path().to_str().unwrap(),
         )
-        .await;
+        .await
+        else {
+            panic!("pack has no [personas_selection] — must commit immediately")
+        };
 
         assert!(report.contains("unsafe member name"), "{report}");
         assert!(
@@ -823,5 +1181,271 @@ mod tests {
         let result = copy_dir(src.path(), &dest.path().join("copied"));
         assert!(result.is_err(), "copy_dir must refuse a symlinked entry");
         assert!(!dest.path().join("copied/escape/secret.txt").exists());
+    }
+
+    // ---------------------------------------------------------------------
+    // Optional persona selection (backlog: "seletor de persona no /extension
+    // install") — parse_personas_selection, parse_persona_selection,
+    // install_commit's exact copy set, and backward compatibility.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn parse_personas_selection_reads_the_required_list() {
+        let raw = r#"
+            id = "acme/hedge-fund-committee"
+            personas = ["risk-manager", "portfolio-manager", "burry", "ackman"]
+
+            [personas_selection]
+            required = ["risk-manager", "portfolio-manager"]
+        "#;
+        assert_eq!(
+            parse_personas_selection(raw),
+            Some(vec![
+                "risk-manager".to_string(),
+                "portfolio-manager".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_personas_selection_none_when_table_absent() {
+        // None (not Some(vec![])) is load-bearing: it means "every persona
+        // is required", not "zero personas required". Valid TOML, table
+        // genuinely absent — distinct from the malformed-input test below.
+        assert_eq!(
+            parse_personas_selection("id = \"acme/thing\"\npersonas = [\"a\", \"b\"]"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_personas_selection_none_on_malformed_toml() {
+        assert_eq!(parse_personas_selection("this is not { valid toml"), None);
+    }
+
+    fn opt(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn parse_persona_selection_all_and_none_and_empty() {
+        let optional = opt(&["burry", "ackman", "wood"]);
+        assert_eq!(parse_persona_selection("all", &optional).selected, optional);
+        assert!(parse_persona_selection("none", &optional)
+            .selected
+            .is_empty());
+        assert!(parse_persona_selection("", &optional).selected.is_empty());
+        assert!(parse_persona_selection("   ", &optional)
+            .selected
+            .is_empty());
+    }
+
+    #[test]
+    fn parse_persona_selection_by_number_1_indexed() {
+        let optional = opt(&["burry", "ackman", "wood"]);
+        let result = parse_persona_selection("1, 3", &optional);
+        assert_eq!(result.selected, opt(&["burry", "wood"]));
+        assert!(result.ignored.is_empty());
+    }
+
+    #[test]
+    fn parse_persona_selection_by_name_case_insensitive() {
+        let optional = opt(&["burry", "ackman", "wood"]);
+        let result = parse_persona_selection("BURRY, Wood", &optional);
+        assert_eq!(result.selected, opt(&["burry", "wood"]));
+        assert!(result.ignored.is_empty());
+    }
+
+    #[test]
+    fn parse_persona_selection_mixed_numbers_and_names() {
+        let optional = opt(&["burry", "ackman", "wood"]);
+        let result = parse_persona_selection("1, wood", &optional);
+        assert_eq!(result.selected, opt(&["burry", "wood"]));
+    }
+
+    #[test]
+    fn parse_persona_selection_reports_unrecognized_tokens_without_dropping_valid_ones() {
+        let optional = opt(&["burry", "ackman", "wood"]);
+        let result = parse_persona_selection("burry, dalio, 99", &optional);
+        assert_eq!(result.selected, opt(&["burry"]));
+        assert_eq!(result.ignored, vec!["dalio".to_string(), "99".to_string()]);
+    }
+
+    #[test]
+    fn parse_persona_selection_deduplicates_a_persona_picked_twice() {
+        let optional = opt(&["burry", "ackman"]);
+        let result = parse_persona_selection("1, burry", &optional);
+        assert_eq!(result.selected, opt(&["burry"]));
+    }
+
+    fn write_hedge_fund_style_pack(root: &Path) {
+        write_pack(
+            root,
+            r#"
+                id = "acme/hedge-fund-committee"
+                version = "1.0.0"
+                extensions = []
+                skills = []
+                personas = ["risk-manager", "portfolio-manager", "burry", "ackman"]
+
+                [personas_selection]
+                required = ["risk-manager", "portfolio-manager"]
+
+                [defaults]
+                enabled_extensions = []
+            "#,
+            &[
+                ("risk-manager", "---\nname: risk-manager\n---\nbody"),
+                (
+                    "portfolio-manager",
+                    "---\nname: portfolio-manager\n---\nbody",
+                ),
+                ("burry", "---\nname: burry\n---\nbody"),
+                ("ackman", "---\nname: ackman\n---\nbody"),
+            ],
+            &[],
+        );
+    }
+
+    #[tokio::test]
+    async fn install_awaits_persona_selection_when_pack_declares_optional_personas() {
+        let pack_root = TempDir::new().unwrap();
+        let personas_dest = TempDir::new().unwrap();
+        write_hedge_fund_style_pack(pack_root.path());
+
+        let mut host = ExtensionHost::new();
+        let outcome = install(
+            &mut host,
+            personas_dest.path().to_str().unwrap(),
+            "/nonexistent/bastion.toml",
+            "alice",
+            pack_root.path().to_str().unwrap(),
+        )
+        .await;
+
+        let InstallOutcome::AwaitingPersonaSelection {
+            report,
+            pack_dir,
+            required,
+            optional,
+        } = outcome
+        else {
+            panic!(
+                "pack declares [personas_selection] with optional personas — must await a reply"
+            );
+        };
+        assert_eq!(pack_dir, pack_root.path());
+        assert_eq!(required, opt(&["risk-manager", "portfolio-manager"]));
+        assert_eq!(optional, opt(&["burry", "ackman"]));
+        assert!(report.contains("1. burry"), "{report}");
+        assert!(report.contains("2. ackman"), "{report}");
+        // Nothing copied yet — the preview phase must not touch disk.
+        assert!(!personas_dest.path().join("risk-manager").exists());
+        assert!(!personas_dest.path().join("burry").exists());
+    }
+
+    #[tokio::test]
+    async fn install_commit_copies_exactly_required_union_selection() {
+        let pack_root = TempDir::new().unwrap();
+        let personas_dest = TempDir::new().unwrap();
+        write_hedge_fund_style_pack(pack_root.path());
+
+        let mut host = ExtensionHost::new();
+        let required = opt(&["risk-manager", "portfolio-manager"]);
+        let selection = opt(&["burry"]); // ackman intentionally NOT selected
+        let report = install_commit(
+            &mut host,
+            personas_dest.path().to_str().unwrap(),
+            "/nonexistent/bastion.toml",
+            "alice",
+            pack_root.path(),
+            &required,
+            &selection,
+        )
+        .await;
+
+        assert!(report.contains("risk-manager"), "{report}");
+        assert!(report.contains("portfolio-manager"), "{report}");
+        assert!(report.contains("burry"), "{report}");
+        assert!(personas_dest.path().join("risk-manager/SOUL.md").exists());
+        assert!(personas_dest
+            .path()
+            .join("portfolio-manager/SOUL.md")
+            .exists());
+        assert!(personas_dest.path().join("burry/SOUL.md").exists());
+        assert!(
+            !personas_dest.path().join("ackman").exists(),
+            "ackman was never selected — must not be copied"
+        );
+    }
+
+    #[tokio::test]
+    async fn install_commit_with_empty_selection_installs_only_required() {
+        let pack_root = TempDir::new().unwrap();
+        let personas_dest = TempDir::new().unwrap();
+        write_hedge_fund_style_pack(pack_root.path());
+
+        let mut host = ExtensionHost::new();
+        let required = opt(&["risk-manager", "portfolio-manager"]);
+        install_commit(
+            &mut host,
+            personas_dest.path().to_str().unwrap(),
+            "/nonexistent/bastion.toml",
+            "alice",
+            pack_root.path(),
+            &required,
+            &[], // "none" reply
+        )
+        .await;
+
+        assert!(personas_dest.path().join("risk-manager").exists());
+        assert!(!personas_dest.path().join("burry").exists());
+        assert!(!personas_dest.path().join("ackman").exists());
+    }
+
+    #[tokio::test]
+    async fn existing_packs_without_personas_selection_are_unaffected_regression_check() {
+        // Hard compatibility requirement from the backlog: a pack with no
+        // [personas_selection] table installs EXACTLY like before this
+        // feature existed — Done immediately, every persona installed,
+        // never AwaitingPersonaSelection.
+        let pack_root = TempDir::new().unwrap();
+        let personas_dest = TempDir::new().unwrap();
+        write_pack(
+            pack_root.path(),
+            r#"
+                id = "thewaifucorp/software-sdlc"
+                version = "1.0.0"
+                extensions = []
+                skills = []
+                personas = ["tech-lead", "implementer"]
+
+                [defaults]
+                enabled_extensions = []
+            "#,
+            &[
+                ("tech-lead", "---\nname: tech-lead\n---\nbody"),
+                ("implementer", "---\nname: implementer\n---\nbody"),
+            ],
+            &[],
+        );
+
+        let mut host = ExtensionHost::new();
+        let outcome = install(
+            &mut host,
+            personas_dest.path().to_str().unwrap(),
+            "/nonexistent/bastion.toml",
+            "alice",
+            pack_root.path().to_str().unwrap(),
+        )
+        .await;
+
+        let InstallOutcome::Done(report) = outcome else {
+            panic!("a pack with no [personas_selection] must never await a prompt");
+        };
+        assert!(report.contains("tech-lead"), "{report}");
+        assert!(report.contains("implementer"), "{report}");
+        assert!(personas_dest.path().join("tech-lead").exists());
+        assert!(personas_dest.path().join("implementer").exists());
     }
 }

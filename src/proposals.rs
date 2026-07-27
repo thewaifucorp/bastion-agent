@@ -596,6 +596,13 @@ async fn apply_model_config(
         // GET /providers) is not enough to hot-swap yet.
         // TODO(A4 seam): route provider construction through the daemon's
         // SecretResolver in bastion-core so secrets-dir keys work here too.
+        // EVALUATED 2026-07-25 (fabric-readiness pass, bastion-core/docs/
+        // VERSIONING.md §6): consciously deferred — this isn't actually a
+        // bastion-core Kernel seam (provider construction from env vars
+        // already lives entirely in this crate/`bastion-providers`, both
+        // Extension-tier); it's a `bastion-agent`-side wiring gap that
+        // shared the `TODO(A4 seam)` tag with two real core seams. Does not
+        // gate the kernel's path to 1.0.
         let kind = bastion_providers::registry::resolve_provider_kind(model);
         if let Some(env_key) = crate::model_catalog::env_key_for_provider(kind) {
             let present = std::env::var(env_key).is_ok_and(|v| !v.is_empty());
