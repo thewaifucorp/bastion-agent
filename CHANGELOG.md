@@ -10,6 +10,71 @@ for how that differs from the library crates it depends on).
 
 ## [0.2.4] — 2026-07-27
 
+Closes the open architecture gaps that were declared in code and in
+`docs/en/control-plane-security.md` rather than fixed: two of them were
+security gaps, two were mechanisms shipped without wiring.
+
+### Added
+
+- **Webhook-subscription management over `/v1`**: `GET
+  /v1/webhook-subscriptions` lists this owner's subscriptions (revoked ones
+  included, with their `revoked_at`) and `DELETE
+  /v1/webhook-subscriptions/{id}` revokes one, both under `webhooks:manage`.
+  The store already had both operations and `Scope::WebhooksManage` already
+  claimed to cover them; no route reached either, so an operator who
+  registered a target could not see it or stop delivery without editing
+  SQLite. Revocation is a tombstone (still listed), `409` on a second call
+  rather than a silent success, and `404` for another owner's id —
+  indistinguishable from an id that never existed. The signing secret is never
+  in a list response.
+- **Remote credential issuance, opt-in**: `POST /v1/credentials`, mounted only
+  when `[control_plane] remote_credential_issuance` is set, issues a
+  credential for a named owner/project/scopes and returns the plaintext token
+  exactly once. Its authority is the operator's `BASTION_DAEMON_TOKEN`, not a
+  Control Plane credential: a credential that could mint credentials would let
+  a leaked integration token widen itself and re-mint after revocation. A
+  fully-scoped `x-bastion-token` is refused here, and an unset daemon token
+  refuses everything even with the route mounted.
+- **Extension-UI surface mounted on the daemon**: `extension::ui::router`
+  shipped with its isolation contract and adversarial tests but was never
+  called; it is now the third pre-built router `serve_with_mesh` merges,
+  behind `[extension_ui] enabled` (default false) and the fail-closed
+  `BASTION_DAEMON_TOKEN` check (new `operational::require_daemon_access`
+  layer). A mounted host starts with zero registered bundles, so it is inert
+  until an install path registers one — and the module now states plainly what
+  is still missing for a browser consumer (sandboxed script cannot hold the
+  operator token, so a per-bundle short-lived invoke credential is the next
+  piece).
+- **Wall-clock daily schedules**: `/schedule add daily <HH:MM[±HH:MM]>
+  <intent>` and `ScheduleKind::DailyAt`, resolved through
+  `chrono::FixedOffset`. A bare time means UTC, never the host's local zone.
+  A missed daily slot never replays per missed day: the backlog collapses to
+  at most one fire, and `MissedPolicy::Skip` drops a slot more than a day
+  stale. Named IANA zones (DST) remain unsupported — that needs a timezone
+  database this build does not carry, and `ScheduleSpec::tz` stays persisted
+  and unread until it does.
+
+### Fixed
+
+- **MCP task tools are project-scoped.** The HTTP `/v1/*` routes enforced the
+  `project` tag while the MCP path passed an explicit `None` on both ends, so
+  MCP-created tasks were never tagged and `list_tasks` never narrowed — the
+  filter only ever applied to tasks the HTTP surface created. An MCP token now
+  carries `control_plane_project` (`[mcp_server.tokens.<token>]`), resolved
+  server-side and threaded into `create_task`/`list_tasks`; a caller-supplied
+  value for that reserved key is dropped before the server's own is inserted,
+  so it cannot reach another project's tasks. A token with no tag behaves
+  exactly as before.
+- **Approving a `model_config` proposal resolves a secrets-dir key.** The
+  connectivity guard checked the provider's env var only, so a key that
+  existed solely as a `BASTION_SECRETS_DIR` file — what a mounted secret looks
+  like, and what an approved `secret_set` proposal itself writes — failed with
+  "not connected" while `GET /providers` reported the provider as connected.
+  The value is now resolved (env first, then the file, same order and
+  newline-trimming as the boot-time resolver) and published into the process
+  so the provider constructed right after can read it, never overwriting an
+  env var that is already set.
+
 ### Changed
 
 - Core pin advances to `bastion-core` 0.3.0, which brings the persona contract
@@ -17,6 +82,11 @@ for how that differs from the library crates it depends on).
   path — the hot-swappable fallback ladder and compaction-provider seams,
   persona-tagged stigmergy reinforce/weaken, and the fix for Cabinet personas
   never receiving the actual user question.
+- `Scope` owns the wire-name vocabulary (`wire_name`/`from_wire_name`/`ALL`);
+  `agent::credential_command` delegates to it instead of keeping a second copy
+  the new issuance route would have had to duplicate.
+- `docs/en/control-plane-security.md` moves four gaps to closed and corrects a
+  stale note: the Control Plane MCP tools already share the HTTP rate limiter.
 
 ### Added
 
