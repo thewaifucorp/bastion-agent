@@ -48,9 +48,10 @@
 //! token, ...). Unconfigured (`None`) fails closed: the lifecycle endpoints
 //! refuse every request rather than defaulting open.
 
-use axum::extract::State;
+use axum::extract::{Request, State};
 use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};
-use axum::response::IntoResponse;
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -117,9 +118,11 @@ impl ReadinessState {
     }
 }
 
-/// Daemon-access auth: gates `/lifecycle/*` only (never `/healthz`/`/readyz`
-/// — orchestrator probes must not need a credential to ask "are you up").
-/// `None` = not configured, fails closed (every lifecycle request refused).
+/// Daemon-access auth: gates `/lifecycle/*` and — when the operator mounts it
+/// — the extension-UI surface (`/ext-ui/*`, see [`require_daemon_access`]).
+/// Never `/healthz`/`/readyz`: orchestrator probes must not need a credential
+/// to ask "are you up". `None` = not configured, fails closed (every gated
+/// request refused).
 #[derive(Clone, Default)]
 pub struct DaemonAccessAuth {
     token: Option<String>,
@@ -147,6 +150,30 @@ impl DaemonAccessAuth {
             None => false,
         }
     }
+}
+
+/// `axum::middleware::from_fn_with_state` handler applying the SAME
+/// fail-closed bearer check `/lifecycle/*` uses — see
+/// [`DaemonAccessAuth::authorized`] — to every request reaching the router it
+/// layers.
+///
+/// Used to gate the extension-UI surface at its mount site (`main.rs`), not
+/// inside `extension::ui::router` itself: that module owns the isolation
+/// contract (sandbox CSP, single mediated invoke path) and is exercised by
+/// `tests/extension_ui_adversarial.rs` directly, while THIS layer owns the
+/// separate question of who may reach the surface over the network at all.
+/// Unconfigured token means every `/ext-ui` request is refused, so mounting
+/// the surface without setting the token cannot silently expose it.
+pub async fn require_daemon_access(
+    State(auth): State<DaemonAccessAuth>,
+    req: Request,
+    next: Next,
+) -> Response {
+    if !auth.authorized(req.headers()) {
+        tracing::warn!(event = "daemon_access_unauthorized", path = %req.uri().path());
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({}))).into_response();
+    }
+    next.run(req).await
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -452,5 +479,73 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), reload.notified())
             .await
             .expect("reload notify must have fired");
+    }
+
+    /// Stands in for the extension-UI mount: a router whose reachability is
+    /// owned by `require_daemon_access`, not by its own handlers. The inner
+    /// handler answers 200 unconditionally, so any non-200 below is the layer
+    /// refusing — never the handler being clever.
+    fn gated_router(auth: DaemonAccessAuth) -> Router {
+        Router::new()
+            .route("/ext-ui/x/invoke", post(|| async { "reached" }))
+            .layer(axum::middleware::from_fn_with_state(
+                auth,
+                require_daemon_access,
+            ))
+    }
+
+    #[tokio::test]
+    async fn gated_surface_without_configured_token_is_refused() {
+        let app = gated_router(DaemonAccessAuth::new(None));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/ext-ui/x/invoke")
+            .header("authorization", "Bearer anything")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            HttpStatus::UNAUTHORIZED,
+            "mounting a gated surface with no BASTION_DAEMON_TOKEN must refuse, not serve open"
+        );
+    }
+
+    #[tokio::test]
+    async fn gated_surface_without_a_header_is_refused() {
+        let app = gated_router(DaemonAccessAuth::new(Some("right".to_string())));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/ext-ui/x/invoke")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HttpStatus::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn gated_surface_wrong_token_is_refused() {
+        let app = gated_router(DaemonAccessAuth::new(Some("right".to_string())));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/ext-ui/x/invoke")
+            .header("authorization", "Bearer wrong")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HttpStatus::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn gated_surface_correct_token_reaches_the_handler() {
+        let app = gated_router(DaemonAccessAuth::new(Some("right".to_string())));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/ext-ui/x/invoke")
+            .header("authorization", "Bearer right")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HttpStatus::OK);
     }
 }

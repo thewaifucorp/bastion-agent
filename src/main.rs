@@ -1400,7 +1400,9 @@ async fn daemon_loop(
             .ok()
             .map(|v| v.expose_secret().to_string()),
     );
-    let lifecycle = bastion::channel::operational::LifecycleControl::new(lifecycle_auth);
+    // Cloned rather than moved: the same fail-closed bearer check also gates
+    // the optional extension-UI surface further down (`extension_ui_routes`).
+    let lifecycle = bastion::channel::operational::LifecycleControl::new(lifecycle_auth.clone());
     // Public release discovery is deliberately decoupled from agent readiness:
     // a temporary GitHub outage must never stop a personal runtime. The shared
     // snapshot feeds /status, /update, and the TUI command path.
@@ -1785,6 +1787,46 @@ async fn daemon_loop(
                 // all share one in-process writer.
                 companion_handle,
             ));
+            // Extension UI: the mechanism (`extension::ui::router`) shipped
+            // with its isolation contract already tested, but was never
+            // mounted — `provides: Ui` extensions had nowhere to be served
+            // from. Mounted here as the third pre-built router
+            // `serve_with_mesh` merges, distinct from both `/ui` (dashboard
+            // route) and `/app` (embedded SPA).
+            //
+            // Two gates, because this surface's `POST {mount}/{id}/invoke`
+            // reaches the SAME `CapabilityRegistry` the daemon uses:
+            //   1. opt-in — `[extension_ui] enabled` (default false) mounts
+            //      nothing at all, so no deployment gains a surface by
+            //      upgrading;
+            //   2. `require_daemon_access` — the same fail-closed bearer check
+            //      `/lifecycle/*` uses, so with `BASTION_DAEMON_TOKEN` unset
+            //      every request is refused rather than served open.
+            //
+            // The host starts with zero registered extensions: `register` is
+            // the entry point a future `provides: Ui` install path calls, and
+            // until something calls it every asset request is a 404 while the
+            // invoke bridge answers `NotFound`. That keeps this wiring inert
+            // by construction instead of speculatively granting reach.
+            let extension_ui_routes = if cfg.extension_ui.enabled {
+                let host = bastion::extension::ui::ExtensionUiHost::new(
+                    Arc::new(agent.capability_registry.clone()),
+                    std::env::var("BASTION_OWNER_ID")
+                        .unwrap_or_else(|_| bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string()),
+                );
+                let mount_path = cfg.extension_ui.mount_path.clone();
+                tracing::info!(event = "extension_ui_mounted", mount_path = %mount_path);
+                Some(
+                    axum::Router::new()
+                        .nest(&mount_path, bastion::extension::ui::router(host))
+                        .layer(axum::middleware::from_fn_with_state(
+                            lifecycle_auth.clone(),
+                            bastion::channel::operational::require_daemon_access,
+                        )),
+                )
+            } else {
+                None
+            };
             // US External Control Plane and SDK: `/v1/*` routes, built over
             // their own `ControlPlaneState` and merged into the webhook app
             // exactly like `mcp_routes` above.
@@ -1825,6 +1867,7 @@ async fn daemon_loop(
                     mcp_routes,
                     control_plane_routes,
                     loadout_routes,
+                    extension_ui_routes,
                     whatsapp_config,
                     composio_oauth.clone(),
                     readiness_for_webhook,

@@ -1207,6 +1207,7 @@ pub async fn serve(
         None,
         None, // control_plane_routes — this self-contained entry point mounts none
         None, // loadout_routes — likewise
+        None, // extension_ui_routes — likewise
         None,
         None,
         readiness,
@@ -1252,6 +1253,13 @@ pub async fn serve_with_mesh(
     // Observability A2: GET /loadout (boot-time composition snapshot), built
     // by `daemon_loop` over its own state — merged like the two above.
     loadout_routes: Option<axum::Router>,
+    // Extension UI (`extension::ui::router`, nested under `/ext-ui` by the
+    // caller and gated there by `operational::require_daemon_access`) — the
+    // third pre-built router this function merges, a surface distinct from
+    // both `/ui` (the bundled dashboard route below) and `/app` (the embedded
+    // SPA, `webapp::router`). `None` — the default for every deployment that
+    // has not opted in — mounts nothing at all, exactly as before.
+    extension_ui_routes: Option<axum::Router>,
     // WhatsApp Cloud API config (CHAN-01). None = WhatsApp routes are mounted but
     // reject with 404/403 rather than panicking (daemon startup wiring lands in
     // Plan 10-09).
@@ -1339,6 +1347,9 @@ pub async fn serve_with_mesh(
     }
     if let Some(loadout) = loadout_routes {
         app = app.merge(loadout);
+    }
+    if let Some(extension_ui) = extension_ui_routes {
+        app = app.merge(extension_ui);
     }
     // Observability frontend A2: the embedded web app (or its graceful
     // "not built" answer) — stateless, always mounted.
