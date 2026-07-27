@@ -59,14 +59,34 @@ observation, not walked from a stored plan.
 adaptive path:
 
 ```
-/schedule                       # list your schedules
-/schedule add every <secs> <intent>   # recurring
-/schedule add once  <secs> <intent>   # one-shot
-/schedule cancel <id>                  # cancel (alias: revoke)
+/schedule                                    # list your schedules
+/schedule add every <secs> <intent>          # recurring, by duration
+/schedule add once  <secs> <intent>          # one-shot, by duration
+/schedule add daily <HH:MM[±HH:MM]> <intent> # recurring, by wall clock
+/schedule cancel <id>                        # cancel (alias: revoke)
 ```
 
 Schedules survive restart. A fired schedule routes through mode selection like
 console input.
+
+`every`/`once` are pure durations, so no timezone applies to them. `daily`
+is anchored to a wall clock, and its offset is explicit or it is UTC:
+`09:00` and `09:00Z` both mean 09:00 UTC, `09:00-03:00` means 09:00 at
+UTC-03:00. A bare time is never interpreted in the daemon host's local zone —
+that offset is invisible to whoever typed the command, and can differ between
+the console and a channel, so the same input would otherwise mean different
+instants on different deployments.
+
+A missed `daily` slot never replays: however many days the daemon was down,
+the schedule fires at most once and realigns to the next slot (with
+`MissedPolicy::Skip`, a slot more than a day stale is dropped entirely) —
+firing the same intent once per missed day would produce runs nothing can
+tell apart.
+
+Named IANA zones are not supported yet: a fixed offset cannot express a zone
+whose offset shifts across a DST boundary, which needs a timezone database
+(`chrono-tz`) this build does not carry. `ScheduleSpec::tz` stays persisted
+and unread until it does.
 
 ## Capabilities used inside a task
 
