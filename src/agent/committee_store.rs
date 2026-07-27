@@ -1,5 +1,4 @@
-//! SQLite persistence for `/committee` decisions — M5 of the hedge-fund-committee
-//! backlog item (outcome logging).
+//! SQLite persistence for `/committee` decisions (outcome logging).
 //!
 //! A self-contained table (`committee_outcomes`) living in the SAME file as the
 //! session DB (`cfg.session.db_path`), but owned entirely by bastion-agent, not
@@ -7,7 +6,7 @@
 //! owner sharing one DB file, own `init_schema`, own connection-per-call). No
 //! bastion-core schema change needed for this half of the feature.
 //!
-//! `/committee <pergunta>` (`committee::handle`) inserts a row after the
+//! `/committee <question>` (`committee::handle`) inserts a row after the
 //! pipeline finishes. `/committee outcome <id> <helpful|harmful|neutral>`
 //! (`committee::handle_outcome`) reads it back, applies the per-persona
 //! stigmergy reinforcement/weaken (M6), and records the outcome.

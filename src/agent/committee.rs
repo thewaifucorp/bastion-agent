@@ -1,6 +1,5 @@
-//! `/committee <pergunta>` — M4 of the hedge-fund-committee backlog item:
-//! the "Estágio 2" dissent-gate the original design called for, on top of
-//! M3's simpler "just use `/cabinet`" pass.
+//! `/committee <question>` — the dissent-gated second stage on top of the
+//! simpler "just use `/cabinet`" pass.
 //!
 //! This is the first place in `bastion-agent` that calls
 //! `bastion_cognition::cabinet::{build_table, orchestrator::deliberate,
@@ -111,7 +110,7 @@ fn parse_signal(raw: &str) -> Option<Signal> {
     serde_json::from_str(extract_json(raw)).ok()
 }
 
-/// Handle `/committee <pergunta>`.
+/// Handle `/committee <question>`.
 #[allow(clippy::too_many_arguments)]
 pub async fn handle(
     registry: &PersonaRegistry,
@@ -125,7 +124,7 @@ pub async fn handle(
     let question = arg.unwrap_or("").trim();
     if question.is_empty() {
         return Ok(
-            "usage: /committee <pergunta>\n       /committee outcome <id> <helpful|harmful|neutral>"
+            "usage: /committee <question>\n       /committee outcome <id> <helpful|harmful|neutral>"
                 .to_string(),
         );
     }

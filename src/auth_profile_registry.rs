@@ -1,4 +1,4 @@
-//! M4-07 (`docs/revamp/BACKLOG.md`): resolves `[auth.<profile>]` config
+//! Resolves `[auth.<profile>]` config
 //! entries into a verified, usable-right-now state — WITHOUT ever touching
 //! secret/token material — and backs
 //! [`bastion_runtime::agent::ports::AuthResolver`], the kernel port
@@ -291,7 +291,7 @@ mod tests {
         assert!(matches!(err, RuntimeError::Auth(_)));
     }
 
-    /// M4-07 acceptance criterion: an `AuthResolver::Err` never contains
+    /// An `AuthResolver::Err` never contains
     /// secret material — this profile id itself isn't a secret, but this
     /// test documents the expectation the error message must uphold as the
     /// module evolves.

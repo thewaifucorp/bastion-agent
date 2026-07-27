@@ -1,8 +1,7 @@
 //! Fixed-window rate limiter, shared between the Control Plane `/v1/*` HTTP
 //! routes and the 5 Control Plane MCP tools (`mcp::server::BastionMcpServer`).
 //!
-//! Backlog: "rate limiting no Control Plane e nas tools MCP" (P0). Keyed by
-//! CREDENTIAL, not IP (this is an authenticated API — the raw
+//! Keyed by CREDENTIAL, not IP (this is an authenticated API — the raw
 //! `x-bastion-token` value itself is a fine key, no need to resolve it to an
 //! `AuthenticatedCredential`/`TokenPermissions` first), a single fixed limit
 //! with no configuration surface yet. One instance is built per `Daemon`

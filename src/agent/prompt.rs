@@ -1,9 +1,7 @@
 //! Generic interactive-prompt primitive for the daemon's stdin REPL.
 //!
-//! Backlog: "mecanismo de prompt interativo no console (+ seletor de persona
-//! no /extension install)" (P1, 16h estimate). Confirmed before building this
-//! (see the research this task was scoped from): there is NO interactive/
-//! confirm/modal mechanism anywhere in the codebase today — the stdin REPL
+//! Confirmed before building this: there is NO interactive/confirm/modal
+//! mechanism anywhere in the codebase today — the stdin REPL
 //! (`main.rs`'s `tokio::select!` loop) processes one line per iteration and
 //! every command handler returns a single string; the ratatui TUI (`tui.rs`)
 //! is event-driven over SSE with no request/response channel for this at
