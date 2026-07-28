@@ -26,7 +26,8 @@ pub async fn handle(
         "cancel" | "revoke" => cancel(store, owner, rest).await,
         other => Ok(format!(
             "unknown /schedule subcommand '{other}'. Use: list | add every <secs> <intent> | \
-             add once <secs> <intent> | add daily <HH:MM[±HH:MM]> <intent> | cancel <id>"
+             add once <secs> <intent> | add daily <HH:MM[±HH:MM]> <intent> | \
+             add daily <HH:MM>@<IANA zone> <intent> | cancel <id>"
         )),
     }
 }
@@ -45,10 +46,16 @@ async fn list(store: &Arc<SqliteScheduleStore>, owner: &str) -> anyhow::Result<S
                 hour,
                 minute,
                 offset_minutes,
-            } => format!(
-                "daily {hour:02}:{minute:02}{}",
-                format_offset(*offset_minutes)
-            ),
+            } => match &s.tz {
+                // A named zone's actual offset varies with DST, so it is
+                // never rendered as a number here — the zone name IS the
+                // anchor, same reasoning `next_daily_slot` uses to dispatch.
+                Some(tz) => format!("daily {hour:02}:{minute:02}@{tz}"),
+                None => format!(
+                    "daily {hour:02}:{minute:02}{}",
+                    format_offset(*offset_minutes)
+                ),
+            },
         };
         let state = if s.revoked { "revoked" } else { "active" };
         out.push_str(&format!("  {}  [{kind}, {state}]  {}\n", s.id, s.intent));
@@ -67,15 +74,37 @@ fn format_offset(offset_minutes: i32) -> String {
     format!("{sign}{:02}:{:02}", abs / 60, abs % 60)
 }
 
-/// Parses `HH:MM`, `HH:MMZ` and `HH:MM±HH:MM` into
-/// `(hour, minute, offset_minutes)`.
+/// How a parsed `/schedule add daily` time token anchors its wall clock —
+/// either a fixed UTC offset or a named IANA zone (DST-aware; see
+/// `adaptive::schedule`'s "Timezone" module doc).
+#[derive(Debug, PartialEq)]
+enum DailyAnchor {
+    Offset(i32),
+    Zone(String),
+}
+
+/// Parses `HH:MM`, `HH:MMZ`, `HH:MM±HH:MM`, and `HH:MM@<IANA zone>` into
+/// `(hour, minute, DailyAnchor)`.
 ///
 /// A bare `HH:MM` means UTC, NOT the daemon host's local zone: the host's
 /// offset is invisible to the person typing the command (and can differ
 /// between the console and a channel), so guessing it would make the same
 /// input mean different instants on different deployments. The offset is
-/// explicit or it is UTC.
-fn parse_daily_time(token: &str) -> Option<(u32, u32, i32)> {
+/// explicit, a named zone, or it is UTC.
+fn parse_daily_time(token: &str) -> Option<(u32, u32, DailyAnchor)> {
+    if let Some((clock, zone)) = token.split_once('@') {
+        if zone.is_empty() {
+            return None;
+        }
+        let (h, m) = clock.split_once(':')?;
+        let hour: u32 = h.parse().ok()?;
+        let minute: u32 = m.parse().ok()?;
+        if hour > 23 || minute > 59 {
+            return None;
+        }
+        return Some((hour, minute, DailyAnchor::Zone(zone.to_string())));
+    }
+
     let (clock, offset) = match token.strip_suffix(['Z', 'z']) {
         Some(clock) => (clock, 0),
         None => match token.find(['+', '-']) {
@@ -93,7 +122,7 @@ fn parse_daily_time(token: &str) -> Option<(u32, u32, i32)> {
     if hour > 23 || minute > 59 {
         return None;
     }
-    Some((hour, minute, offset))
+    Some((hour, minute, DailyAnchor::Offset(offset)))
 }
 
 /// `±HH:MM` or `±HH` into signed minutes east of UTC.
@@ -116,10 +145,11 @@ fn parse_offset(raw: &str) -> Option<i32> {
 }
 
 async fn add(store: &Arc<SqliteScheduleStore>, owner: &str, rest: &str) -> anyhow::Result<String> {
-    // `add <every|once> <secs> <intent...>` | `add daily <HH:MM[±HH:MM]> <intent...>`
+    // `add <every|once> <secs> <intent...>` | `add daily <HH:MM[±HH:MM]|HH:MM@Zone> <intent...>`
     let usage =
         "usage: /schedule add every <secs> <intent>  |  /schedule add once <secs> <intent>  \
-                  |  /schedule add daily <HH:MM[±HH:MM]> <intent>";
+                  |  /schedule add daily <HH:MM[±HH:MM]> <intent>  \
+                  |  /schedule add daily <HH:MM>@<IANA zone> <intent>";
     let (mode, tail) = match rest.split_once(char::is_whitespace) {
         Some(p) => p,
         None => return Ok(usage.to_string()),
@@ -131,20 +161,48 @@ async fn add(store: &Arc<SqliteScheduleStore>, owner: &str, rest: &str) -> anyho
     let now = now_nanos();
 
     if mode == "daily" {
-        let Some((hour, minute, offset_minutes)) = parse_daily_time(head) else {
+        let Some((hour, minute, anchor)) = parse_daily_time(head) else {
             return Ok(format!(
-                "'{head}' is not a wall-clock time. Use HH:MM (UTC), HH:MMZ, or HH:MM±HH:MM."
+                "'{head}' is not a wall-clock time. Use HH:MM (UTC), HH:MMZ, HH:MM±HH:MM, \
+                 or HH:MM@<IANA zone> (e.g. 09:00@America/Sao_Paulo)."
             ));
+        };
+        let (offset_minutes, tz) = match anchor {
+            DailyAnchor::Offset(offset_minutes) => (offset_minutes, None),
+            DailyAnchor::Zone(zone) => {
+                // Validate NOW, at command time — an unparseable zone name
+                // must be a sharp error here, never silently deferred to the
+                // firing loop's "unrepresentable, degenerate the schedule"
+                // fallback (see adaptive::schedule::next_daily_slot).
+                if zone.parse::<chrono_tz::Tz>().is_err() {
+                    return Ok(format!(
+                        "'{zone}' is not a recognized IANA timezone name \
+                         (e.g. America/Sao_Paulo, Europe/Lisbon, UTC)."
+                    ));
+                }
+                (0, Some(zone))
+            }
         };
         let kind = ScheduleKind::DailyAt {
             hour,
             minute,
             offset_minutes,
         };
-        let Some(next_fire) =
-            crate::adaptive::schedule::next_daily_fire(hour, minute, offset_minutes, now)
-        else {
+        let Some(next_fire) = crate::adaptive::schedule::next_daily_slot(
+            hour,
+            minute,
+            offset_minutes,
+            tz.as_deref(),
+            now,
+        ) else {
             return Ok(format!("cannot compute a fire time for '{head}'."));
+        };
+        let label = match &tz {
+            Some(zone) => format!("daily {hour:02}:{minute:02}@{zone}"),
+            None => format!(
+                "daily {hour:02}:{minute:02}{}",
+                format_offset(offset_minutes)
+            ),
         };
         let spec = ScheduleSpec {
             id: format!("sched-{now}"),
@@ -152,17 +210,14 @@ async fn add(store: &Arc<SqliteScheduleStore>, owner: &str, rest: &str) -> anyho
             intent: intent.to_string(),
             kind,
             missed: MissedPolicy::Skip,
-            tz: None,
+            tz,
             next_fire_nanos: next_fire,
             revoked: false,
             revision: 1,
         };
         let id = spec.id.clone();
         store.add(&spec).await?;
-        return Ok(format!(
-            "scheduled {id}: daily {hour:02}:{minute:02}{} → {intent}",
-            format_offset(offset_minutes)
-        ));
+        return Ok(format!("scheduled {id}: {label} → {intent}"));
     }
 
     let secs_str = head;
@@ -248,15 +303,30 @@ mod tests {
 
     #[test]
     fn a_bare_clock_time_means_utc_not_the_host_zone() {
-        assert_eq!(parse_daily_time("09:00"), Some((9, 0, 0)));
-        assert_eq!(parse_daily_time("09:00Z"), Some((9, 0, 0)));
+        assert_eq!(
+            parse_daily_time("09:00"),
+            Some((9, 0, DailyAnchor::Offset(0)))
+        );
+        assert_eq!(
+            parse_daily_time("09:00Z"),
+            Some((9, 0, DailyAnchor::Offset(0)))
+        );
     }
 
     #[test]
     fn an_explicit_offset_is_parsed_with_its_sign() {
-        assert_eq!(parse_daily_time("09:00-03:00"), Some((9, 0, -180)));
-        assert_eq!(parse_daily_time("09:00+05:30"), Some((9, 0, 330)));
-        assert_eq!(parse_daily_time("23:59-08"), Some((23, 59, -480)));
+        assert_eq!(
+            parse_daily_time("09:00-03:00"),
+            Some((9, 0, DailyAnchor::Offset(-180)))
+        );
+        assert_eq!(
+            parse_daily_time("09:00+05:30"),
+            Some((9, 0, DailyAnchor::Offset(330)))
+        );
+        assert_eq!(
+            parse_daily_time("23:59-08"),
+            Some((23, 59, DailyAnchor::Offset(-480)))
+        );
     }
 
     #[test]
@@ -268,6 +338,28 @@ mod tests {
         assert_eq!(parse_daily_time(""), None);
         // A token that is only an offset has no clock part to take.
         assert_eq!(parse_daily_time("-03:00"), None);
+    }
+
+    #[test]
+    fn a_named_zone_is_parsed_from_the_at_suffix() {
+        assert_eq!(
+            parse_daily_time("09:00@America/Sao_Paulo"),
+            Some((9, 0, DailyAnchor::Zone("America/Sao_Paulo".to_string())))
+        );
+        // Syntax-level parsing only — validity of the zone NAME is checked
+        // later, at the `add` call site (so the error message can say
+        // "not a recognized IANA timezone" instead of a generic parse
+        // failure).
+        assert_eq!(
+            parse_daily_time("09:00@not/a/real/zone"),
+            Some((9, 0, DailyAnchor::Zone("not/a/real/zone".to_string())))
+        );
+        assert_eq!(
+            parse_daily_time("09:00@"),
+            None,
+            "an empty zone name is refused"
+        );
+        assert_eq!(parse_daily_time("24:00@America/Sao_Paulo"), None);
     }
 
     #[test]
@@ -297,5 +389,40 @@ mod tests {
             .await
             .unwrap();
         assert!(out.contains("not a wall-clock time"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn add_daily_round_trips_with_a_named_zone() {
+        let (_f, s) = store().await;
+        let out = handle(
+            &s,
+            Some("add daily 09:00@America/Sao_Paulo morning review"),
+            "alice",
+        )
+        .await
+        .unwrap();
+        assert!(out.contains("daily 09:00@America/Sao_Paulo"), "{out}");
+
+        let listed = handle(&s, Some("list"), "alice").await.unwrap();
+        assert!(listed.contains("daily 09:00@America/Sao_Paulo"), "{listed}");
+        assert!(listed.contains("morning review"));
+
+        // The zone is actually persisted on the spec, not just echoed —
+        // this is what next_daily_slot dispatches on.
+        let specs = s.list_for_owner("alice").await.unwrap();
+        assert_eq!(specs[0].tz.as_deref(), Some("America/Sao_Paulo"));
+    }
+
+    #[tokio::test]
+    async fn add_daily_rejects_an_unrecognized_zone_name() {
+        let (_f, s) = store().await;
+        let out = handle(&s, Some("add daily 09:00@Not/A_Real_Zone do it"), "alice")
+            .await
+            .unwrap();
+        assert!(out.contains("not a recognized IANA timezone"), "{out}");
+
+        // Nothing was persisted — a rejected command must not leave a
+        // half-created schedule behind.
+        assert!(s.list_for_owner("alice").await.unwrap().is_empty());
     }
 }
