@@ -31,6 +31,7 @@
 //! `core_ops.rs`, shared with the MCP tool surface ([`super::mcp_tools`]) so
 //! the two never drift (see that module's doc comment).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -38,14 +39,17 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::Engine;
 use bastion_runtime::task::{StopReason, TaskStatus, TaskStore};
+use rand::RngCore;
+use tokio::sync::Mutex;
 
 use super::core_ops::{self, CoreOpError, CoreOpsState};
 use super::credential::{AuthenticatedCredential, SqliteCredentialStore};
 use super::dto::{
-    CreateTaskRequest, CredentialIssueRequest, CredentialIssueResponse, ErrorEnvelope,
-    RevisionGuardedRequest, SteerRequest, WebhookSubscriptionListResponse,
-    WebhookSubscriptionRequest, WebhookSubscriptionResource,
+    CreateTaskRequest, CredentialIssueRequest, CredentialIssueResponse, CredentialRetrieveRequest,
+    CredentialRetrieveResponse, ErrorEnvelope, RevisionGuardedRequest, SteerRequest,
+    WebhookSubscriptionListResponse, WebhookSubscriptionRequest, WebhookSubscriptionResource,
 };
 use super::scope::{require_scope, Scope};
 use super::webhook_delivery::SqliteWebhookDeliveryStore;
@@ -163,15 +167,75 @@ pub fn router(
 struct CredentialIssuanceState {
     credential_store: Arc<SqliteCredentialStore>,
     auth: crate::channel::operational::DaemonAccessAuth,
+    pending_tokens: PendingIssuedTokens,
 }
 
-/// The `POST /v1/credentials` sub-router, with its own state and the same
-/// rate-limit layer the rest of `/v1/*` carries.
+/// How long a `retrieval_ref` stays redeemable, in nanoseconds — short
+/// enough that a ref sitting in a log/proxy/monitoring snapshot has a narrow
+/// useful window; the operator's own tooling is expected to issue and
+/// retrieve in the same breath, not stash the ref for later.
+const RETRIEVAL_TTL_NANOS: i64 = 300 * 1_000_000_000;
+
+/// Prefix on a retrieval reference — deliberately distinct from
+/// [`super::credential`]'s `bcp_` token prefix so the two are never confused
+/// at a glance (a leaked reference and a leaked bearer token are both
+/// sensitive, but only one of them authenticates by itself here).
+const RETRIEVAL_REF_PREFIX: &str = "bcpr_";
+
+/// One-time-recovery holding pen for a freshly issued Control Plane token,
+/// keyed by an unguessable retrieval reference. Deliberately NOT
+/// `proposals::PendingSecretValues`'s pattern verbatim: that module's keys
+/// (`rand_u64`) are documented as "uniqueness, not secrecy" — fine for a
+/// proposal id, wrong for something that stands in for a bearer token. The
+/// reference here uses the same CSPRNG-plus-base64 construction
+/// [`super::credential::generate_token`] uses for the token itself.
+///
+/// In-memory only, same discipline as `PendingSecretValues`: a daemon
+/// restart empties it by construction, so a ref that outlives the process
+/// simply stops working rather than resolving against stale state.
+#[derive(Clone, Default)]
+struct PendingIssuedTokens {
+    inner: Arc<Mutex<HashMap<String, (String, i64)>>>,
+}
+
+impl PendingIssuedTokens {
+    /// Stash `token` behind a fresh reference, redeemable until
+    /// `ttl_nanos` from now. Returns the reference and its absolute expiry
+    /// (nanoseconds-since-epoch, this module's existing timestamp
+    /// convention — see [`now_nanos`]).
+    async fn put(&self, token: String, ttl_nanos: i64) -> (String, i64) {
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        let reference = format!(
+            "{RETRIEVAL_REF_PREFIX}{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+        );
+        let expires_at = now_nanos().saturating_add(ttl_nanos);
+        self.inner
+            .lock()
+            .await
+            .insert(reference.clone(), (token, expires_at));
+        (reference, expires_at)
+    }
+
+    /// Redeem exactly once. Missing, already-redeemed, and expired all
+    /// return `None` — indistinguishable on the wire by design (never leak
+    /// which of the three actually happened). An expired entry is removed
+    /// on this read even though it wasn't "used" for its token, so it
+    /// doesn't linger in memory past its own TTL.
+    async fn take(&self, reference: &str) -> Option<String> {
+        let (token, expires_at) = self.inner.lock().await.remove(reference)?;
+        (now_nanos() <= expires_at).then_some(token)
+    }
+}
+
+/// The `POST /v1/credentials`(`/retrieve`) sub-router, with its own state and
+/// the same rate-limit layer the rest of `/v1/*` carries.
 ///
 /// The limiter keys on `x-bastion-token`, which this route does not use, so
-/// every issuance attempt shares one bucket. That is the desired shape here:
-/// a bounded number of attempts per window against the operator token,
-/// regardless of who is guessing.
+/// every issuance/retrieval attempt shares one bucket. That is the desired
+/// shape here: a bounded number of attempts per window against the operator
+/// token, regardless of who is guessing.
 fn credentials_router(
     credential_store: Arc<SqliteCredentialStore>,
     auth: crate::channel::operational::DaemonAccessAuth,
@@ -179,6 +243,7 @@ fn credentials_router(
 ) -> Router {
     Router::new()
         .route("/v1/credentials", post(issue_credential))
+        .route("/v1/credentials/retrieve", post(retrieve_credential_token))
         .layer(axum::middleware::from_fn_with_state(
             rate_limiter,
             super::rate_limit::enforce,
@@ -186,6 +251,7 @@ fn credentials_router(
         .with_state(CredentialIssuanceState {
             credential_store,
             auth,
+            pending_tokens: PendingIssuedTokens::default(),
         })
 }
 
@@ -199,11 +265,18 @@ fn credentials_router(
 /// token gets `401` from the same fail-closed check `/lifecycle/*` uses
 /// (unconfigured token = every request refused).
 ///
-/// The plaintext token is in the response body exactly once — only its hash is
-/// stored, mirroring the console command. Unlike the console, that body
-/// crosses the network, so this route is only mounted when the operator opts
-/// in (`[control_plane] remote_credential_issuance`), and the response is
-/// worth the same care as any other secret in transit: over plain HTTP it is
+/// The plaintext token is NOT in this response. Only its hash is stored
+/// (mirroring the console command), and the response body carries a
+/// one-time-use `retrieval_ref` instead — fetch the actual token exactly
+/// once via `POST /v1/credentials/retrieve` before `retrieval_expires_at`.
+/// Splitting issuance from retrieval narrows how many systems ever see the
+/// plaintext in transit (a proxy/monitoring layer that snapshots this
+/// response body gets a short-lived reference, not the credential) and
+/// gives a crashed-before-reading caller a sharp failure (retrieval just
+/// fails) instead of a silently un-retrievable token. This route is still
+/// only mounted when the operator opts in
+/// (`[control_plane] remote_credential_issuance`), and both bodies are worth
+/// the same care as any other secret in transit — over plain HTTP either is
 /// readable in flight, which is why the config field's documentation says to
 /// terminate TLS in front of the daemon before enabling it.
 async fn issue_credential(
@@ -303,6 +376,8 @@ async fn issue_credential(
                 owner = %owner_id,
                 label = %label,
             );
+            let (retrieval_ref, retrieval_expires_at) =
+                state.pending_tokens.put(token, RETRIEVAL_TTL_NANOS).await;
             (
                 StatusCode::CREATED,
                 Json(CredentialIssueResponse {
@@ -311,7 +386,8 @@ async fn issue_credential(
                     project: project.map(str::to_string),
                     scopes: scopes.iter().map(|s| s.wire_name().to_string()).collect(),
                     label: label.to_string(),
-                    token,
+                    retrieval_ref,
+                    retrieval_expires_at,
                 }),
             )
                 .into_response()
@@ -322,6 +398,59 @@ async fn issue_credential(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal_error",
                 "internal error",
+            )
+        }
+    }
+}
+
+/// `POST /v1/credentials/retrieve` — redeem a `retrieval_ref` from
+/// [`issue_credential`] for the plaintext token it stands in for, exactly
+/// once. Gated by the SAME operator daemon token as issuance (defense in
+/// depth: a reference that leaks somewhere the operator token did not is
+/// still useless) — the reference alone is never sufficient.
+///
+/// Every failure mode (wrong/missing operator token aside) collapses to the
+/// same `404`: unknown reference, already-redeemed reference, and expired
+/// reference are indistinguishable on the wire, mirroring
+/// `get_task`/`get_task_attempts`'s "404 never distinguishes wrong owner
+/// from no such task" discipline — there is nothing a caller legitimately
+/// needs to learn by telling these apart.
+async fn retrieve_credential_token(
+    State(state): State<CredentialIssuanceState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    if !state.auth.authorized(&headers) {
+        tracing::warn!(event = "v1_credential_retrieve_unauthorized");
+        return error_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "this route requires the operator's daemon token",
+        );
+    }
+
+    let req: CredentialRetrieveRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_body",
+                &format!("invalid request body: {e}"),
+            )
+        }
+    };
+
+    match state.pending_tokens.take(req.retrieval_ref.trim()).await {
+        Some(token) => {
+            tracing::info!(event = "control_plane_credential_token_retrieved");
+            Json(CredentialRetrieveResponse { token }).into_response()
+        }
+        None => {
+            tracing::warn!(event = "v1_credential_retrieve_miss");
+            error_response(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "unknown, already-retrieved, or expired retrieval_ref",
             )
         }
     }
@@ -962,5 +1091,56 @@ async fn steer_action(
     {
         Ok(resource) => Json(resource).into_response(),
         Err(e) => core_error_response(e, "steer"),
+    }
+}
+
+#[cfg(test)]
+mod pending_issued_tokens_tests {
+    use super::PendingIssuedTokens;
+
+    #[tokio::test]
+    async fn put_then_take_returns_the_token_exactly_once() {
+        let pending = PendingIssuedTokens::default();
+        let (reference, _expires_at) = pending.put("bcp_secret".to_string(), 60_000_000_000).await;
+
+        assert_eq!(
+            pending.take(&reference).await,
+            Some("bcp_secret".to_string())
+        );
+        assert_eq!(
+            pending.take(&reference).await,
+            None,
+            "a reference must not be redeemable twice"
+        );
+    }
+
+    #[tokio::test]
+    async fn take_on_an_unknown_reference_returns_none() {
+        let pending = PendingIssuedTokens::default();
+        assert_eq!(pending.take("bcpr_never-issued").await, None);
+    }
+
+    #[tokio::test]
+    async fn an_expired_reference_cannot_be_redeemed() {
+        let pending = PendingIssuedTokens::default();
+        // Negative TTL: expires_at is already in the past the instant it's stored.
+        let (reference, _expires_at) = pending.put("bcp_secret".to_string(), -1).await;
+        assert_eq!(
+            pending.take(&reference).await,
+            None,
+            "an expired reference must not be redeemable even on its first use"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_references_for_two_tokens_are_independent() {
+        let pending = PendingIssuedTokens::default();
+        let (ref_a, _) = pending.put("bcp_a".to_string(), 60_000_000_000).await;
+        let (ref_b, _) = pending.put("bcp_b".to_string(), 60_000_000_000).await;
+        assert_ne!(ref_a, ref_b, "references must be unpredictable/unique");
+
+        assert_eq!(pending.take(&ref_a).await, Some("bcp_a".to_string()));
+        // Redeeming A must not affect B.
+        assert_eq!(pending.take(&ref_b).await, Some("bcp_b".to_string()));
     }
 }

@@ -346,9 +346,13 @@ pub struct CredentialIssueRequest {
     pub label: String,
 }
 
-/// `POST /v1/credentials` response. `token` appears exactly once, here —
-/// only its hash is stored, so a lost token cannot be recovered, only
-/// replaced.
+/// `POST /v1/credentials` response. The plaintext token is deliberately NOT
+/// here — `retrieval_ref` is a one-time-use, short-lived reference redeemed
+/// via `POST /v1/credentials/retrieve` ([`CredentialRetrieveRequest`]).
+/// Splitting issuance from retrieval keeps the plaintext out of any system
+/// that only ever sees this response (proxy/monitoring logs, etc.); only its
+/// hash is stored server-side either way, so a token that is never
+/// retrieved cannot be recovered later, only reissued.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CredentialIssueResponse {
     pub id: String,
@@ -357,6 +361,26 @@ pub struct CredentialIssueResponse {
     pub project: Option<String>,
     pub scopes: Vec<String>,
     pub label: String,
+    /// Redeem once, before `retrieval_expires_at`, via
+    /// `POST /v1/credentials/retrieve`.
+    pub retrieval_ref: String,
+    /// Nanoseconds-since-epoch — this module's existing timestamp
+    /// convention (see e.g. `TaskResource::created_at`).
+    pub retrieval_expires_at: i64,
+}
+
+/// `POST /v1/credentials/retrieve` request — redeems a `retrieval_ref` from
+/// [`CredentialIssueResponse`] for the plaintext token it stands in for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CredentialRetrieveRequest {
+    pub retrieval_ref: String,
+}
+
+/// `POST /v1/credentials/retrieve` response. `token` appears exactly once,
+/// here — a second retrieval attempt with the same `retrieval_ref` gets a
+/// `404`, indistinguishable from an unknown or expired reference.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CredentialRetrieveResponse {
     pub token: String,
 }
 

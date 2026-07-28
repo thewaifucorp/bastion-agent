@@ -380,8 +380,10 @@ paths:
         NOT a Control Plane credential: a leaked integration token must never
         be able to mint itself a wider credential, or a fresh one after
         revocation. With BASTION_DAEMON_TOKEN unset, every request is refused.
-        The response carries the plaintext token exactly once — only its hash
-        is stored — so terminate TLS in front of the daemon before enabling it.
+        The plaintext token is NOT in this response — redeem the returned
+        retrieval_ref exactly once via POST /credentials/retrieve before it
+        expires. Terminate TLS in front of the daemon before enabling this
+        route either way; both bodies are worth the same care in transit.
       security:
         - daemonToken: []
       requestBody:
@@ -392,7 +394,9 @@ paths:
               $ref: '#/components/schemas/CredentialIssueRequest'
       responses:
         '201':
-          description: Credential issued. The plaintext token appears only here.
+          description: >
+            Credential issued. Redeem retrieval_ref via
+            POST /credentials/retrieve to obtain the plaintext token.
           content:
             application/json:
               schema:
@@ -407,6 +411,49 @@ paths:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /credentials/retrieve:
+    post:
+      operationId: retrieveCredentialToken
+      summary: >
+        Redeem a retrieval_ref from POST /credentials for the plaintext
+        token, exactly once (operator token, opt-in route).
+      description: >
+        Gated by the SAME operator daemon token as issuance — the reference
+        alone is never sufficient, so a leaked reference is useless without
+        it too. A reference that is unknown, already redeemed, or expired
+        all return the same 404: there is nothing a caller legitimately
+        needs to learn by telling those apart.
+      security:
+        - daemonToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialRetrieveRequest'
+      responses:
+        '200':
+          description: The plaintext token, returned exactly once.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CredentialRetrieveResponse'
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown, already-redeemed, or expired retrieval_ref.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
         default:
           $ref: '#/components/responses/Error'
 
@@ -702,7 +749,7 @@ components:
 
     CredentialIssueResponse:
       type: object
-      required: [id, owner_id, scopes, label, token]
+      required: [id, owner_id, scopes, label, retrieval_ref, retrieval_expires_at]
       properties:
         id: { type: string }
         owner_id: { type: string }
@@ -713,11 +760,36 @@ components:
           type: array
           items: { type: string }
         label: { type: string }
+        retrieval_ref:
+          type: string
+          description: >
+            Opaque, unguessable, one-time-use reference. Redeem via
+            POST /credentials/retrieve before retrieval_expires_at to obtain
+            the plaintext token — a second redemption fails. Only the
+            token's hash is stored server-side either way, so a token that
+            is never retrieved cannot be recovered later, only reissued.
+        retrieval_expires_at:
+          type: integer
+          format: int64
+          description: Nanoseconds-since-epoch after which retrieval_ref stops working.
+
+    CredentialRetrieveRequest:
+      type: object
+      required: [retrieval_ref]
+      properties:
+        retrieval_ref:
+          type: string
+          description: The retrieval_ref returned by POST /credentials.
+
+    CredentialRetrieveResponse:
+      type: object
+      required: [token]
+      properties:
         token:
           type: string
           description: >
-            The plaintext bearer, present exactly once, in this response. Only
-            its hash is stored — a lost token cannot be recovered, only
+            The plaintext bearer, present exactly once, in this response.
+            Only its hash is stored — a lost token cannot be recovered, only
             replaced.
 
     ErrorEnvelope:
