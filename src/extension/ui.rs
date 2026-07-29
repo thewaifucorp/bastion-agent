@@ -43,11 +43,31 @@
 //! A mounted host starts empty — [`ExtensionUiHost::register`] is the entry
 //! point an install path for `provides: Ui` extensions calls, and until
 //! something registers a bundle, assets 404 and `/invoke` answers
-//! [`ExtensionError::NotFound`]. Note what is still missing before a real
-//! browser consumer can use this end to end: sandboxed script runs in an
-//! opaque origin and therefore cannot be handed the operator's daemon token,
-//! so a per-bundle, short-lived invoke credential is the next piece of the
-//! design — not something this wiring silently assumes.
+//! [`ExtensionError::NotFound`].
+//!
+//! ## Per-bundle invoke credential
+//!
+//! Sandboxed script runs in an opaque origin and therefore cannot be handed
+//! the operator's daemon token — so `serve_asset` mints a fresh,
+//! short-lived, per-extension credential every time it serves an HTML asset
+//! and injects it into the page as `<meta name="bastion-invoke-token"
+//! content="...">`, right after `<head>`. A served bundle reads that tag and
+//! sends the value back as the `x-bastion-ext-invoke-token` header on every
+//! `POST /invoke` call; [`invoke_handler`] rejects the request with `401`
+//! before it ever reaches [`ExtensionUiHost::invoke`] if the header is
+//! missing, unknown, expired, or was minted for a DIFFERENT extension id.
+//!
+//! This is deliberately a network-reachability concern, not an authority
+//! one — same split as the `[extension_ui] enabled` + daemon-token mount
+//! gate above: the credential proves "this caller recently loaded THIS
+//! bundle from THIS host," nothing more. It carries no scope of its own and
+//! never widens what `/invoke` may do — [`ExtensionUiHost::invoke`]'s
+//! `PermissionSet.allows_capability` check is unchanged and remains the
+//! sole authority gate, checked identically whether or not the invoke
+//! credential exists. Revoking is automatic: [`ExtensionUiHost::deregister`]
+//! purges every live credential for that extension id, so
+//! uninstalling/disabling an extension mid-session invalidates any page
+//! still holding one.
 //!
 //! # Isolation mechanism
 //!
@@ -69,17 +89,52 @@
 //! backend.
 
 use axum::extract::{Path, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::Engine;
 use bastion_extension_protocol::{ExtensionError, PermissionSet};
 use bastion_memory::PrivacyTier;
 use bastion_runtime::capability::{CapabilityRegistry, InvokeCtx};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+fn now_nanos() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as i64
+}
+
+/// How long a minted invoke credential stays valid. Long enough that a
+/// human keeping a tab open doesn't get logged out mid-session; short
+/// enough that a leaked one has a bounded useful window.
+const INVOKE_CREDENTIAL_TTL_NANOS: i64 = 30 * 60 * 1_000_000_000;
+
+/// Header a served bundle presents its invoke credential on.
+const INVOKE_TOKEN_HEADER: &str = "x-bastion-ext-invoke-token";
+
+/// Prefix on a minted invoke credential — visually distinct from other
+/// token families in this codebase (`bcp_` Control Plane credentials,
+/// `bcpr_` retrieval references) so a log line never confuses the three.
+const INVOKE_TOKEN_PREFIX: &str = "extinv_";
+
+/// One minted, per-bundle invoke credential — see the module doc's "Per-
+/// bundle invoke credential" section. Carries no permissions of its own;
+/// [`ExtensionUiHost::invoke`]'s `PermissionSet` check is the only authority
+/// gate. `extension_id` is checked on presentation so a credential minted
+/// while serving extension A's page can never authenticate a call against
+/// extension B, even though B's own `PermissionSet` lookup would already
+/// separately reject an unrelated capability name.
+struct InvokeCredential {
+    extension_id: String,
+    expires_at_nanos: i64,
+}
 
 /// One extension's registered UI bundle: static assets (path, content-type,
 /// bytes) plus the SAME `PermissionSet` its manifest declared — every
@@ -132,6 +187,7 @@ pub struct ExtensionUiHost {
     owner: String,
     privacy_tier: Option<PrivacyTier>,
     extensions: RwLock<HashMap<String, RegisteredUiExtension>>,
+    invoke_credentials: RwLock<HashMap<String, InvokeCredential>>,
 }
 
 impl ExtensionUiHost {
@@ -141,6 +197,7 @@ impl ExtensionUiHost {
             owner,
             privacy_tier: Some(PrivacyTier::CloudOk),
             extensions: RwLock::new(HashMap::new()),
+            invoke_credentials: RwLock::new(HashMap::new()),
         })
     }
 
@@ -148,8 +205,15 @@ impl ExtensionUiHost {
         self.extensions.write().await.insert(extension_id, ui);
     }
 
+    /// Removes the registered bundle AND purges every live invoke credential
+    /// minted for it — an uninstalled/disabled extension's credentials stop
+    /// working immediately, even for a page still holding one from before.
     pub async fn deregister(&self, extension_id: &str) {
         self.extensions.write().await.remove(extension_id);
+        self.invoke_credentials
+            .write()
+            .await
+            .retain(|_, cred| cred.extension_id != extension_id);
     }
 
     async fn asset(&self, extension_id: &str, path: &str) -> Option<(String, Vec<u8>)> {
@@ -159,6 +223,39 @@ impl ExtensionUiHost {
         let extensions = self.extensions.read().await;
         let ext = extensions.get(extension_id)?;
         ext.assets.get(path).cloned()
+    }
+
+    /// Mint a fresh invoke credential for `extension_id`, valid for
+    /// [`INVOKE_CREDENTIAL_TTL_NANOS`]. Called once per HTML asset serve —
+    /// see [`serve_asset`]; every load of the bundle's entry page gets its
+    /// own credential rather than reusing a stale one indefinitely.
+    async fn mint_invoke_credential(&self, extension_id: &str) -> String {
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        let token = format!(
+            "{INVOKE_TOKEN_PREFIX}{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+        );
+        self.invoke_credentials.write().await.insert(
+            token.clone(),
+            InvokeCredential {
+                extension_id: extension_id.to_string(),
+                expires_at_nanos: now_nanos().saturating_add(INVOKE_CREDENTIAL_TTL_NANOS),
+            },
+        );
+        token
+    }
+
+    /// Whether `presented` is a live credential minted for exactly
+    /// `extension_id`. Deliberately does not consume/rotate on a successful
+    /// check — a page issues many `/invoke` calls over its lifetime with the
+    /// same credential, unlike the one-time-use references elsewhere in
+    /// this codebase (`control_plane::routes::PendingIssuedTokens`).
+    async fn check_invoke_credential(&self, extension_id: &str, presented: &str) -> bool {
+        match self.invoke_credentials.read().await.get(presented) {
+            Some(cred) => cred.extension_id == extension_id && now_nanos() <= cred.expires_at_nanos,
+            None => false,
+        }
     }
 
     /// The ONE mediated bridge a served UI may use. Checks the extension's
@@ -226,35 +323,93 @@ fn extension_error_status(e: &ExtensionError) -> StatusCode {
     }
 }
 
-/// `GET /ext-ui/{id}/{*path}` — serves one static asset, isolated.
+/// Insert `<meta name="bastion-invoke-token" content="{token}">` right
+/// after the first `<head>`, or prepend it if the document has none
+/// (browsers tolerate a leading `<meta>` on a head-less fragment). Non-UTF-8
+/// bytes are served unmodified — a binary asset misregistered with an
+/// `text/html` content-type should not panic or corrupt.
+fn inject_invoke_token(bytes: Vec<u8>, token: &str) -> Vec<u8> {
+    let meta = format!("<meta name=\"bastion-invoke-token\" content=\"{token}\">");
+    match String::from_utf8(bytes) {
+        Ok(mut html) => {
+            match html.find("<head>") {
+                Some(pos) => html.insert_str(pos + "<head>".len(), &meta),
+                None => html.insert_str(0, &meta),
+            }
+            html.into_bytes()
+        }
+        Err(e) => e.into_bytes(),
+    }
+}
+
+/// `GET /ext-ui/{id}/{*path}` — serves one static asset, isolated. An HTML
+/// asset also gets a fresh invoke credential injected (see the module doc's
+/// "Per-bundle invoke credential" section) — every other content type is
+/// served byte-for-byte as registered.
 async fn serve_asset(
     State(host): State<Arc<ExtensionUiHost>>,
     Path((id, path)): Path<(String, String)>,
 ) -> impl IntoResponse {
     match host.asset(&id, &path).await {
-        Some((content_type, bytes)) => (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, content_type),
-                (
-                    header::CONTENT_SECURITY_POLICY,
-                    "sandbox allow-scripts; default-src 'self'; frame-ancestors 'self'".to_string(),
-                ),
-                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
-            ],
-            bytes,
-        )
-            .into_response(),
+        Some((content_type, bytes)) => {
+            let bytes = if content_type.starts_with("text/html") {
+                let token = host.mint_invoke_credential(&id).await;
+                inject_invoke_token(bytes, &token)
+            } else {
+                bytes
+            };
+            (
+                StatusCode::OK,
+                [
+                    (header::CONTENT_TYPE, content_type),
+                    (
+                        header::CONTENT_SECURITY_POLICY,
+                        "sandbox allow-scripts; default-src 'self'; frame-ancestors 'self'"
+                            .to_string(),
+                    ),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
 }
 
 /// `POST /ext-ui/{id}/invoke` — the one mediated bridge back to the backend.
+/// Requires a live [`InvokeCredential`] minted for THIS `id` on the
+/// `x-bastion-ext-invoke-token` header — checked here, at the transport
+/// layer, before [`ExtensionUiHost::invoke`] is ever called: same "the gate
+/// lives at the mount site, this module owns the isolation contract" split
+/// the module doc already draws for network reachability vs. authority.
 async fn invoke_handler(
     State(host): State<Arc<ExtensionUiHost>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<InvokeRequest>,
 ) -> impl IntoResponse {
+    let presented = headers
+        .get(INVOKE_TOKEN_HEADER)
+        .and_then(|v| v.to_str().ok());
+    let authorized = match presented {
+        Some(token) => host.check_invoke_credential(&id, token).await,
+        None => false,
+    };
+    if !authorized {
+        tracing::warn!(
+            event = "extension_ui_invoke_missing_or_invalid_credential",
+            extension = %id,
+        );
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "missing or invalid invoke credential".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     match host.invoke(&id, &body.capability, body.args).await {
         Ok(tagged) => (
             StatusCode::OK,
@@ -452,6 +607,94 @@ mod tests {
             .await
             .expect("declared capability must reach the real registry");
         assert_eq!(result.data, serde_json::json!({"echo": {"hello": "world"}}));
+    }
+
+    // ---- invoke credential (extension UI invoke-credential debt) ---------
+
+    #[test]
+    fn inject_invoke_token_inserts_right_after_head() {
+        let html = "<html><head><title>t</title></head><body>hi</body></html>";
+        let out = inject_invoke_token(html.as_bytes().to_vec(), "extinv_abc");
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.starts_with(
+            "<html><head><meta name=\"bastion-invoke-token\" content=\"extinv_abc\">"
+        ));
+        assert!(out.contains("<title>t</title>"));
+    }
+
+    #[test]
+    fn inject_invoke_token_prepends_when_no_head_tag() {
+        let html = "<body>fragment only</body>";
+        let out = inject_invoke_token(html.as_bytes().to_vec(), "extinv_abc");
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.starts_with("<meta name=\"bastion-invoke-token\" content=\"extinv_abc\">"));
+        assert!(out.ends_with("<body>fragment only</body>"));
+    }
+
+    #[test]
+    fn inject_invoke_token_passes_through_non_utf8_bytes_unmodified() {
+        let bytes = vec![0xff, 0xfe, 0x00, 0x01];
+        let out = inject_invoke_token(bytes.clone(), "extinv_abc");
+        assert_eq!(
+            out, bytes,
+            "non-UTF-8 content must be served as-is, never corrupted"
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_invoke_credential_produces_distinct_tokens_with_the_right_prefix() {
+        let host = ExtensionUiHost::new(Arc::new(CapabilityRegistry::new()), "alice".to_string());
+        let a = host.mint_invoke_credential("acme/widget").await;
+        let b = host.mint_invoke_credential("acme/widget").await;
+        assert!(a.starts_with("extinv_"));
+        assert_ne!(a, b, "each mint must produce a fresh, unpredictable token");
+    }
+
+    #[tokio::test]
+    async fn check_invoke_credential_accepts_the_right_extension_and_rejects_others() {
+        let host = ExtensionUiHost::new(Arc::new(CapabilityRegistry::new()), "alice".to_string());
+        let token = host.mint_invoke_credential("acme/widget").await;
+
+        assert!(host.check_invoke_credential("acme/widget", &token).await);
+        assert!(
+            !host.check_invoke_credential("acme/other", &token).await,
+            "a token minted for one extension must not authenticate another"
+        );
+        assert!(
+            !host
+                .check_invoke_credential("acme/widget", "extinv_never-issued")
+                .await,
+            "an unknown token must not authenticate"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expired_invoke_credential_is_rejected() {
+        let host = ExtensionUiHost::new(Arc::new(CapabilityRegistry::new()), "alice".to_string());
+        let token = "extinv_manually-inserted".to_string();
+        host.invoke_credentials.write().await.insert(
+            token.clone(),
+            InvokeCredential {
+                extension_id: "acme/widget".to_string(),
+                expires_at_nanos: now_nanos() - 1,
+            },
+        );
+        assert!(!host.check_invoke_credential("acme/widget", &token).await);
+    }
+
+    #[tokio::test]
+    async fn deregister_purges_that_extensions_invoke_credentials_only() {
+        let host = ExtensionUiHost::new(Arc::new(CapabilityRegistry::new()), "alice".to_string());
+        let token_a = host.mint_invoke_credential("acme/a").await;
+        let token_b = host.mint_invoke_credential("acme/b").await;
+
+        host.deregister("acme/a").await;
+
+        assert!(!host.check_invoke_credential("acme/a", &token_a).await);
+        assert!(
+            host.check_invoke_credential("acme/b", &token_b).await,
+            "deregistering one extension must not touch another's live credentials"
+        );
     }
 
     /// Minimal in-process capability for `invoke_within_declared_permission_set_reaches_the_real_registry`.

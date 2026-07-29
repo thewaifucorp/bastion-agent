@@ -89,6 +89,27 @@ for how that differs from the library crates it depends on).
   instead of a numeric offset for these schedules, since a named zone's
   actual offset varies with DST.
 
+- **Per-bundle invoke credential for the extension-UI surface**
+  (`src/extension/ui.rs`). `GET /ext-ui/{id}/{*path}` now mints a fresh,
+  short-lived credential (`extinv_` prefix, 32 CSPRNG bytes, 30 minute TTL)
+  whenever it serves an HTML asset, injected into the page as `<meta
+  name="bastion-invoke-token" content="...">` right after `<head>`. A served
+  bundle reads that tag and sends it back as `x-bastion-ext-invoke-token` on
+  every `POST /ext-ui/{id}/invoke` call; the route now returns `401` before
+  ever reaching `ExtensionUiHost::invoke` if the header is missing, unknown,
+  expired, or was minted for a DIFFERENT extension id. Closes the gap the
+  module's own doc disclosed: sandboxed script runs in an opaque origin and
+  cannot be handed the operator's daemon token, so `/invoke` previously had
+  no per-request identity check at all beyond the network-level mount gate
+  (`[extension_ui] enabled` + `BASTION_DAEMON_TOKEN`) — anyone who could
+  reach the mounted router could invoke on behalf of the one fixed owner.
+  The credential carries no scope of its own and never widens what
+  `/invoke` may do — `PermissionSet.allows_capability` is unchanged and
+  remains the sole authority gate. `ExtensionUiHost::deregister` now also
+  purges every live credential for that extension id, so
+  uninstalling/disabling mid-session invalidates any page still holding
+  one.
+
 ### Changed
 
 - **`POST /v1/credentials` no longer returns the plaintext token** (breaking
