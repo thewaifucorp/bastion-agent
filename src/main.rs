@@ -2241,16 +2241,62 @@ async fn daemon_loop(
     // both `/auth` dispatch sites below (console stdin + channel inbound)
     // AND `/model <provider_id>/<model_id>[@profile]` (BACOMP-01, wired via
     // `CommandResources::subscription_auth` below) — one instance, four
-    // surfaces. No connector is registered yet: `bastion-providers::codex`
-    // needs this repo's core pin to advance past v0.3.1 first (tracked
-    // separately). Until then the empty registry means `/auth connect`
-    // fails with a clear "unknown provider" and `/model codex/...` falls
-    // through to ordinary `resolve_provider` handling, same as any other
-    // unrecognized prefix — never a silent no-op.
+    // surfaces.
+    //
+    // The Codex/ChatGPT connector (BACOMP-01..05) is the first (and today
+    // only) registered connector: `SqliteCredentialStateStore` persists the
+    // lifecycle's state machine (no secret), `codex_connector::SqliteCodexTokenStore`
+    // persists the raw refresh token + account id (the ONLY table that does
+    // — deliberately separate from the state store, same BAAUTH-01/02
+    // discipline `subscription_auth`'s own module doc requires), and
+    // `CodexConnector` is the thin adapter over `bastion-providers::codex`'s
+    // already-tested device-code/refresh/inference primitives, implementing
+    // both `SubscriptionLoginFlow` and `SubscriptionModelProvider`.
+    let codex_credential_state_store = Arc::new(
+        bastion::provider_credential_state::SqliteCredentialStateStore::new(
+            cfg.session.db_path.clone(),
+        ),
+    );
+    if let Err(e) = codex_credential_state_store.init_schema().await {
+        tracing::error!(event = "codex_credential_state_store_init_failed", error = %e);
+    }
+    let codex_token_store = Arc::new(bastion::codex_connector::SqliteCodexTokenStore::new(
+        cfg.session.db_path.clone(),
+    ));
+    if let Err(e) = codex_token_store.init_schema().await {
+        tracing::error!(event = "codex_token_store_init_failed", error = %e);
+    }
+    let codex_connector = Arc::new(bastion::codex_connector::CodexConnector::new(
+        bastion_providers::codex::CodexConfig::default(),
+        codex_token_store.clone() as Arc<dyn bastion_providers::codex::CodexTokenStore>,
+    ));
+    let codex_refresher = Arc::new(bastion_providers::codex::CodexRefresher::new(
+        bastion_providers::codex::CodexConfig::default(),
+        codex_token_store as Arc<dyn bastion_providers::codex::CodexTokenStore>,
+    ));
+    let codex_lifecycle = Arc::new(
+        bastion_runtime::provider_auth::ProviderCredentialLifecycle::new(
+            codex_credential_state_store,
+            codex_refresher as Arc<dyn bastion_runtime::provider_auth::ProviderCredentialRefresher>,
+            Arc::new(bastion_runtime::provider_auth::SystemClock),
+            Arc::new(bastion_runtime::provider_auth::ExponentialBackoff::new_default()),
+        ),
+    );
+    let mut subscription_connectors = std::collections::HashMap::new();
+    subscription_connectors.insert(
+        bastion_providers::codex::CODEX_PROVIDER_ID.to_string(),
+        bastion::subscription_auth::ConnectorRegistration {
+            flow: codex_connector.clone()
+                as Arc<dyn bastion::subscription_auth::SubscriptionLoginFlow>,
+            lifecycle: codex_lifecycle,
+            provider_factory: codex_connector
+                as Arc<dyn bastion::subscription_auth::SubscriptionModelProvider>,
+        },
+    );
     let subscription_auth_service =
         Arc::new(bastion::subscription_auth::SubscriptionAuthService::new(
             cfg.session.db_path.clone(),
-            std::collections::HashMap::new(),
+            subscription_connectors,
         ));
     if let Err(e) = subscription_auth_service.init_schema().await {
         tracing::error!(event = "subscription_auth_service_init_failed", error = %e);
