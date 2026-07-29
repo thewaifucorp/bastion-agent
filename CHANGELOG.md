@@ -36,7 +36,39 @@ for how that differs from the library crates it depends on).
     regression this closes: a revoked credential is never retried again,
     even across a simulated restart, without ever calling the refresher.
 
+- **`/schedule add daily` honors named IANA timezones (DST-aware)**
+  (`src/adaptive/schedule.rs`, `src/agent/schedule_command.rs`). New syntax
+  `/schedule add daily <HH:MM>@<IANA zone> <intent>` (e.g.
+  `09:00@America/Sao_Paulo`), alongside the existing fixed-offset form.
+  `ScheduleSpec::tz` — persisted since `bastion-agent#16` but never read — is
+  now the dispatch key: `None` is byte-for-byte the original fixed-offset
+  behavior (`next_daily_fire`), `Some(zone)` resolves against that zone's
+  actual DST-aware offset (`next_named_zone_daily_fire`, new dependency
+  `chrono-tz`), with an explicit, documented gap/fold rule instead of a
+  guess: a **gap** day (the wall-clock time does not exist, e.g. a
+  spring-forward jump) is skipped entirely, resuming the next calendar day;
+  a **fold** day (the time occurs twice, e.g. fall-back) fires at the
+  EARLIEST occurrence. An unrecognized zone name is refused at `add` time
+  with a clear error, never silently deferred to the firing loop's
+  degenerate-schedule fallback. `/schedule list` renders the zone name
+  instead of a numeric offset for these schedules, since a named zone's
+  actual offset varies with DST.
+
 ### Changed
+
+- **`POST /v1/credentials` no longer returns the plaintext token** (breaking
+  wire change to this opt-in, off-by-default route). It now returns a
+  one-time-use `retrieval_ref` + `retrieval_expires_at` (5 minutes); redeem
+  the actual token exactly once via the new `POST /v1/credentials/retrieve`,
+  gated by the same operator `BASTION_DAEMON_TOKEN` as issuance. Closes the
+  "Still open" gap `docs/en/control-plane-security.md` disclosed: the
+  plaintext token used to be only as protected as the transport in front of
+  the daemon, with no signed/expiring one-time handoff. Reference
+  construction mirrors the token's own (32 CSPRNG bytes, `bcpr_` prefix,
+  distinct from the token's `bcp_`); an unknown, already-redeemed, or
+  expired reference all return the same `404`. In-memory only
+  (`PendingIssuedTokens`), same discipline as `proposals::PendingSecretValues`
+  — a daemon restart invalidates every outstanding reference.
 
 - **Core pin advances to `bastion-core` `v0.3.1`** (`75d36982f026240dc2d18a1b6ac21df4d7cc2414`,
   all 11 git dependencies in `Cargo.toml`), up from `v0.3.0` (`8164f3c`). Brings
