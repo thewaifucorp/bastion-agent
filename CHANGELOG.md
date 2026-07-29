@@ -10,6 +10,37 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **`/model <provider_id>/<model_id>[@profile]` — subscription-backed
+  providers in the native `AgentLoop`** (BACOMP-01..05, `src/subscription_auth.rs`,
+  `src/agent/command.rs`). Closes the gap between "connect an account"
+  (`/auth connect`) and actually using it for inference: `SubscriptionModelProvider`
+  is the connector-owned counterpart to `SubscriptionLoginFlow` — turns a
+  refreshed `ResolvedProviderCredential` into a real `Provider` — and
+  `SubscriptionAuthService::resolve_provider` refreshes through the SAME
+  lifecycle `/auth connect` already proves works, then hands the connector's
+  factory the model id. `/model` hot-swaps into it exactly like any
+  API-key model (same `Arc<RwLock<Box<dyn Provider>>>` write `/model`
+  already used) — no new session, no restart (BACOMP-04).
+  - `<provider_id>` is checked against the REGISTERED connector map
+    (`SubscriptionAuthService::is_registered`) before being treated as a
+    subscription selection, never guessed from the `/` alone — OpenRouter's
+    own `vendor/model` slugs (`meta-llama/llama-3.3-70b-instruct:free`) are
+    `/`-shaped too and must keep resolving as API-key models exactly as
+    before.
+  - A refresh failure (revoked/expired/reauth-required, or any other typed
+    lifecycle error) propagates and ends the command there — BACOMP-03:
+    this path has no other reference to fall back to.
+  - Still connector-agnostic: `bastion-providers::codex`'s concrete adapter
+    (implementing both `SubscriptionLoginFlow` and `SubscriptionModelProvider`)
+    is not wired into the composition root yet — same external dependency
+    `subscription_auth`'s own module doc already discloses (this repo's
+    `bastion-providers` pin needs to advance past v0.3.1 first). Until then
+    `/model codex/...` falls through to ordinary `resolve_provider` handling
+    like any other unregistered prefix.
+  - 7 new tests: prefix/profile parsing (including the OpenRouter-slug
+    non-collision case), an end-to-end `/model` swap through a fake
+    connector, and an unregistered-prefix fallthrough proof.
+
 - **`SqliteCredentialStateStore`** (`src/provider_credential_state.rs`), the
   host-owned implementation of `bastion_runtime::provider_auth::
   CredentialStateStore` — the port `ProviderCredentialLifecycle` (Core PR #7)

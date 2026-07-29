@@ -38,6 +38,13 @@ pub struct CommandResources {
     /// Applying an update is intentionally unavailable here: this process is
     /// inside the Compose container and cannot safely replace its own host.
     pub updates: Option<crate::update::SharedUpdateState>,
+    /// BACOMP-01: lets `/model <provider_id>/<model_id>[@profile]` resolve a
+    /// subscription-backed provider instead of an API key. `None` in any
+    /// caller that hasn't wired it up (e.g. existing unit tests) — that
+    /// syntax then falls through to `resolve_provider`'s ordinary handling,
+    /// same as before this field existed.
+    pub subscription_auth:
+        Option<std::sync::Arc<crate::subscription_auth::SubscriptionAuthService>>,
 }
 
 /// Persistent, daemon-owned selection used by `/model`. The configured default
@@ -125,6 +132,7 @@ impl bastion_runtime::agent::ports::CommandHandler for CockpitCommandHandler {
             owner,
             self.resources.model_selection.as_ref(),
             &self.resources.auth,
+            self.resources.subscription_auth.as_ref(),
         )
         .await
     }
@@ -145,13 +153,48 @@ fn generate_otc() -> String {
     format!("BAST-{}-{}", g1, g2)
 }
 
+/// BACOMP-01: `<provider_id>/<model_id>[@profile]` selects a subscription-
+/// backed provider (e.g. `codex/gpt-5` or `codex/gpt-5@work`) — parsed only
+/// when `provider_id` names a REGISTERED connector
+/// (`SubscriptionAuthService::is_registered`), never guessed from the
+/// string shape alone: OpenRouter's own `vendor/model` slugs
+/// (`meta-llama/llama-3.3-70b-instruct:free`) already use the same `/`
+/// separator, and must keep resolving as API-key models exactly as before.
+fn parse_subscription_model(model: &str) -> Option<(&str, &str, &str)> {
+    let (provider_id, rest) = model.split_once('/')?;
+    let (model_id, profile_id) = match rest.split_once('@') {
+        Some((m, p)) => (m, p),
+        None => (rest, crate::subscription_auth::DEFAULT_PROFILE_ID),
+    };
+    if provider_id.is_empty() || model_id.is_empty() || profile_id.is_empty() {
+        return None;
+    }
+    Some((provider_id, model_id, profile_id))
+}
+
 async fn switch_model(
     model: &str,
     provider: &SharedProvider,
     model_selection: Option<&ModelSelection>,
     owner: &str,
+    subscription_auth: Option<&std::sync::Arc<crate::subscription_auth::SubscriptionAuthService>>,
 ) -> anyhow::Result<String> {
-    let new_provider = resolve_provider(model)?;
+    let subscription_selection = subscription_auth.zip(parse_subscription_model(model).filter(
+        |(provider_id, _, _)| subscription_auth.is_some_and(|s| s.is_registered(provider_id)),
+    ));
+    // BACOMP-03: a resolution failure (revoked/expired/reauth-required, or
+    // any other typed lifecycle error) propagates via `?` and ends here —
+    // this function never tries a different provider/profile/owner, and
+    // never falls through to `resolve_provider`'s env-var path for the same
+    // model string.
+    let new_provider = match subscription_selection {
+        Some((service, (provider_id, model_id, profile_id))) => {
+            service
+                .resolve_provider(owner, provider_id, profile_id, model_id)
+                .await?
+        }
+        None => resolve_provider(model)?,
+    };
     if let Some(selection) = model_selection {
         let value = model_value_json(model);
         selection
@@ -252,6 +295,7 @@ pub async fn handle_command(
     owner: &str,
     model_selection: Option<&ModelSelection>,
     auth_cfg: &AuthConfig,
+    subscription_auth: Option<&std::sync::Arc<crate::subscription_auth::SubscriptionAuthService>>,
 ) -> anyhow::Result<CommandResult> {
     let trimmed = input.trim();
     let parts: Vec<&str> = trimmed.splitn(2, ' ').collect();
@@ -371,7 +415,8 @@ pub async fn handle_command(
                     )))
                 }
                 Some(model) => Ok(CommandResult::Handled(
-                    switch_model(model, provider, model_selection, owner).await?,
+                    switch_model(model, provider, model_selection, owner, subscription_auth)
+                        .await?,
                 )),
             }
         }
@@ -631,6 +676,159 @@ mod tests {
         ))
     }
 
+    #[test]
+    fn parse_subscription_model_splits_provider_model_and_default_profile() {
+        assert_eq!(
+            parse_subscription_model("codex/gpt-5"),
+            Some((
+                "codex",
+                "gpt-5",
+                crate::subscription_auth::DEFAULT_PROFILE_ID
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_subscription_model_reads_an_explicit_profile() {
+        assert_eq!(
+            parse_subscription_model("codex/gpt-5@work"),
+            Some(("codex", "gpt-5", "work"))
+        );
+    }
+
+    /// The parser alone cannot tell an OpenRouter slug
+    /// (`meta-llama/llama-3.3-70b-instruct:free`) from a subscription
+    /// selection — both are `provider/model` shaped. `switch_model` is what
+    /// tells them apart, by requiring the prefix to be a REGISTERED
+    /// connector (`SubscriptionAuthService::is_registered`) before treating
+    /// it as one; this pins that the parse step itself stays purely
+    /// syntactic, never guessing from the string alone.
+    #[test]
+    fn parse_subscription_model_does_not_special_case_openrouter_slugs() {
+        assert_eq!(
+            parse_subscription_model("meta-llama/llama-3.3-70b-instruct:free"),
+            Some((
+                "meta-llama",
+                "llama-3.3-70b-instruct:free",
+                crate::subscription_auth::DEFAULT_PROFILE_ID
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_subscription_model_rejects_a_bare_model_name() {
+        assert_eq!(parse_subscription_model("gpt-5"), None);
+    }
+
+    #[test]
+    fn parse_subscription_model_rejects_empty_segments() {
+        assert_eq!(parse_subscription_model("/gpt-5"), None);
+        assert_eq!(parse_subscription_model("codex/"), None);
+        assert_eq!(parse_subscription_model("codex/gpt-5@"), None);
+    }
+
+    /// BACOMP-01 end to end through `/model`: a registered connector's
+    /// `provider_id/model_id` swaps the live provider to whatever its
+    /// `SubscriptionModelProvider::build` returns, never touching
+    /// `resolve_provider`'s env-var path.
+    #[tokio::test]
+    async fn model_command_with_a_registered_provider_prefix_builds_via_subscription() {
+        let f = NamedTempFile::new().unwrap();
+        let service = Arc::new(
+            crate::subscription_auth::fakes::service_with(
+                f.path().to_str().unwrap(),
+                "codex",
+                Ok(()),
+            )
+            .await,
+        );
+        service
+            .connect("_local", "codex", "default", "Work")
+            .await
+            .unwrap();
+
+        let registry = make_registry(&["Aria"]);
+        let provider = make_provider();
+        let mem = make_memory(f.path().to_str().unwrap()).await;
+        let mut forced = None;
+        let mut cabinet = None;
+
+        let result = handle_command(
+            "/model codex/gpt-5",
+            &provider,
+            &registry,
+            &mem,
+            &mut forced,
+            &mut cabinet,
+            None,
+            None,
+            "_local",
+            None,
+            &AuthConfig::default(),
+            Some(&service),
+        )
+        .await
+        .expect("cmd");
+
+        match result {
+            CommandResult::Handled(msg) => assert!(msg.contains("codex/gpt-5"), "{msg}"),
+            _ => panic!("expected Handled"),
+        }
+        assert_eq!(provider.read().await.model_name(), "gpt-5");
+        assert_eq!(provider.read().await.name(), "fake");
+    }
+
+    /// An unregistered `provider/model` prefix (nothing named "acme" is ever
+    /// connected here) must NOT go through the subscription path — proven by
+    /// the fake connector never being consulted; if it were, `model_name()`
+    /// would read back "gpt-5" instead of Ollama's own bare-name echo.
+    #[tokio::test]
+    async fn model_command_with_an_unregistered_prefix_falls_through_to_resolve_provider() {
+        let f = NamedTempFile::new().unwrap();
+        let service = Arc::new(
+            crate::subscription_auth::fakes::service_with(
+                f.path().to_str().unwrap(),
+                "codex",
+                Ok(()),
+            )
+            .await,
+        );
+
+        let registry = make_registry(&["Aria"]);
+        let provider = make_provider();
+        let mem = make_memory(f.path().to_str().unwrap()).await;
+        let mut forced = None;
+        let mut cabinet = None;
+
+        // A `/`-free name never matches `parse_subscription_model` at all —
+        // Ollama, since it needs no env var, is the fallback path this test
+        // can assert against without a live key in the test environment.
+        let result = handle_command(
+            "/model llama3",
+            &provider,
+            &registry,
+            &mem,
+            &mut forced,
+            &mut cabinet,
+            None,
+            None,
+            "_local",
+            None,
+            &AuthConfig::default(),
+            Some(&service),
+        )
+        .await
+        .expect("cmd");
+
+        assert!(matches!(result, CommandResult::Handled(_)));
+        assert_eq!(provider.read().await.model_name(), "llama3");
+        assert_ne!(
+            provider.read().await.name(),
+            "fake",
+            "a bare, unregistered model name must never resolve through the subscription path"
+        );
+    }
+
     #[tokio::test]
     async fn contest_revokes_existing_belief() {
         let f = NamedTempFile::new().unwrap();
@@ -670,6 +868,7 @@ mod tests {
             "_local",
             None,
             &AuthConfig::default(),
+            None,
         )
         .await
         .expect("handle_command");
@@ -706,6 +905,7 @@ mod tests {
             "_local",
             None,
             &AuthConfig::default(),
+            None,
         )
         .await
         .expect("cmd");
@@ -738,6 +938,7 @@ mod tests {
             "_local",
             None,
             &AuthConfig::default(),
+            None,
         )
         .await
         .expect("cmd");
@@ -844,6 +1045,7 @@ mod tests {
             "_local",
             None,
             &AuthConfig::default(),
+            None,
         )
         .await
         .expect("cmd");
@@ -887,6 +1089,7 @@ mod tests {
             "_local",
             None,
             &AuthConfig::default(),
+            None,
         )
         .await
         .expect("cmd");
@@ -934,6 +1137,7 @@ mod tests {
             "_local",
             None,
             &AuthConfig::default(),
+            None,
         )
         .await
         .expect("cmd");
@@ -989,6 +1193,7 @@ mod tests {
             "_local",
             None,
             &AuthConfig::default(),
+            None,
         )
         .await
         .expect("cmd");
@@ -1030,6 +1235,7 @@ mod tests {
             "_local",
             None,
             &AuthConfig::default(),
+            None,
         )
         .await
         .expect("cmd");
@@ -1062,6 +1268,7 @@ mod tests {
             "_local",
             None,
             &AuthConfig::default(),
+            None,
         )
         .await
         .expect("cmd");
