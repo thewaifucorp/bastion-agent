@@ -369,22 +369,32 @@ Two of the original gaps were closed by the observability frontend work
 - ~~Issuing a credential requires a shell on the daemon's host~~ — CLOSED,
   opt-in. `POST /v1/credentials` (mounted only when `[control_plane]
   remote_credential_issuance` is set) issues a credential for a named owner,
-  optional project and explicit scopes, returning the plaintext token exactly
-  once. Its authority is the OPERATOR's `BASTION_DAEMON_TOKEN` — the same
-  fail-closed bearer check `/lifecycle/*` uses — and deliberately NOT a
-  Control Plane credential: if a credential could mint credentials, a leaked
-  integration token could widen itself and re-mint after revocation. A valid
-  `x-bastion-token` with every scope is still refused here (tested:
-  `a_control_plane_credential_cannot_mint_credentials`), an unset daemon token
-  refuses everything, and an unknown scope name refuses the whole request
-  rather than issuing with fewer grants than asked for. The response crosses
-  the network, so the config field's documentation requires TLS termination in
-  front of the daemon before enabling it.
+  optional project and explicit scopes. Its authority is the OPERATOR's
+  `BASTION_DAEMON_TOKEN` — the same fail-closed bearer check `/lifecycle/*`
+  uses — and deliberately NOT a Control Plane credential: if a credential
+  could mint credentials, a leaked integration token could widen itself and
+  re-mint after revocation. A valid `x-bastion-token` with every scope is
+  still refused here (tested: `a_control_plane_credential_cannot_mint_credentials`),
+  an unset daemon token refuses everything, and an unknown scope name refuses
+  the whole request rather than issuing with fewer grants than asked for.
 
-Still open:
-- The plaintext token in that response is only as protected as the transport
-  in front of the daemon; there is no signed/expiring one-time retrieval
-  handoff yet.
+- ~~The plaintext token in that response is only as protected as the
+  transport in front of the daemon; there is no signed/expiring one-time
+  retrieval handoff~~ — CLOSED. `POST /v1/credentials` no longer returns the
+  plaintext token at all — it returns a `retrieval_ref` (32 CSPRNG bytes,
+  same construction as the token itself) plus its expiry
+  (`retrieval_expires_at`, 5 minutes). The token is fetched exactly once via
+  `POST /v1/credentials/retrieve`, gated by the SAME operator daemon token as
+  issuance (the reference alone is never sufficient — a reference that leaks
+  somewhere the operator token didn't is still useless). An unknown,
+  already-redeemed, or expired reference all return the same `404` —
+  indistinguishable on the wire, mirroring `get_task`'s "never tell an IDOR
+  probe from a real miss" discipline. In-memory only
+  (`PendingIssuedTokens`, `src/control_plane/routes.rs`) — a daemon restart
+  invalidates every outstanding reference by construction, same as
+  `proposals::PendingSecretValues`. Both response bodies are still worth TLS
+  termination in front of the daemon — narrowing to a short-lived reference
+  reduces exposure, it doesn't replace transport security.
 
 ## Closed since Phase 5
 - **Python SDK** (was: "spec asked for Python second, only TS shipped") —
