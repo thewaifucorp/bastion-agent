@@ -50,8 +50,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bastion_providers::Provider;
 use bastion_runtime::provider_auth::ProviderCredentialLifecycle;
-use bastion_types::provider_auth::{ProviderAuthError, ProviderAuthRef, ProviderAuthState};
+use bastion_types::provider_auth::{
+    ProviderAuthError, ProviderAuthRef, ProviderAuthState, ResolvedProviderCredential,
+};
 use rusqlite::Connection;
 use tokio::task::spawn_blocking;
 
@@ -87,9 +90,32 @@ pub trait SubscriptionLoginFlow: Send + Sync {
         -> Result<(), ProviderAuthError>;
 }
 
-/// One connector's registration: its login flow plus the lifecycle wrapping
-/// its refresher. One [`ProviderCredentialLifecycle`] per connector — the
-/// Core type is constructed with exactly one
+/// The other connector-owned half: turning a resolved credential into an
+/// actual inference [`Provider`] — the BACOMP-01 seam. Kept as its own trait
+/// (rather than a method on [`SubscriptionLoginFlow`]) because building a
+/// provider needs `model_id` and, for connectors whose inference call needs
+/// more than the bearer material `ResolvedProviderCredential` carries (e.g.
+/// Codex's `ChatGPT-Account-Id` header), a fresh read of the connector's own
+/// token storage keyed by the same `reference` — async, so this cannot be a
+/// plain closure field.
+#[async_trait]
+pub trait SubscriptionModelProvider: Send + Sync {
+    /// Build a `Provider` for `model_id`, authenticated with `credential`.
+    /// `reference` is passed through (not just `credential`) so an
+    /// implementation may re-read its OWN connector-specific storage (e.g.
+    /// an account id) keyed the same way — never anything this module's own
+    /// tables carry, which stay secret-free and connector-agnostic.
+    async fn build(
+        &self,
+        reference: &ProviderAuthRef,
+        model_id: &str,
+        credential: ResolvedProviderCredential,
+    ) -> anyhow::Result<Box<dyn Provider>>;
+}
+
+/// One connector's registration: its login flow, the lifecycle wrapping its
+/// refresher, and its provider factory. One [`ProviderCredentialLifecycle`]
+/// per connector — the Core type is constructed with exactly one
 /// [`bastion_runtime::provider_auth::ProviderCredentialRefresher`], so two
 /// connectors sharing a lifecycle instance is not an option; they DO share
 /// the same underlying [`crate::provider_credential_state::SqliteCredentialStateStore`]
@@ -98,6 +124,7 @@ pub trait SubscriptionLoginFlow: Send + Sync {
 pub struct ConnectorRegistration {
     pub flow: Arc<dyn SubscriptionLoginFlow>,
     pub lifecycle: Arc<ProviderCredentialLifecycle>,
+    pub provider_factory: Arc<dyn SubscriptionModelProvider>,
 }
 
 /// One `(owner, provider, profile)` triple as `auth list`/`auth status`
@@ -410,6 +437,49 @@ impl SubscriptionAuthService {
         self.labels.delete(owner_id, provider_id, profile_id).await
     }
 
+    /// Whether `provider_id` names a registered connector — the check
+    /// `/model <provider_id>/<model_id>[@profile]` parsing uses to decide
+    /// whether a `/`-containing model string is a subscription selection
+    /// rather than an ordinary provider-prefixed model id (OpenRouter's
+    /// `vendor/model` slugs, most notably) — never guessed from the string
+    /// shape alone.
+    pub fn is_registered(&self, provider_id: &str) -> bool {
+        self.connectors.contains_key(provider_id)
+    }
+
+    /// BACOMP-01: build a native-loop [`Provider`] authenticated by this
+    /// owner's `(provider_id, profile_id)` subscription. Refreshes through
+    /// the connector's lifecycle first — the SAME call `connect` uses to
+    /// prove a credential works — so a revoked/expired/cooldown credential
+    /// surfaces as the lifecycle's own typed `ProviderAuthError` (mapped to
+    /// `anyhow`) and ends here: BACOMP-03 is satisfied by construction,
+    /// since this method has no other reference to try and returns instead
+    /// of ever selecting a different provider/profile/owner.
+    pub async fn resolve_provider(
+        &self,
+        owner_id: &str,
+        provider_id: &str,
+        profile_id: &str,
+        model_id: &str,
+    ) -> anyhow::Result<Box<dyn Provider>> {
+        let registration = self.connectors.get(provider_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown provider '{provider_id}'. Available: {}",
+                self.available_providers()
+            )
+        })?;
+        let reference = ProviderAuthRef::new(owner_id, provider_id, profile_id);
+        let credential = registration
+            .lifecycle
+            .refresh(&reference)
+            .await
+            .map_err(anyhow::Error::from)?;
+        registration
+            .provider_factory
+            .build(&reference, model_id, credential)
+            .await
+    }
+
     async fn read_one(
         &self,
         owner_id: &str,
@@ -474,6 +544,11 @@ pub(crate) mod fakes {
 
     pub(crate) struct FakeRefresher {
         pub(crate) material: &'static str,
+        /// `Err` makes every `refresh()` call fail with this reason instead
+        /// of resolving a credential — used to test the "refresh itself
+        /// fails" path (BACOMP-03), distinct from `FakeFlow`'s
+        /// `outcome` (which only affects the interactive `connect` flow).
+        pub(crate) refresh_outcome: Result<(), ProviderAuthError>,
     }
 
     #[async_trait]
@@ -482,6 +557,7 @@ pub(crate) mod fakes {
             &self,
             reference: &ProviderAuthRef,
         ) -> Result<ResolvedProviderCredential, ProviderAuthError> {
+            self.refresh_outcome?;
             Ok(ResolvedProviderCredential::new(
                 reference.clone(),
                 CredentialKind::OAuthSubscription,
@@ -494,12 +570,80 @@ pub(crate) mod fakes {
         }
     }
 
+    /// Minimal stand-in `Provider` — never actually called by these tests,
+    /// only returned, so every inference method is deliberately
+    /// `unimplemented!()` (mirrors `agent::command::tests::StubProvider`).
+    struct FakeModelProvider {
+        model: String,
+    }
+
+    #[async_trait]
+    impl Provider for FakeModelProvider {
+        async fn complete(
+            &self,
+            _: &[bastion_types::Message],
+            _: &bastion_types::CallConfig,
+        ) -> anyhow::Result<bastion_types::LlmResponse> {
+            unimplemented!()
+        }
+        async fn complete_simple(&self, _: &str) -> anyhow::Result<String> {
+            unimplemented!()
+        }
+        fn context_limit(&self) -> usize {
+            8192
+        }
+        fn model_name(&self) -> &str {
+            &self.model
+        }
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+    }
+
+    pub(crate) struct FakeProviderFactory;
+
+    #[async_trait]
+    impl SubscriptionModelProvider for FakeProviderFactory {
+        async fn build(
+            &self,
+            _reference: &ProviderAuthRef,
+            model_id: &str,
+            _credential: ResolvedProviderCredential,
+        ) -> anyhow::Result<Box<dyn Provider>> {
+            Ok(Box::new(FakeModelProvider {
+                model: model_id.to_string(),
+            }))
+        }
+    }
+
     /// A service with exactly one registered connector, backed by a real
     /// `SqliteCredentialStateStore` at `db_path` and a scripted flow outcome.
+    /// The refresher itself always succeeds — use
+    /// [`service_with_failing_refresh`] to script a refresh failure instead.
     pub(crate) async fn service_with(
         db_path: &str,
         provider_id: &str,
         flow_outcome: Result<(), ProviderAuthError>,
+    ) -> SubscriptionAuthService {
+        service_with_refresh_outcome(db_path, provider_id, flow_outcome, Ok(())).await
+    }
+
+    /// Like [`service_with`], but the connector's `ProviderCredentialRefresher`
+    /// itself fails every call with `refresh_outcome`'s reason — for testing
+    /// `resolve_provider`'s BACOMP-03 path, where `connect`'s flow never runs.
+    pub(crate) async fn service_with_failing_refresh(
+        db_path: &str,
+        provider_id: &str,
+        refresh_outcome: ProviderAuthError,
+    ) -> SubscriptionAuthService {
+        service_with_refresh_outcome(db_path, provider_id, Ok(()), Err(refresh_outcome)).await
+    }
+
+    async fn service_with_refresh_outcome(
+        db_path: &str,
+        provider_id: &str,
+        flow_outcome: Result<(), ProviderAuthError>,
+        refresh_outcome: Result<(), ProviderAuthError>,
     ) -> SubscriptionAuthService {
         let store =
             Arc::new(crate::provider_credential_state::SqliteCredentialStateStore::new(db_path));
@@ -508,6 +652,7 @@ pub(crate) mod fakes {
             store,
             Arc::new(FakeRefresher {
                 material: "CANARY-do-not-leak",
+                refresh_outcome,
             }),
             Arc::new(SystemClock),
             Arc::new(ExponentialBackoff::new_default()),
@@ -519,7 +664,11 @@ pub(crate) mod fakes {
         let mut connectors = HashMap::new();
         connectors.insert(
             provider_id.to_string(),
-            ConnectorRegistration { flow, lifecycle },
+            ConnectorRegistration {
+                flow,
+                lifecycle,
+                provider_factory: Arc::new(FakeProviderFactory),
+            },
         );
         let service = SubscriptionAuthService::new(db_path, connectors);
         service.init_schema().await.unwrap();
@@ -584,6 +733,75 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("unknown provider"));
+    }
+
+    #[tokio::test]
+    async fn is_registered_reflects_the_connector_map() {
+        let f = NamedTempFile::new().unwrap();
+        let service = service_with(f.path().to_str().unwrap(), "codex", Ok(())).await;
+        assert!(service.is_registered("codex"));
+        assert!(!service.is_registered("copilot"));
+    }
+
+    /// BACOMP-01: resolve_provider refreshes first (proving the credential
+    /// works, same as connect) and hands the connector's factory the exact
+    /// model id requested.
+    #[tokio::test]
+    async fn resolve_provider_builds_a_provider_for_the_requested_model() {
+        let f = NamedTempFile::new().unwrap();
+        let service = service_with(f.path().to_str().unwrap(), "codex", Ok(())).await;
+        service
+            .connect("alice", "codex", "work", "Work")
+            .await
+            .unwrap();
+
+        let provider = service
+            .resolve_provider("alice", "codex", "work", "gpt-5")
+            .await
+            .unwrap();
+        assert_eq!(provider.model_name(), "gpt-5");
+        assert_eq!(provider.name(), "fake");
+    }
+
+    /// BACOMP-03: a credential that cannot refresh (revoked/expired/reauth)
+    /// ends here with a typed error — resolve_provider never falls back to
+    /// a different reference.
+    #[tokio::test]
+    async fn resolve_provider_surfaces_a_refresh_failure_instead_of_building_anything() {
+        use super::fakes::service_with_failing_refresh;
+
+        let f = NamedTempFile::new().unwrap();
+        let service = service_with_failing_refresh(
+            f.path().to_str().unwrap(),
+            "codex",
+            ProviderAuthError::ReauthRequired,
+        )
+        .await;
+
+        // `Box<dyn Provider>` has no `Debug`, so `unwrap_err()` (which
+        // requires it) doesn't apply — match explicitly instead.
+        match service
+            .resolve_provider("alice", "codex", "default", "gpt-5")
+            .await
+        {
+            Err(err) => assert!(err.to_string().contains("re-authentication")),
+            Ok(_) => panic!("a refresh failure must not build a provider"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_provider_on_an_unregistered_provider_fails_clearly() {
+        let f = NamedTempFile::new().unwrap();
+        let service = SubscriptionAuthService::new(f.path().to_str().unwrap(), HashMap::new());
+        service.init_schema().await.unwrap();
+
+        match service
+            .resolve_provider("alice", "codex", "default", "gpt-5")
+            .await
+        {
+            Err(err) => assert!(err.to_string().contains("unknown provider")),
+            Ok(_) => panic!("an unregistered provider must not build anything"),
+        }
     }
 
     #[tokio::test]

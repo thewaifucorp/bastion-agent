@@ -2238,12 +2238,15 @@ async fn daemon_loop(
     // `SubscriptionAuthService` instance, shared via `Arc` with the CLI
     // one-shot `bastion auth ...` path (constructed separately there — a
     // fresh process per invocation, not a second live instance) and with
-    // both `/auth` dispatch sites below (console stdin + channel inbound),
-    // exactly the "one implementation, N surfaces" shape `schedule_store`
-    // already establishes for `/schedule`. No connector is registered yet —
-    // see `subscription_auth`'s module doc for why that's a real external
-    // dependency (an unmerged bastion-core PR), not a placeholder left here
-    // by oversight.
+    // both `/auth` dispatch sites below (console stdin + channel inbound)
+    // AND `/model <provider_id>/<model_id>[@profile]` (BACOMP-01, wired via
+    // `CommandResources::subscription_auth` below) — one instance, four
+    // surfaces. No connector is registered yet: `bastion-providers::codex`
+    // needs this repo's core pin to advance past v0.3.1 first (tracked
+    // separately). Until then the empty registry means `/auth connect`
+    // fails with a clear "unknown provider" and `/model codex/...` falls
+    // through to ordinary `resolve_provider` handling, same as any other
+    // unrecognized prefix — never a silent no-op.
     let subscription_auth_service =
         Arc::new(bastion::subscription_auth::SubscriptionAuthService::new(
             cfg.session.db_path.clone(),
@@ -2252,6 +2255,7 @@ async fn daemon_loop(
     if let Err(e) = subscription_auth_service.init_schema().await {
         tracing::error!(event = "subscription_auth_service_init_failed", error = %e);
     }
+    command_resources.subscription_auth = Some(subscription_auth_service.clone());
 
     // US-205: durable personal scheduler. Fires arbitrary authorized intents
     // (one-shot/recurring) through the SAME mode selection an interactive
