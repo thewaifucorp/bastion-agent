@@ -15,9 +15,10 @@ use std::collections::BTreeSet;
 
 use bastion::control_plane::dto::{
     AttemptListResponse, AttemptSummaryDto, BudgetSummaryDto, CreateTaskBoundsDto,
-    CreateTaskRequest, CredentialIssueRequest, CredentialIssueResponse, ErrorEnvelope,
-    StopReasonDto, TaskEventEnvelope, TaskListResponse, TaskMode, TaskResource, TaskStatusDto,
-    WebhookSubscriptionListResponse, WebhookSubscriptionRequest, WebhookSubscriptionResource,
+    CreateTaskRequest, CredentialIssueRequest, CredentialIssueResponse, CredentialRetrieveRequest,
+    CredentialRetrieveResponse, ErrorEnvelope, StopReasonDto, TaskEventEnvelope, TaskListResponse,
+    TaskMode, TaskResource, TaskStatusDto, WebhookSubscriptionListResponse,
+    WebhookSubscriptionRequest, WebhookSubscriptionResource,
 };
 use serde_json::Value;
 
@@ -274,7 +275,8 @@ fn credential_issue_response_matches_fixture_and_omits_an_absent_project() {
         project: None,
         scopes: vec!["tasks:read".into()],
         label: "paperclip".into(),
-        token: "bcp_shown-once".into(),
+        retrieval_ref: "bcpr_shown-once".into(),
+        retrieval_expires_at: 1,
     };
     let keys = serialized_keys(&sample);
     assert_serialized_keys_are_declared("CredentialIssueResponse", &keys);
@@ -285,6 +287,30 @@ fn credential_issue_response_matches_fixture_and_omits_an_absent_project() {
         json.as_object().unwrap().get("project").is_none(),
         "project must be omitted entirely when none was requested, not null"
     );
+    assert!(
+        json.as_object().unwrap().get("token").is_none(),
+        "the plaintext token must never appear on the issue response"
+    );
+}
+
+#[test]
+fn credential_retrieve_request_matches_fixture() {
+    let sample = CredentialRetrieveRequest {
+        retrieval_ref: "bcpr_abc123".into(),
+    };
+    let keys = serialized_keys(&sample);
+    assert_serialized_keys_are_declared("CredentialRetrieveRequest", &keys);
+    assert_required_are_present("CredentialRetrieveRequest", &keys);
+}
+
+#[test]
+fn credential_retrieve_response_matches_fixture() {
+    let sample = CredentialRetrieveResponse {
+        token: "bcp_shown-once".into(),
+    };
+    let keys = serialized_keys(&sample);
+    assert_serialized_keys_are_declared("CredentialRetrieveResponse", &keys);
+    assert_required_are_present("CredentialRetrieveResponse", &keys);
 }
 
 #[test]

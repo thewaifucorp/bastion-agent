@@ -21,15 +21,24 @@
 //! ## Timezone
 //! `OneShot`/`Every` are pure durations, so a timezone cannot change when they
 //! fire — there is no wall-clock anchor to shift. [`ScheduleKind::DailyAt`]
-//! adds that anchor: an hour/minute in a FIXED UTC offset, resolved through
-//! `chrono::FixedOffset` (already a dependency).
+//! adds that anchor: an hour/minute resolved either against a FIXED UTC
+//! offset (`offset_minutes`, `chrono::FixedOffset`) or, when
+//! [`ScheduleSpec::tz`] names an IANA zone, against that zone's actual
+//! (DST-aware) offset via `chrono-tz` — [`next_daily_slot`] is the dispatch
+//! point, [`next_daily_fire`] and [`next_named_zone_daily_fire`] the two
+//! implementations. `tz: None` is byte-for-byte the original fixed-offset
+//! behavior; nothing about an existing row changes.
 //!
-//! What a fixed offset deliberately does NOT cover: a named IANA zone whose
-//! offset changes across a DST boundary, where "every day at 09:00 in
-//! Sao_Paulo" is not a constant offset from UTC. Honoring
-//! [`ScheduleSpec::tz`] that way needs a tz database (`chrono-tz`), which is
-//! not a dependency here; until it is, `tz` stays persisted-but-unread and a
-//! caller that needs local time states the offset it means.
+//! A fixed offset has no gap/overlap, so it never has to decide what "02:30
+//! on a spring-forward day" means. A named zone does, twice a year in most
+//! zones that observe DST, and the rule is explicit rather than guessed
+//! inside the loop:
+//! - **Gap** (the wall-clock time does not exist that day, e.g. 02:30 on a
+//!   spring-forward day that jumps 02:00→03:00): skip that calendar day
+//!   entirely and resume at the same wall-clock time the next day — the
+//!   common "daily reminder" semantics, never a surprising same-day shift.
+//! - **Fold** (the wall-clock time occurs twice, e.g. a fall-back day):
+//!   fire at the FIRST (earliest) occurrence.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -57,20 +66,22 @@ pub enum ScheduleKind {
     OneShot { at_nanos: i64 },
     /// Fire every `interval_secs` seconds, indefinitely (until revoked).
     Every { interval_secs: u64 },
-    /// Fire every day at `hour`:`minute` wall-clock in a fixed UTC offset
-    /// (`offset_minutes`, e.g. `-180` for UTC-03:00), indefinitely.
+    /// Fire every day at `hour`:`minute` wall-clock, indefinitely.
     ///
     /// Unlike `Every`, the slot is anchored to a wall clock: an interval-based
     /// daily schedule drifts the moment the daemon is down across a fire, and
-    /// can never mean "09:00 local" in the first place. The offset is FIXED —
-    /// see the module doc for why a DST-aware named zone is not covered.
+    /// can never mean "09:00 local" in the first place. `offset_minutes` is
+    /// the FIXED-offset anchor, used when [`ScheduleSpec::tz`] is `None`; a
+    /// named IANA zone (DST-aware) is used instead when `tz` is `Some` — see
+    /// the module doc's "Timezone" section and [`next_daily_slot`].
     DailyAt {
         /// 0..=23. Out-of-range values make the schedule degenerate (no next
         /// fire) rather than panic — same discipline as a zero `interval_secs`.
         hour: u32,
         /// 0..=59, same out-of-range rule.
         minute: u32,
-        /// Offset east of UTC in minutes, `-1439..=1439`.
+        /// Offset east of UTC in minutes, `-1439..=1439`. Ignored when
+        /// [`ScheduleSpec::tz`] is `Some` — the named zone is the anchor then.
         offset_minutes: i32,
     },
 }
@@ -102,8 +113,12 @@ pub struct ScheduleSpec {
     pub kind: ScheduleKind,
     /// Missed-run policy (see [`MissedPolicy`]).
     pub missed: MissedPolicy,
-    /// Optional IANA timezone name. Persisted but not yet honored — fire
-    /// times are computed in nanos-since-epoch (tz-aware expansion is a TODO).
+    /// Optional IANA timezone name (e.g. `America/Sao_Paulo`). Only
+    /// consulted for [`ScheduleKind::DailyAt`] — `OneShot`/`Every` are pure
+    /// durations with no wall-clock anchor to shift. `None` uses
+    /// `DailyAt::offset_minutes` (a fixed UTC offset) unchanged; `Some` with
+    /// a name `chrono_tz::Tz` cannot parse is treated as unrepresentable —
+    /// see the module doc's "Timezone" section for the gap/fold rule.
     pub tz: Option<String>,
     /// The next wall-clock instant (nanos-since-epoch) this schedule is due.
     pub next_fire_nanos: i64,
@@ -118,8 +133,13 @@ pub struct ScheduleSpec {
 /// `OneShot` never has a next fire (the caller revokes after it fires);
 /// `Every { interval_secs }` advances one interval past `fired_at_nanos`. A
 /// zero (or overflowing) interval degenerates to `None` so a mis-specified
-/// schedule cannot spin the firing loop.
-pub fn compute_next_fire(kind: &ScheduleKind, fired_at_nanos: i64) -> Option<i64> {
+/// schedule cannot spin the firing loop. `tz` is only consulted for
+/// `DailyAt` — see [`next_daily_slot`].
+pub fn compute_next_fire(
+    kind: &ScheduleKind,
+    tz: Option<&str>,
+    fired_at_nanos: i64,
+) -> Option<i64> {
     match kind {
         ScheduleKind::OneShot { .. } => None,
         ScheduleKind::Every { interval_secs } => {
@@ -134,7 +154,30 @@ pub fn compute_next_fire(kind: &ScheduleKind, fired_at_nanos: i64) -> Option<i64
             hour,
             minute,
             offset_minutes,
-        } => next_daily_fire(*hour, *minute, *offset_minutes, fired_at_nanos),
+        } => next_daily_slot(*hour, *minute, *offset_minutes, tz, fired_at_nanos),
+    }
+}
+
+/// Dispatch point for a `DailyAt` slot (US-205 timezone follow-up): `tz:
+/// None` is byte-for-byte [`next_daily_fire`]'s fixed-offset behavior; `tz:
+/// Some(name)` resolves against that IANA zone's actual DST-aware offset via
+/// [`next_named_zone_daily_fire`], falling through to the SAME `None` a
+/// caller already treats as "unrepresentable, degenerate the schedule" when
+/// `name` does not parse as a `chrono_tz::Tz` — never silently reinterpreted
+/// as "no timezone."
+pub fn next_daily_slot(
+    hour: u32,
+    minute: u32,
+    offset_minutes: i32,
+    tz: Option<&str>,
+    after_nanos: i64,
+) -> Option<i64> {
+    match tz {
+        Some(name) => {
+            let zone: chrono_tz::Tz = name.parse().ok()?;
+            next_named_zone_daily_fire(hour, minute, zone, after_nanos)
+        }
+        None => next_daily_fire(hour, minute, offset_minutes, after_nanos),
     }
 }
 
@@ -162,9 +205,8 @@ pub fn next_daily_fire(
 
     // Today's slot if it is still ahead, otherwise tomorrow's. A fixed offset
     // has no gap/overlap, so `single()` always resolves — unlike a DST-aware
-    // zone, where this same loop would have to decide what "02:30 on a spring
-    // forward day" means. That decision is part of what the chrono-tz work
-    // owes; it is not silently guessed here.
+    // zone (see `next_named_zone_daily_fire`), where this same loop has to
+    // decide what "02:30 on a spring forward day" means.
     for day_offset in [0_i64, 1] {
         let date = (local + Duration::days(day_offset)).date_naive();
         let candidate = offset
@@ -172,6 +214,53 @@ pub fn next_daily_fire(
             .single()?;
         if candidate > local {
             return candidate.timestamp_nanos_opt();
+        }
+    }
+    None
+}
+
+/// The first instant strictly after `after_nanos` whose wall-clock time in
+/// the named IANA `tz` is `hour`:`minute`:00 (US-205 timezone follow-up),
+/// honoring DST transitions instead of a fixed offset.
+///
+/// The gap/fold rule (module doc's "Timezone" section, explicit — never
+/// guessed here): a **gap** day (the local time does not exist, e.g. a
+/// spring-forward jump) is skipped entirely, resuming the next calendar day;
+/// a **fold** day (the local time occurs twice, e.g. a fall-back) fires at
+/// the EARLIEST of the two instants. Looks up to 3 calendar days ahead —
+/// generous headroom past a single DST transition without risking an
+/// unbounded scan on a pathological zone; returns `None` (never a panic or a
+/// spin) if nothing resolves in that window, treated as a degenerate
+/// schedule by every caller, same as an unrepresentable fixed-offset slot.
+pub fn next_named_zone_daily_fire(
+    hour: u32,
+    minute: u32,
+    tz: chrono_tz::Tz,
+    after_nanos: i64,
+) -> Option<i64> {
+    use chrono::{DateTime, Duration, LocalResult, NaiveTime, TimeZone, Utc};
+
+    let target = NaiveTime::from_hms_opt(hour, minute, 0)?;
+    let secs = after_nanos.div_euclid(1_000_000_000);
+    let nsecs = after_nanos.rem_euclid(1_000_000_000) as u32;
+    let after: DateTime<Utc> = DateTime::from_timestamp(secs, nsecs)?;
+    let local = after.with_timezone(&tz);
+
+    for day_offset in 0_i64..3 {
+        let date = (local + Duration::days(day_offset)).date_naive();
+        let candidate = match tz.from_local_datetime(&date.and_time(target)) {
+            LocalResult::Single(dt) => Some(dt),
+            // Fold: the slot occurs twice this day (fall-back) — fire at the
+            // earliest of the two, never the latest or both.
+            LocalResult::Ambiguous(earliest, _latest) => Some(earliest),
+            // Gap: the slot does not exist this day (spring-forward) — skip
+            // to the next calendar day rather than guess a shifted instant.
+            LocalResult::None => None,
+        };
+        if let Some(dt) = candidate {
+            if dt > local {
+                return dt.with_timezone(&Utc).timestamp_nanos_opt();
+            }
         }
     }
     None
@@ -203,6 +292,7 @@ pub struct FirePlan {
 ///   - **`CatchUpBounded { max }`** — fire `min(missed_slots, max)` times.
 pub fn plan_fire(
     kind: &ScheduleKind,
+    tz: Option<&str>,
     missed: &MissedPolicy,
     next_fire_nanos: i64,
     now: i64,
@@ -246,7 +336,7 @@ pub fn plan_fire(
             minute,
             offset_minutes,
         } => {
-            let next = next_daily_fire(*hour, *minute, *offset_minutes, now);
+            let next = next_daily_slot(*hour, *minute, *offset_minutes, tz, now);
             match next {
                 // A daily slot cannot be "caught up" the way an interval can:
                 // there is at most one occurrence per day, and firing N times
@@ -551,7 +641,13 @@ where
             }
         };
         for spec in due {
-            let plan = plan_fire(&spec.kind, &spec.missed, spec.next_fire_nanos, now);
+            let plan = plan_fire(
+                &spec.kind,
+                spec.tz.as_deref(),
+                &spec.missed,
+                spec.next_fire_nanos,
+                now,
+            );
             for _ in 0..plan.fire_count {
                 on_fire(spec.clone()).await;
             }
@@ -660,16 +756,16 @@ mod tests {
     #[test]
     fn compute_next_fire_semantics() {
         assert_eq!(
-            compute_next_fire(&ScheduleKind::OneShot { at_nanos: 5 }, 5),
+            compute_next_fire(&ScheduleKind::OneShot { at_nanos: 5 }, None, 5),
             None
         );
         assert_eq!(
-            compute_next_fire(&ScheduleKind::Every { interval_secs: 2 }, 1_000),
+            compute_next_fire(&ScheduleKind::Every { interval_secs: 2 }, None, 1_000),
             Some(1_000 + 2 * 1_000_000_000)
         );
         // Degenerate zero interval collapses to one-shot (no next).
         assert_eq!(
-            compute_next_fire(&ScheduleKind::Every { interval_secs: 0 }, 1_000),
+            compute_next_fire(&ScheduleKind::Every { interval_secs: 0 }, None, 1_000),
             None
         );
     }
@@ -678,6 +774,7 @@ mod tests {
     fn plan_fire_one_shot_revokes() {
         let plan = plan_fire(
             &ScheduleKind::OneShot { at_nanos: 100 },
+            None,
             &MissedPolicy::Skip,
             100,
             200,
@@ -698,20 +795,26 @@ mod tests {
         // next_fire = 0, now = 5s => 6 slots due (0..=5s), overdue by >1 interval.
         let now = 5 * sec;
 
-        let skip = plan_fire(&kind, &MissedPolicy::Skip, 0, now);
+        let skip = plan_fire(&kind, None, &MissedPolicy::Skip, 0, now);
         assert_eq!(skip.fire_count, 0, "Skip drops an overdue backlog");
         assert_eq!(skip.next_fire_nanos, Some(6 * sec));
 
-        let once = plan_fire(&kind, &MissedPolicy::RunOnce, 0, now);
+        let once = plan_fire(&kind, None, &MissedPolicy::RunOnce, 0, now);
         assert_eq!(once.fire_count, 1, "RunOnce collapses backlog to one fire");
         assert_eq!(once.next_fire_nanos, Some(6 * sec));
 
-        let bounded = plan_fire(&kind, &MissedPolicy::CatchUpBounded { max: 3 }, 0, now);
+        let bounded = plan_fire(
+            &kind,
+            None,
+            &MissedPolicy::CatchUpBounded { max: 3 },
+            0,
+            now,
+        );
         assert_eq!(bounded.fire_count, 3, "CatchUpBounded caps at max");
         assert_eq!(bounded.next_fire_nanos, Some(6 * sec));
 
         // On-time (exactly one slot due): every policy fires once.
-        let on_time = plan_fire(&kind, &MissedPolicy::Skip, 0, sec / 2);
+        let on_time = plan_fire(&kind, None, &MissedPolicy::Skip, 0, sec / 2);
         assert_eq!(on_time.fire_count, 1);
         assert_eq!(on_time.next_fire_nanos, Some(sec));
     }
@@ -785,7 +888,7 @@ mod tests {
             offset_minutes: 0,
         };
         assert_eq!(
-            compute_next_fire(&kind, utc_nanos(1, 9, 0)),
+            compute_next_fire(&kind, None, utc_nanos(1, 9, 0)),
             Some(utc_nanos(2, 9, 0))
         );
     }
@@ -807,19 +910,25 @@ mod tests {
             MissedPolicy::RunOnce,
             MissedPolicy::CatchUpBounded { max: 10 },
         ] {
-            let plan = plan_fire(&kind, &missed, due, due + 60 * 1_000_000_000);
+            let plan = plan_fire(&kind, None, &missed, due, due + 60 * 1_000_000_000);
             assert_eq!(plan.fire_count, 1, "{missed:?}");
             assert_eq!(plan.next_fire_nanos, Some(utc_nanos(2, 9, 0)));
         }
 
         // Three days late: bounded catch-up still fires once, not three times.
         let late = utc_nanos(4, 10, 0);
-        let bounded = plan_fire(&kind, &MissedPolicy::CatchUpBounded { max: 10 }, due, late);
+        let bounded = plan_fire(
+            &kind,
+            None,
+            &MissedPolicy::CatchUpBounded { max: 10 },
+            due,
+            late,
+        );
         assert_eq!(bounded.fire_count, 1);
         assert_eq!(bounded.next_fire_nanos, Some(utc_nanos(5, 9, 0)));
 
         // ...and Skip drops the stale slot entirely, while still realigning.
-        let skipped = plan_fire(&kind, &MissedPolicy::Skip, due, late);
+        let skipped = plan_fire(&kind, None, &MissedPolicy::Skip, due, late);
         assert_eq!(skipped.fire_count, 0);
         assert_eq!(skipped.next_fire_nanos, Some(utc_nanos(5, 9, 0)));
     }
@@ -831,12 +940,128 @@ mod tests {
             minute: 0,
             offset_minutes: 0,
         };
-        let plan = plan_fire(&kind, &MissedPolicy::Skip, DAY_ONE, DAY_ONE + 1);
+        let plan = plan_fire(&kind, None, &MissedPolicy::Skip, DAY_ONE, DAY_ONE + 1);
         assert_eq!(plan.fire_count, 1);
         assert_eq!(
             plan.next_fire_nanos, None,
             "an unresolvable schedule must be revoked, never left to spin"
         );
+    }
+
+    // ---- named-zone DailyAt (chrono-tz, DST gap/fold) --------------------
+
+    fn zoned_nanos(tz: chrono_tz::Tz, y: i32, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
+        use chrono::TimeZone;
+        tz.with_ymd_and_hms(y, mo, d, h, mi, 0)
+            .single()
+            .expect("unambiguous test fixture instant")
+            .with_timezone(&chrono::Utc)
+            .timestamp_nanos_opt()
+            .unwrap()
+    }
+
+    /// America/New_York, 2024-03-10: clocks jump 02:00 -> 03:00, so 02:30
+    /// local does not exist that day (a gap). The gap day must be skipped
+    /// entirely, never shifted to a nearby instant.
+    #[test]
+    fn named_zone_daily_fire_skips_a_spring_forward_gap_day() {
+        let tz: chrono_tz::Tz = "America/New_York".parse().unwrap();
+        let after = zoned_nanos(tz, 2024, 3, 9, 12, 0);
+        let next = next_named_zone_daily_fire(2, 30, tz, after).unwrap();
+        let expected = zoned_nanos(tz, 2024, 3, 11, 2, 30);
+        assert_eq!(
+            next, expected,
+            "the gap day (03-10) must be skipped, not shifted"
+        );
+    }
+
+    /// America/New_York, 2024-11-03: clocks fall back 02:00 -> 01:00, so
+    /// 01:30 local occurs twice (a fold). Must fire at the EARLIEST of the
+    /// two, never the latest and never both.
+    #[test]
+    fn named_zone_daily_fire_uses_the_earliest_occurrence_on_a_fall_back_fold_day() {
+        use chrono::{LocalResult, TimeZone};
+
+        let tz: chrono_tz::Tz = "America/New_York".parse().unwrap();
+        let after = zoned_nanos(tz, 2024, 11, 2, 12, 0);
+        let next = next_named_zone_daily_fire(1, 30, tz, after).unwrap();
+
+        let naive = chrono::NaiveDate::from_ymd_opt(2024, 11, 3)
+            .unwrap()
+            .and_hms_opt(1, 30, 0)
+            .unwrap();
+        let (earliest, latest) = match tz.from_local_datetime(&naive) {
+            LocalResult::Ambiguous(e, l) => (e, l),
+            other => panic!("expected an ambiguous fold in the test fixture, got {other:?}"),
+        };
+        assert_ne!(
+            earliest, latest,
+            "sanity check: the fixture really is a fold"
+        );
+        assert_eq!(
+            next,
+            earliest
+                .with_timezone(&chrono::Utc)
+                .timestamp_nanos_opt()
+                .unwrap(),
+            "must fire at the EARLIEST of the two fold occurrences"
+        );
+    }
+
+    /// The whole point of a named zone over a fixed offset: the SAME
+    /// declared local time resolves to a different UTC offset before vs.
+    /// after a DST transition.
+    #[test]
+    fn named_zone_daily_fire_honors_the_zones_actual_dst_offset_on_each_side() {
+        let tz: chrono_tz::Tz = "America/New_York".parse().unwrap();
+        let before_dst = zoned_nanos(tz, 2024, 3, 1, 9, 0); // EST, UTC-5
+        let after_dst = zoned_nanos(tz, 2024, 4, 1, 9, 0); // EDT, UTC-4
+        let day_nanos = 24 * 60 * 60 * 1_000_000_000_i64;
+        assert_ne!(
+            (after_dst - before_dst) % day_nanos,
+            0,
+            "the UTC gap between two same-local-time instants must shift by the DST hour"
+        );
+    }
+
+    #[test]
+    fn next_daily_slot_falls_back_to_fixed_offset_when_tz_is_none() {
+        let after = utc_nanos(1, 6, 0);
+        assert_eq!(
+            next_daily_slot(9, 0, 0, None, after),
+            next_daily_fire(9, 0, 0, after)
+        );
+    }
+
+    #[test]
+    fn next_daily_slot_treats_an_invalid_zone_name_as_unrepresentable() {
+        assert_eq!(
+            next_daily_slot(9, 0, 0, Some("not/a/real/zone"), DAY_ONE),
+            None,
+            "an unparseable zone name must degenerate the schedule, never silently \
+             fall back to the fixed offset"
+        );
+    }
+
+    #[test]
+    fn compute_next_fire_and_plan_fire_honor_a_named_zone() {
+        let tz_name = "America/New_York";
+        let tz: chrono_tz::Tz = tz_name.parse().unwrap();
+        let kind = ScheduleKind::DailyAt {
+            hour: 9,
+            minute: 0,
+            offset_minutes: 0,
+        };
+        let after = zoned_nanos(tz, 2024, 3, 1, 6, 0);
+        let expected = zoned_nanos(tz, 2024, 3, 1, 9, 0);
+
+        assert_eq!(
+            compute_next_fire(&kind, Some(tz_name), after),
+            Some(expected)
+        );
+
+        let plan = plan_fire(&kind, Some(tz_name), &MissedPolicy::Skip, after, after + 1);
+        assert_eq!(plan.next_fire_nanos, Some(expected));
     }
 
     #[test]

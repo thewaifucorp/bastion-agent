@@ -62,7 +62,8 @@ adaptive path:
 /schedule                                    # list your schedules
 /schedule add every <secs> <intent>          # recurring, by duration
 /schedule add once  <secs> <intent>          # one-shot, by duration
-/schedule add daily <HH:MM[±HH:MM]> <intent> # recurring, by wall clock
+/schedule add daily <HH:MM[±HH:MM]> <intent> # recurring, by wall clock (fixed offset)
+/schedule add daily <HH:MM>@<IANA zone> <intent> # recurring, by wall clock (DST-aware)
 /schedule cancel <id>                        # cancel (alias: revoke)
 ```
 
@@ -70,12 +71,14 @@ Schedules survive restart. A fired schedule routes through mode selection like
 console input.
 
 `every`/`once` are pure durations, so no timezone applies to them. `daily`
-is anchored to a wall clock, and its offset is explicit or it is UTC:
-`09:00` and `09:00Z` both mean 09:00 UTC, `09:00-03:00` means 09:00 at
-UTC-03:00. A bare time is never interpreted in the daemon host's local zone —
-that offset is invisible to whoever typed the command, and can differ between
-the console and a channel, so the same input would otherwise mean different
-instants on different deployments.
+is anchored to a wall clock, either a fixed offset or a named IANA zone:
+`09:00` and `09:00Z` both mean 09:00 UTC, `09:00-03:00` means 09:00 at a
+fixed UTC-03:00, and `09:00@America/Sao_Paulo` means 09:00 in that zone's
+actual (DST-aware) offset, whatever it is on a given day. A bare time is
+never interpreted in the daemon host's local zone — that offset is invisible
+to whoever typed the command, and can differ between the console and a
+channel, so the same input would otherwise mean different instants on
+different deployments.
 
 A missed `daily` slot never replays: however many days the daemon was down,
 the schedule fires at most once and realigns to the next slot (with
@@ -83,10 +86,12 @@ the schedule fires at most once and realigns to the next slot (with
 firing the same intent once per missed day would produce runs nothing can
 tell apart.
 
-Named IANA zones are not supported yet: a fixed offset cannot express a zone
-whose offset shifts across a DST boundary, which needs a timezone database
-(`chrono-tz`) this build does not carry. `ScheduleSpec::tz` stays persisted
-and unread until it does.
+A named zone's DST transitions are handled explicitly, never guessed: a
+**gap** day (the wall-clock time does not exist, e.g. a spring-forward jump)
+is skipped entirely, resuming the next calendar day; a **fold** day (the
+wall-clock time occurs twice, e.g. a fall-back) fires at the earliest of the
+two. An unrecognized zone name is refused at `add` time with a clear error,
+never silently accepted and only failing later in the firing loop.
 
 ## Capabilities used inside a task
 

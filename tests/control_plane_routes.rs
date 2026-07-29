@@ -390,6 +390,52 @@ fn valid_issue_body() -> Value {
     })
 }
 
+fn retrieve_req(retrieval_ref: &str, bearer: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/v1/credentials/retrieve")
+        .header("content-type", "application/json");
+    if let Some(token) = bearer {
+        builder = builder.header("authorization", format!("Bearer {token}"));
+    }
+    builder
+        .body(Body::from(
+            serde_json::json!({ "retrieval_ref": retrieval_ref }).to_string(),
+        ))
+        .unwrap()
+}
+
+/// Issue then immediately redeem — the two-step dance every real caller of
+/// `POST /v1/credentials` now has to do to get the actual plaintext token.
+async fn issue_and_retrieve_token(app: axum::Router, bearer: &str, issue_body: Value) -> String {
+    let issue_resp = app
+        .clone()
+        .oneshot(issue_req(issue_body, Some(bearer)))
+        .await
+        .unwrap();
+    assert_eq!(issue_resp.status(), StatusCode::CREATED);
+    let issued = body_json(issue_resp).await;
+    let retrieval_ref = issued["retrieval_ref"]
+        .as_str()
+        .expect("retrieval_ref present")
+        .to_owned();
+    assert!(
+        issued.get("token").is_none(),
+        "the issue response must never carry the plaintext token"
+    );
+
+    let retrieve_resp = app
+        .oneshot(retrieve_req(&retrieval_ref, Some(bearer)))
+        .await
+        .unwrap();
+    assert_eq!(retrieve_resp.status(), StatusCode::OK);
+    let retrieved = body_json(retrieve_resp).await;
+    retrieved["token"]
+        .as_str()
+        .expect("token returned once")
+        .to_owned()
+}
+
 /// The default: an operator who has not opted in has no issuance route at all,
 /// so issuance stays console-only exactly as before.
 #[tokio::test]
@@ -483,7 +529,21 @@ async fn an_issued_credential_authenticates_with_exactly_the_requested_scopes() 
         json.get("project").is_none(),
         "no project asked, none echoed"
     );
-    let token = json["token"]
+    assert!(
+        json.get("token").is_none(),
+        "the issue response must never carry the plaintext token"
+    );
+    let retrieval_ref = json["retrieval_ref"]
+        .as_str()
+        .expect("retrieval_ref present")
+        .to_owned();
+    let retrieved = app
+        .clone()
+        .oneshot(retrieve_req(&retrieval_ref, Some("right")))
+        .await
+        .unwrap();
+    assert_eq!(retrieved.status(), StatusCode::OK);
+    let token = body_json(retrieved).await["token"]
         .as_str()
         .expect("token returned once")
         .to_owned();
@@ -525,7 +585,16 @@ async fn an_issued_credential_carries_its_project_tag() {
 
     // The tag is live, not decorative: a task created with this credential is
     // only visible to a project-scoped list for the same project.
-    let token = json["token"].as_str().unwrap().to_owned();
+    let retrieval_ref = json["retrieval_ref"].as_str().unwrap().to_owned();
+    let retrieved = app
+        .clone()
+        .oneshot(retrieve_req(&retrieval_ref, Some("right")))
+        .await
+        .unwrap();
+    let token = body_json(retrieved).await["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let created = app
         .clone()
         .oneshot(post_json(
@@ -580,6 +649,104 @@ async fn credential_issuance_refuses_an_unknown_scope_instead_of_dropping_it() {
         json["message"].as_str().unwrap().contains("tasks:delete"),
         "the message must name the offending scope: {json}"
     );
+}
+
+// ─── POST /v1/credentials/retrieve (one-time recovery) ─────────────────────
+
+/// The whole point of the split: retrieving actually works and hands back a
+/// usable token, exercised end to end via [`issue_and_retrieve_token`].
+#[tokio::test]
+async fn retrieval_hands_back_a_usable_token() {
+    let (_f, _cred_store, app) = build_app_with_remote_issuance(Some("right")).await;
+    let token = issue_and_retrieve_token(app.clone(), "right", valid_issue_body()).await;
+
+    let listed = app.oneshot(get_req("/v1/tasks", &token)).await.unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+}
+
+/// The reference is one-time-use: a second retrieval of the SAME reference
+/// fails even though the first one succeeded moments ago.
+#[tokio::test]
+async fn retrieving_the_same_reference_twice_fails_the_second_time() {
+    let (_f, _cred_store, app) = build_app_with_remote_issuance(Some("right")).await;
+    let issue_resp = app
+        .clone()
+        .oneshot(issue_req(valid_issue_body(), Some("right")))
+        .await
+        .unwrap();
+    let retrieval_ref = body_json(issue_resp).await["retrieval_ref"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let first = app
+        .clone()
+        .oneshot(retrieve_req(&retrieval_ref, Some("right")))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+
+    let second = app
+        .oneshot(retrieve_req(&retrieval_ref, Some("right")))
+        .await
+        .unwrap();
+    assert_eq!(
+        second.status(),
+        StatusCode::NOT_FOUND,
+        "a reference must not be redeemable twice"
+    );
+}
+
+/// An unknown reference (never issued, or issued against a DIFFERENT
+/// `CredentialIssuanceState`/process) gets the same 404 as an
+/// already-redeemed one — no distinguishing signal on the wire.
+#[tokio::test]
+async fn retrieving_an_unknown_reference_returns_404() {
+    let (_f, _cred_store, app) = build_app_with_remote_issuance(Some("right")).await;
+    let resp = app
+        .oneshot(retrieve_req("bcpr_does-not-exist", Some("right")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+/// Retrieval requires the SAME operator daemon token as issuance — the
+/// reference alone is never sufficient, so a wrong or missing bearer is
+/// refused even for a reference that is genuinely live.
+#[tokio::test]
+async fn retrieval_requires_the_operator_token_even_with_a_valid_reference() {
+    let (_f, _cred_store, app) = build_app_with_remote_issuance(Some("right")).await;
+    let issue_resp = app
+        .clone()
+        .oneshot(issue_req(valid_issue_body(), Some("right")))
+        .await
+        .unwrap();
+    let retrieval_ref = body_json(issue_resp).await["retrieval_ref"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let wrong = app
+        .clone()
+        .oneshot(retrieve_req(&retrieval_ref, Some("wrong")))
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+
+    let missing = app
+        .clone()
+        .oneshot(retrieve_req(&retrieval_ref, None))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+
+    // The reference must still be live after the two failed auth attempts —
+    // a rejected-before-lookup wrong bearer must not consume it.
+    let correct = app
+        .oneshot(retrieve_req(&retrieval_ref, Some("right")))
+        .await
+        .unwrap();
+    assert_eq!(correct.status(), StatusCode::OK);
 }
 
 // ─── GET /v1/webhook-subscriptions + DELETE /v1/webhook-subscriptions/{id} ─

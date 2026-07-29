@@ -73,6 +73,20 @@ for how that differs from the library crates it depends on).
 
 ### Changed
 
+- **`POST /v1/credentials` no longer returns the plaintext token** (breaking
+  wire change to this opt-in, off-by-default route). It now returns a
+  one-time-use `retrieval_ref` + `retrieval_expires_at` (5 minutes); redeem
+  the actual token exactly once via the new `POST /v1/credentials/retrieve`,
+  gated by the same operator `BASTION_DAEMON_TOKEN` as issuance. Closes the
+  "Still open" gap `docs/en/control-plane-security.md` disclosed: the
+  plaintext token used to be only as protected as the transport in front of
+  the daemon, with no signed/expiring one-time handoff. Reference
+  construction mirrors the token's own (32 CSPRNG bytes, `bcpr_` prefix,
+  distinct from the token's `bcp_`); an unknown, already-redeemed, or
+  expired reference all return the same `404`. In-memory only
+  (`PendingIssuedTokens`), same discipline as `proposals::PendingSecretValues`
+  — a daemon restart invalidates every outstanding reference.
+
 - **Core pin advances to `bastion-core` `v0.3.1`** (`75d36982f026240dc2d18a1b6ac21df4d7cc2414`,
   all 11 git dependencies in `Cargo.toml`), up from `v0.3.0` (`8164f3c`). Brings
   `bastion_types::provider_auth`/`bastion_types::provider_catalog` and
