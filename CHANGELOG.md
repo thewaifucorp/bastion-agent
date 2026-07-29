@@ -71,6 +71,24 @@ for how that differs from the library crates it depends on).
     assertion that no returned/persisted record path can ever carry the
     underlying secret material (BAAUTH-01/02).
 
+- **`/schedule add daily` honors named IANA timezones (DST-aware)**
+  (`src/adaptive/schedule.rs`, `src/agent/schedule_command.rs`). New syntax
+  `/schedule add daily <HH:MM>@<IANA zone> <intent>` (e.g.
+  `09:00@America/Sao_Paulo`), alongside the existing fixed-offset form.
+  `ScheduleSpec::tz` — persisted since `bastion-agent#16` but never read — is
+  now the dispatch key: `None` is byte-for-byte the original fixed-offset
+  behavior (`next_daily_fire`), `Some(zone)` resolves against that zone's
+  actual DST-aware offset (`next_named_zone_daily_fire`, new dependency
+  `chrono-tz`), with an explicit, documented gap/fold rule instead of a
+  guess: a **gap** day (the wall-clock time does not exist, e.g. a
+  spring-forward jump) is skipped entirely, resuming the next calendar day;
+  a **fold** day (the time occurs twice, e.g. fall-back) fires at the
+  EARLIEST occurrence. An unrecognized zone name is refused at `add` time
+  with a clear error, never silently deferred to the firing loop's
+  degenerate-schedule fallback. `/schedule list` renders the zone name
+  instead of a numeric offset for these schedules, since a named zone's
+  actual offset varies with DST.
+
 ### Changed
 
 - **`POST /v1/credentials` no longer returns the plaintext token** (breaking
