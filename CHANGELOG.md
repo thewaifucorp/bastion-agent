@@ -8,6 +8,18 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+### Changed
+
+- **Core pin advances to `bastion-core` `v0.3.1`** (`75d36982f026240dc2d18a1b6ac21df4d7cc2414`,
+  all 11 git dependencies in `Cargo.toml`), up from `v0.3.0` (`8164f3c`). Brings
+  `bastion_types::provider_auth`/`bastion_types::provider_catalog` and
+  `bastion_runtime::provider_auth::ProviderCredentialLifecycle` into reach for
+  the first time — required by the subscription-credential work
+  (`CredentialStateStore` and the Codex/ChatGPT connector) that was blocked on
+  this pin. `bastion-types` 0.2.0→0.2.2, `bastion-runtime` 0.2.1→0.2.3 (both
+  additive on the Core side). No source changes on the agent side beyond the
+  pin — `cargo test --lib`: 522 passed, unchanged from before the repin.
+
 ## [0.2.4] — 2026-07-27
 
 Closes the open architecture gaps that were declared in code and in
