@@ -167,6 +167,16 @@ for how that differs from the library crates it depends on).
   additive on the Core side). No source changes on the agent side beyond the
   pin — `cargo test --lib`: 522 passed, unchanged from before the repin.
 
+- **Core pin advances to `bastion-core` `v0.3.2`** (`0403c5ca683d8ec18c2cd47338f6b56b6fdc5d20`,
+  all 11 git dependencies in `Cargo.toml`), up from `v0.3.1`. Brings
+  `bastion_providers::codex` (the Codex/ChatGPT subscription connector) into
+  reach for the first time, plus streaming/cancellation on the kernel
+  `Provider` trait and secret-injected provider constructors
+  (`with_api_key`). `bastion-runtime` 0.2.3→0.2.4, `bastion-providers`
+  0.2.0→0.2.2 (both additive on the Core side). No source changes on the
+  agent side beyond the pin — `cargo test --workspace`: 33 test binaries, 0
+  failures, unchanged from before the repin.
+
 ## [0.2.4] — 2026-07-27
 
 Closes the open architecture gaps that were declared in code and in
