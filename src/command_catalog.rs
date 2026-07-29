@@ -95,8 +95,8 @@ pub const CATALOG: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/model",
-        usage: "/model <name>",
-        desc: "show/switch/reset the LLM provider+model — type space to browse",
+        usage: "/model <name> | /model status",
+        desc: "show/switch/reset the LLM provider+model, or show subscription status — type space to browse",
         scope: Scope::Remote,
         aliases: &[],
     },
