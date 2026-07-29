@@ -10,23 +10,43 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
-- **`/schedule add daily` honors named IANA timezones (DST-aware)**
-  (`src/adaptive/schedule.rs`, `src/agent/schedule_command.rs`). New syntax
-  `/schedule add daily <HH:MM>@<IANA zone> <intent>` (e.g.
-  `09:00@America/Sao_Paulo`), alongside the existing fixed-offset form.
-  `ScheduleSpec::tz` — persisted since `bastion-agent#16` but never read — is
-  now the dispatch key: `None` is byte-for-byte the original fixed-offset
-  behavior (`next_daily_fire`), `Some(zone)` resolves against that zone's
-  actual DST-aware offset (`next_named_zone_daily_fire`, new dependency
-  `chrono-tz`), with an explicit, documented gap/fold rule instead of a
-  guess: a **gap** day (the wall-clock time does not exist, e.g. a
-  spring-forward jump) is skipped entirely, resuming the next calendar day;
-  a **fold** day (the time occurs twice, e.g. fall-back) fires at the
-  EARLIEST occurrence. An unrecognized zone name is refused at `add` time
-  with a clear error, never silently deferred to the firing loop's
-  degenerate-schedule fallback. `/schedule list` renders the zone name
-  instead of a numeric offset for these schedules, since a named zone's
-  actual offset varies with DST.
+- **`SqliteCredentialStateStore`** (`src/provider_credential_state.rs`), the
+  host-owned implementation of `bastion_runtime::provider_auth::
+  CredentialStateStore` — the port `ProviderCredentialLifecycle` (Core PR #7)
+  coordinates against but does not implement, since persistence is
+  deliberately a host concern. Without it the lifecycle ran in memory only:
+  cooldown, the consecutive-failure counter, `ReauthRequired` and `Revoked`
+  were all lost on restart — a revoked credential went back to being
+  attempted, and a grown backoff reset to its first step.
+  - `compare_and_swap` stores the whole `CredentialLifecycleRecord` as one
+    JSON column, compared by exact string equality (the type tree has no
+    `HashMap`/`HashSet`, so serialization is deterministic): `expected: None`
+    is a conditional `INSERT OR IGNORE` (first write wins the primary-key
+    race), `expected: Some(record)` is an `UPDATE ... WHERE record_json = ?`
+    (a mismatched or deleted row matches zero rows). Exactly one atomic
+    SQLite statement per call — no torn writes to recover from, no explicit
+    transaction needed.
+  - Scoped by the full `ProviderAuthRef` (`owner_id` + `provider_id` +
+    `profile_id` together) in the primary key, never `profile_id` alone —
+    two owners reusing the same profile name get independent records.
+  - Tested directly (8 new unit tests: concurrent CAS races, cross-owner
+    isolation, restart survival) AND by driving the real
+    `ProviderCredentialLifecycle` engine end to end against it
+    (`tests/provider_credential_state_lifecycle.rs`) — including the exact
+    regression this closes: a revoked credential is never retried again,
+    even across a simulated restart, without ever calling the refresher.
+
+### Changed
+
+- **Core pin advances to `bastion-core` `v0.3.1`** (`75d36982f026240dc2d18a1b6ac21df4d7cc2414`,
+  all 11 git dependencies in `Cargo.toml`), up from `v0.3.0` (`8164f3c`). Brings
+  `bastion_types::provider_auth`/`bastion_types::provider_catalog` and
+  `bastion_runtime::provider_auth::ProviderCredentialLifecycle` into reach for
+  the first time — required by the subscription-credential work
+  (`CredentialStateStore` and the Codex/ChatGPT connector) that was blocked on
+  this pin. `bastion-types` 0.2.0→0.2.2, `bastion-runtime` 0.2.1→0.2.3 (both
+  additive on the Core side). No source changes on the agent side beyond the
+  pin — `cargo test --lib`: 522 passed, unchanged from before the repin.
 
 ## [0.2.4] — 2026-07-27
 
