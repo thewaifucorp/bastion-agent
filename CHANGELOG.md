@@ -36,6 +36,41 @@ for how that differs from the library crates it depends on).
     regression this closes: a revoked credential is never retried again,
     even across a simulated restart, without ever calling the refresher.
 
+- **`SubscriptionAuthService`** (`src/subscription_auth.rs`) + the `/auth`
+  cockpit (`src/agent/auth_command.rs`, `bastion auth connect|list|status|disconnect`) —
+  Bastion Agent — oferecer login e gestão de assinaturas (BAAUTH-01..05). Core
+  delivers the neutral mechanism (`ProviderCredentialLifecycle` +
+  `CredentialStateStore`, above) but conducting an OAuth flow, mapping an
+  owner to a credential, and making reauth/revocation legible across
+  daemon/TUI/CLI was still missing — this closes that gap.
+  - Connector-agnostic by construction: depends only on Core's
+    `provider_auth` contracts and a new, local, non-secret label table
+    (`subscription_profile_label`, `owner_id`+`provider_id`+`profile_id`
+    primary key — same pattern as `provider_credential_state.rs`). A
+    connector plugs in as one `ConnectorRegistration` (its
+    `SubscriptionLoginFlow` + a `ProviderCredentialLifecycle` wrapping its
+    refresher) in the composition root — **no connector is registered yet**
+    (`bastion-providers::codex` lives on a separate, not-yet-merged
+    `bastion-core` PR; wiring it in once this repo repins past it is a thin
+    adapter, not a redesign — see the module doc).
+  - `connect` conducts the flow, then proves the credential actually
+    resolves (`lifecycle.refresh`) before writing anything — a
+    cancelled/denied consent leaves nothing behind to clean up.
+  - `disconnect` revokes upstream when the connector is registered and
+    supports it, then always removes the local record regardless (BAAUTH-05)
+    — local intent wins over vendor support, same contract
+    `ProviderCredentialLifecycle::revoke` itself already guarantees.
+  - New CLI verb family (`bastion auth ...`) deliberately separate from the
+    existing `bastion connect <provider>` (host-CLI-inside-container login,
+    an unrelated flow) to avoid silently changing what that verb does.
+    `/auth` is console-only in `command_catalog.rs` (same tier as
+    `/credential`) — a device-code poll can run for minutes, which has no
+    business blocking a webhook/channel request thread.
+  - 20 new unit tests: cancelled-consent cleanup, cross-owner isolation,
+    restart survival, unregistered-provider error clarity, and a canary-value
+    assertion that no returned/persisted record path can ever carry the
+    underlying secret material (BAAUTH-01/02).
+
 ### Changed
 
 - **Core pin advances to `bastion-core` `v0.3.1`** (`75d36982f026240dc2d18a1b6ac21df4d7cc2414`,

@@ -1,3 +1,4 @@
+pub mod auth_command;
 pub mod backend_command;
 pub mod command;
 pub mod committee;

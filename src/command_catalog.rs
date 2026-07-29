@@ -143,6 +143,13 @@ pub const CATALOG: &[CommandSpec] = &[
         aliases: &[],
     },
     CommandSpec {
+        name: "/auth",
+        usage: "/auth list | connect <provider> [profile] [label...] | status [profile] | disconnect <profile>|<provider>/<profile>",
+        desc: "subscription login/profile management (BAAUTH) — device-code polling, console only",
+        scope: Scope::ConsoleOnly,
+        aliases: &[],
+    },
+    CommandSpec {
         name: "/credential",
         usage: "/credential list | issue <label> [scopes] | revoke <id>",
         desc: "issue/revoke Control Plane bearer credentials (token shown once, console only)",
@@ -336,6 +343,8 @@ mod tests {
         "/proposal",
         // Extension pack cockpit: install/list/revoke via ExtensionHost.
         "/extension",
+        // Bastion Agent — oferecer login e gestão de assinaturas (BAAUTH-03).
+        "/auth",
     ];
 
     const OLD_REMOTE_ALLOWED: &[&str] = &[
@@ -383,6 +392,7 @@ mod tests {
             "/pet",
             "/theme",
             "/extension",
+            "/auth",
         ] {
             assert!(
                 !is_remote_allowed(name),

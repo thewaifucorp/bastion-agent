@@ -20,6 +20,7 @@ pub mod proposals;
 pub mod provider_credential_state;
 pub mod routing;
 pub mod secret;
+pub mod subscription_auth;
 pub mod tui;
 pub mod update;
 pub mod webapp;

@@ -134,6 +134,13 @@ enum Command {
         /// bash | zsh | fish | powershell | elvish
         shell: clap_complete::Shell,
     },
+    /// Subscription login and profile management (BAAUTH-01..05) — a
+    /// subscription used as an inference credential, NOT the host-CLI
+    /// session `connect` signs into.
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
     /// Start MCP server over stdio (local subprocess transport).
     /// Used by local agents that control lifecycle (Claude Code, opencode, etc.).
     #[cfg(feature = "mcp-server")]
@@ -174,6 +181,36 @@ enum CompanionAction {
     },
     /// Care for the companion: feed | water | play | sleep
     Care { action: CareAction },
+}
+
+/// BAAUTH-01..05. `provider` is a plain string, not a `ValueEnum` like
+/// `SubscriptionProvider` above: the set of registered connectors is a
+/// runtime fact (`SubscriptionAuthService`'s connector map), not one fixed
+/// at CLI-parse time — an unregistered name fails with a clear "unknown
+/// provider" from the service itself, listing what IS available.
+#[derive(Subcommand)]
+enum AuthAction {
+    /// Start (or resume) a subscription login flow for a provider
+    Connect {
+        /// e.g. "codex"
+        provider: String,
+        /// Which of this owner's profiles for that provider (default: "default")
+        #[arg(default_value = "default")]
+        profile: String,
+        /// Human label shown in `auth list`/`auth status`; defaults to the profile id
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// List every connected subscription profile for this owner
+    List,
+    /// Show one profile — or every provider that has a profile with this id
+    Status { profile: Option<String> },
+    /// Disconnect a profile: revokes upstream when the connector supports
+    /// it, always removes the local record (BAAUTH-05)
+    Disconnect {
+        /// `<profile>` (if unambiguous for this owner) or `<provider>/<profile>`
+        profile: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -580,6 +617,54 @@ async fn main() -> anyhow::Result<()> {
     let db_path = cfg.session.db_path.clone();
     let session = SessionManager::new(&db_path);
     session.init_schema().await?;
+
+    // BAAUTH-01..05: `bastion auth ...` is a one-shot CLI action, not the
+    // daemon loop — needs `db_path` (just initialized above) but none of the
+    // AgentLoop/registry/backend-profile composition below, so it is handled
+    // here and returns, mirroring `Command::Connect`/`Command::Update`'s
+    // "handled before daemon initialization" shape (just slightly later,
+    // since unlike those this one genuinely needs the session db path).
+    // Builds its own `SubscriptionAuthService` instance — a fresh process per
+    // CLI invocation, never running concurrently with the daemon's own
+    // instance (constructed separately in `daemon_loop`), so this is not a
+    // second live copy of anything, just the same constructor called twice.
+    if let Command::Auth { action } = &command {
+        let owner_id = std::env::var("BASTION_OWNER_ID")
+            .unwrap_or_else(|_| bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string());
+        let service =
+            std::sync::Arc::new(bastion::subscription_auth::SubscriptionAuthService::new(
+                db_path.clone(),
+                std::collections::HashMap::new(),
+            ));
+        service.init_schema().await?;
+        let arg = match action {
+            AuthAction::Connect {
+                provider,
+                profile,
+                label,
+            } => {
+                let mut s = format!("connect {provider} {profile}");
+                if let Some(label) = label {
+                    s.push(' ');
+                    s.push_str(label);
+                }
+                s
+            }
+            AuthAction::List => "list".to_string(),
+            AuthAction::Status { profile } => match profile {
+                Some(p) => format!("status {p}"),
+                None => "status".to_string(),
+            },
+            AuthAction::Disconnect { profile } => format!("disconnect {profile}"),
+        };
+        match bastion::agent::auth_command::handle(&service, Some(&arg), &owner_id).await {
+            Ok(msg) => {
+                println!("{msg}");
+                return Ok(());
+            }
+            Err(e) => anyhow::bail!(e),
+        }
+    }
 
     // Adaptive Execution (US-201): durable store for Pursue tasks, sharing the
     // one session DB. Pending tasks enqueued here are drained by the executor.
@@ -1062,6 +1147,7 @@ async fn main() -> anyhow::Result<()> {
             unreachable!("companion is handled before daemon initialization")
         }
         Command::Connect { .. } => unreachable!("connect is handled before daemon initialization"),
+        Command::Auth { .. } => unreachable!("auth is handled before daemon initialization"),
         Command::Update { .. } => unreachable!("update is handled before daemon initialization"),
         Command::Updater { .. } => unreachable!("updater is handled before daemon initialization"),
         Command::Completions { .. } => {
@@ -1277,7 +1363,7 @@ fn is_read_only_while_prompt_pending(line: &str) -> bool {
         "/model" | "/backend" => rest.is_empty(),
         "/update" => rest.is_empty() || rest == "status",
         "/task" => rest == "list" || rest.starts_with("inspect "),
-        "/schedule" | "/credential" | "/extension" => rest == "list",
+        "/schedule" | "/credential" | "/extension" | "/auth" => rest == "list",
         "/proposal" => rest == "list" || rest.starts_with("show "),
         _ => false,
     }
@@ -2148,6 +2234,25 @@ async fn daemon_loop(
     // persistence is a follow-up, not this cut's scope.
     let mut extension_host = bastion::extension::ExtensionHost::new();
 
+    // Bastion Agent — oferecer login e gestão de assinaturas (BAAUTH-03): one
+    // `SubscriptionAuthService` instance, shared via `Arc` with the CLI
+    // one-shot `bastion auth ...` path (constructed separately there — a
+    // fresh process per invocation, not a second live instance) and with
+    // both `/auth` dispatch sites below (console stdin + channel inbound),
+    // exactly the "one implementation, N surfaces" shape `schedule_store`
+    // already establishes for `/schedule`. No connector is registered yet —
+    // see `subscription_auth`'s module doc for why that's a real external
+    // dependency (an unmerged bastion-core PR), not a placeholder left here
+    // by oversight.
+    let subscription_auth_service =
+        Arc::new(bastion::subscription_auth::SubscriptionAuthService::new(
+            cfg.session.db_path.clone(),
+            std::collections::HashMap::new(),
+        ));
+    if let Err(e) = subscription_auth_service.init_schema().await {
+        tracing::error!(event = "subscription_auth_service_init_failed", error = %e);
+    }
+
     // US-205: durable personal scheduler. Fires arbitrary authorized intents
     // (one-shot/recurring) through the SAME mode selection an interactive
     // message gets — Pursue enqueues + drives a task, Respond/Act run a turn
@@ -2613,6 +2718,22 @@ async fn daemon_loop(
                             match bastion::agent::schedule_command::handle(
                                 &schedule_store,
                                 sched_arg,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                            )
+                            .await
+                            {
+                                Ok(msg) => println!("{msg}"),
+                                Err(e) => println!("Erro no comando: {e}"),
+                            }
+                            continue;
+                        }
+                        // BAAUTH-03: subscription login cockpit — needs the
+                        // subscription-auth service.
+                        if first_token == "/auth" {
+                            let auth_arg = trimmed.split_once(' ').map(|x| x.1);
+                            match bastion::agent::auth_command::handle(
+                                &subscription_auth_service,
+                                auth_arg,
                                 bastion_runtime::agent::loop_::DEFAULT_OWNER,
                             )
                             .await
