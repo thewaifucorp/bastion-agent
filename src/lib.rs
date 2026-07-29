@@ -17,6 +17,7 @@ pub mod model_catalog;
 pub mod observability;
 pub mod product_import;
 pub mod proposals;
+pub mod provider_credential_state;
 pub mod routing;
 pub mod secret;
 pub mod tui;

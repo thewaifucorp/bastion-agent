@@ -8,6 +8,34 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+### Added
+
+- **`SqliteCredentialStateStore`** (`src/provider_credential_state.rs`), the
+  host-owned implementation of `bastion_runtime::provider_auth::
+  CredentialStateStore` — the port `ProviderCredentialLifecycle` (Core PR #7)
+  coordinates against but does not implement, since persistence is
+  deliberately a host concern. Without it the lifecycle ran in memory only:
+  cooldown, the consecutive-failure counter, `ReauthRequired` and `Revoked`
+  were all lost on restart — a revoked credential went back to being
+  attempted, and a grown backoff reset to its first step.
+  - `compare_and_swap` stores the whole `CredentialLifecycleRecord` as one
+    JSON column, compared by exact string equality (the type tree has no
+    `HashMap`/`HashSet`, so serialization is deterministic): `expected: None`
+    is a conditional `INSERT OR IGNORE` (first write wins the primary-key
+    race), `expected: Some(record)` is an `UPDATE ... WHERE record_json = ?`
+    (a mismatched or deleted row matches zero rows). Exactly one atomic
+    SQLite statement per call — no torn writes to recover from, no explicit
+    transaction needed.
+  - Scoped by the full `ProviderAuthRef` (`owner_id` + `provider_id` +
+    `profile_id` together) in the primary key, never `profile_id` alone —
+    two owners reusing the same profile name get independent records.
+  - Tested directly (8 new unit tests: concurrent CAS races, cross-owner
+    isolation, restart survival) AND by driving the real
+    `ProviderCredentialLifecycle` engine end to end against it
+    (`tests/provider_credential_state_lifecycle.rs`) — including the exact
+    regression this closes: a revoked credential is never retried again,
+    even across a simulated restart, without ever calling the refresher.
+
 ### Changed
 
 - **Core pin advances to `bastion-core` `v0.3.1`** (`75d36982f026240dc2d18a1b6ac21df4d7cc2414`,
