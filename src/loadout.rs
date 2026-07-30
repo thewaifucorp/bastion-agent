@@ -1255,13 +1255,16 @@ mod tests {
         // `reflection`, not hot.
         let compaction = items.iter().find(|i| i["class"] == "compaction").unwrap();
         assert_eq!(compaction["supported"], true);
-        // Still no reachable knob for these two: they wait on seams in
-        // bastion-agent-runtime (`SessionSpec` has no model field) and
-        // bastion-personas (Cabinet legs share the loop's provider).
-        for unsupported in ["pursue_task", "cabinet"] {
-            let row = items.iter().find(|i| i["class"] == unsupported).unwrap();
-            assert_eq!(row["supported"], false, "{unsupported}");
-        }
+        // `pursue_task` became reachable once `bastion-agent-runtime` 0.1.1
+        // added `SessionSpec`/`TaskInput::model_hint` (SEAM-01/02) — also
+        // startup-read (main.rs resolves it once into
+        // `pursue_task_model_hint`, threaded into `daemon_loop`), not hot.
+        let pursue_task = items.iter().find(|i| i["class"] == "pursue_task").unwrap();
+        assert_eq!(pursue_task["supported"], true);
+        // Still no reachable knob: Cabinet legs share the loop's provider
+        // (bastion-personas seam not built yet).
+        let cabinet = items.iter().find(|i| i["class"] == "cabinet").unwrap();
+        assert_eq!(cabinet["supported"], false);
     }
 
     #[tokio::test]

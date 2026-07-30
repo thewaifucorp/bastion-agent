@@ -10,6 +10,19 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **`pursue_task` routing class gains a real model knob (SEAM-03/04)** —
+  repins `bastion-core` to the commit adding `bastion-agent-runtime`
+  0.1.1's `SessionSpec`/`TaskInput::model_hint` (SEAM-01/02). `main.rs`
+  resolves `routing.rules`' `pursue_task` entry once at boot into
+  `pursue_task_model_hint`, threaded through `daemon_loop` to every
+  `RuntimeTaskExecutor` a delegated task spawns
+  (`adaptive/exec.rs::coding_cycle`/`run_coding_pursue`/`run_delegated`).
+  `RouteClass::PursueTask` moves to `supported: true` on `GET /routing`
+  (next-restart semantics, same as `reflection`/`compaction` — not hot).
+  `None` (no rule configured) is byte-identical to pre-seam behavior; the
+  harness still decides whether to honor a `Some` hint, since not every
+  protocol exposes model selection.
+
 - **`/model <provider_id>/<model_id>[@profile]` — subscription-backed
   providers in the native `AgentLoop`** (BACOMP-01..05, `src/subscription_auth.rs`,
   `src/agent/command.rs`). Closes the gap between "connect an account"
