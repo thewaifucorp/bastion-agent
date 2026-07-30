@@ -10,6 +10,18 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **`cabinet` routing class gains a real model knob (CAB seam, agent-side
+  wiring)** — repins `bastion-core` to the commit adding `bastion-personas`
+  0.2.1's `PersonaResponder::with_cabinet_provider` (CAB-01..04). `main.rs`
+  resolves `routing.rules`' `cabinet` entry once at boot into its own
+  `Arc<RwLock<_>>` provider handle (genuinely distinct from the turn's own
+  `provider` — never sharing its Arc) and wires it into the
+  `PersonaResponder` the composition root builds. `RouteClass::Cabinet`
+  moves to `supported: true` on `GET /routing` (next-restart semantics,
+  same as `reflection`/`compaction` — not hot). `None` (no rule configured,
+  or an unconstructible one) is byte-identical to pre-seam behavior —
+  Cabinet keeps using the turn's own provider.
+
 - **`/model <provider_id>/<model_id>[@profile]` — subscription-backed
   providers in the native `AgentLoop`** (BACOMP-01..05, `src/subscription_auth.rs`,
   `src/agent/command.rs`). Closes the gap between "connect an account"

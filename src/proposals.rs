@@ -465,11 +465,16 @@ pub async fn apply(
 /// - `chat_turn` — hot-swaps the live `SharedProvider` exactly like
 ///   `/model` (same connectivity guard as `apply_model_config`; a
 ///   disconnected provider bails BEFORE anything is persisted).
-/// - `reflection` — the Reflector's provider is resolved once at daemon
-///   start (main.rs reads the routing table there), so the rule is
-///   persisted and takes effect on the next restart.
-/// - `pursue_task` / `cabinet` / `compaction` — no agent-reachable knob on
-///   the pinned core rev: persisted only, honestly reported.
+/// - `reflection` / `cabinet` / `compaction` — each resolved once at daemon
+///   start (main.rs reads the routing table there into the Reflector's
+///   provider, the `PersonaResponder`'s dedicated Cabinet provider, and
+///   `AgentLoop::compaction_provider` respectively), so a rule change here
+///   is persisted and takes effect on the next restart, not live. (The
+///   `compaction` per-class message below hasn't caught up to this yet —
+///   see the sibling `feat/pursue-task-model-hint-executor` branch, which
+///   fixes it alongside `pursue_task`'s own message.)
+/// - `pursue_task` — no agent-reachable knob on the pinned core rev:
+///   persisted only, honestly reported.
 ///
 /// Clearing (empty map, or a map without `chat_turn`) does NOT hot-swap the
 /// provider back — the startup routing read restores the base model on the
@@ -563,7 +568,11 @@ async fn apply_routing_config(
                 "reflection → {model}; the Reflector resolves its provider at startup — takes \
                  effect on the next restart"
             ),
-            RouteClass::PursueTask | RouteClass::Cabinet | RouteClass::Compaction => format!(
+            RouteClass::Cabinet => format!(
+                "cabinet → {model}; resolved into a dedicated PersonaResponder provider at \
+                 daemon startup — takes effect on the next restart"
+            ),
+            RouteClass::PursueTask | RouteClass::Compaction => format!(
                 "{} → {model}; persisted only — this class has no agent-reachable model knob \
                  yet (requires core support, see src/routing.rs)",
                 class.as_str()
@@ -1399,6 +1408,7 @@ mod tests {
             ("chat_turn", "llama3.2"),
             ("reflection", "mistral"),
             ("compaction", "qwen3"),
+            ("cabinet", "codestral"),
         ]);
         let msg = apply(dir.path(), "p", &payload, &res).await.unwrap();
         assert!(msg.contains("chat_turn → llama3.2"), "{msg}");
@@ -1406,12 +1416,19 @@ mod tests {
         // Honest v1: unsupported classes say so instead of pretending.
         assert!(msg.contains("compaction → qwen3"), "{msg}");
         assert!(msg.contains("requires core support"), "{msg}");
+        // `cabinet` is now startup-resolved too, like reflection/compaction
+        // were meant to be — this is the seam this test exists to pin.
+        assert!(msg.contains("cabinet → codestral"), "{msg}");
+        assert!(
+            msg.contains("cabinet") && msg.contains("takes effect on the next restart"),
+            "{msg}"
+        );
 
         let store = res.config_store.as_ref().unwrap();
         let raw = store.latest(KEY_ROUTING_RULES).await.unwrap().unwrap();
         let rules = crate::config_store::routing_rules_from_value_json(&raw).unwrap();
         assert_eq!(rules.get("chat_turn").map(String::as_str), Some("llama3.2"));
-        assert_eq!(rules.len(), 3);
+        assert_eq!(rules.len(), 4);
         let history = store.history(KEY_ROUTING_RULES, 1).await.unwrap();
         assert_eq!(history[0].origin, "web");
         assert_eq!(history[0].actor.as_deref(), Some("alice"));
