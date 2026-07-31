@@ -291,6 +291,7 @@ async fn a07_delegated_task_concurrent_cancel_and_resume_live() {
             },
             mcp_bridge: None,
             otel: bastion_agent_runtime::OtelContext::default(),
+            model_hint: None,
         };
         tokio::fs::create_dir_all(&spec.workspace.root)
             .await
@@ -310,6 +311,7 @@ async fn a07_delegated_task_concurrent_cancel_and_resume_live() {
                 prompt: "Reply with exactly: ok".to_string(),
                 attachments: Vec::new(),
                 expected: bastion_agent_runtime::TaskExpectation::Conversation,
+                model_hint: None,
             })
             .await
             .expect("warm-up submit before resume");

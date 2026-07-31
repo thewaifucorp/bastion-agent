@@ -492,6 +492,7 @@ fn make_spec(workspace_root: PathBuf) -> SessionSpec {
         env: EnvPolicy::default(),
         mcp_bridge: None,
         otel: OtelContext::default(),
+        model_hint: None,
     }
 }
 
@@ -501,21 +502,25 @@ fn make_scenarios() -> ConformanceScenarios {
             prompt: "say hello".to_string(),
             attachments: Vec::new(),
             expected: TaskExpectation::Conversation,
+            model_hint: None,
         },
         never_terminates: TaskInput {
             prompt: "hang forever".to_string(),
             attachments: Vec::new(),
             expected: TaskExpectation::Conversation,
+            model_hint: None,
         },
         requests_permission: TaskInput {
             prompt: "emit:permission".to_string(),
             attachments: Vec::new(),
             expected: TaskExpectation::CodeChange,
+            model_hint: None,
         },
         produces_artifact: TaskInput {
             prompt: "emit:artifact".to_string(),
             attachments: Vec::new(),
             expected: TaskExpectation::CodeChange,
+            model_hint: None,
         },
         watchdog: conformance::DEFAULT_WATCHDOG,
     }
@@ -574,6 +579,7 @@ async fn deny_turn_scope_cancels_the_task() {
             prompt: "emit:permission".to_string(),
             attachments: Vec::new(),
             expected: TaskExpectation::CodeChange,
+            model_hint: None,
         })
         .await
         .expect("submit");
@@ -631,6 +637,7 @@ async fn deny_instance_scope_leaves_task_completing_normally() {
             prompt: "emit:permission".to_string(),
             attachments: Vec::new(),
             expected: TaskExpectation::CodeChange,
+            model_hint: None,
         })
         .await
         .expect("submit");

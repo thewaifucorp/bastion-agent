@@ -95,14 +95,28 @@ pub struct RuntimeTaskExecutor {
     pub registry: RuntimeRegistry,
     /// Owner the delegated session is scoped to (workspace root, audit).
     pub owner: String,
+    /// SEAM-03: the resolved `routing.rules` model for `RouteClass::PursueTask`
+    /// (`bastion-agent-runtime` 0.1.1's `SessionSpec`/`TaskInput::model_hint`),
+    /// carried straight through to every session this executor opens. `None`
+    /// (no rule configured, the default) is byte-identical to pre-seam
+    /// behavior — the harness picks its own model. Resolved once by the
+    /// composition root from the same `RoutingTable` `chat_turn`/`compaction`
+    /// already use ("next restart" semantics, not hot — same as
+    /// `compaction`), never re-resolved per task.
+    pub model_hint: Option<String>,
 }
 
 impl RuntimeTaskExecutor {
     /// Construct an executor over an already-populated [`RuntimeRegistry`].
-    pub fn new(registry: RuntimeRegistry, owner: impl Into<String>) -> Self {
+    pub fn new(
+        registry: RuntimeRegistry,
+        owner: impl Into<String>,
+        model_hint: Option<String>,
+    ) -> Self {
         Self {
             registry,
             owner: owner.into(),
+            model_hint,
         }
     }
 }
@@ -163,6 +177,7 @@ impl TaskExecutor for RuntimeTaskExecutor {
             env: EnvPolicy::default(),
             mcp_bridge: None,
             otel: OtelContext::default(),
+            model_hint: self.model_hint.clone(),
         };
 
         let mut session = runtime.start(spec).await.map_err(|e| {
@@ -177,6 +192,7 @@ impl TaskExecutor for RuntimeTaskExecutor {
                 prompt: procedural_prompt(case),
                 attachments: Vec::new(),
                 expected: TaskExpectation::CodeChange,
+                model_hint: self.model_hint.clone(),
             })
             .await
             .map_err(|e| {
@@ -420,12 +436,16 @@ impl Verifier for RuntimeOutcomeVerifier {
 /// events to `observer` (the daemon passes `observability::LifecycleObserver`
 /// — SSE + Control Plane queue + tracing; tests pass `TracingObserver`).
 /// This is what the daemon spawns to drain an enqueued `Pursue` task
-/// (US-203). `registry` is cloned into the executor.
+/// (US-203). `registry` is cloned into the executor. `model_hint` (SEAM-03)
+/// is the composition root's resolved `routing.rules` model for
+/// `RouteClass::PursueTask` — `None` when no rule is configured, byte-identical
+/// to pre-seam behavior.
 pub fn coding_cycle(
     store: &Arc<dyn TaskStore>,
     registry: &RuntimeRegistry,
     owner: &str,
     observer: Arc<dyn bastion_runtime::hooks::Observer>,
+    model_hint: Option<String>,
 ) -> AdaptiveCycle {
     AdaptiveCycle::new(
         store.clone(),
@@ -433,6 +453,7 @@ pub fn coding_cycle(
         Arc::new(RuntimeTaskExecutor::new(
             registry.clone(),
             owner.to_string(),
+            model_hint,
         )),
         Arc::new(RuntimeOutcomeVerifier),
         observer,
@@ -441,7 +462,7 @@ pub fn coding_cycle(
 
 /// Drive a coding task and feed its final verified attempt back into the
 /// procedural-memory loop. No outcome is attributed while a task is paused or
-/// awaiting approval.
+/// awaiting approval. `model_hint` — see [`coding_cycle`].
 pub async fn run_coding_pursue(
     store: &Arc<dyn TaskStore>,
     registry: &RuntimeRegistry,
@@ -449,8 +470,9 @@ pub async fn run_coding_pursue(
     owner: &str,
     task: &bastion_runtime::task::TaskCaseId,
     observer: &Arc<dyn bastion_runtime::hooks::Observer>,
+    model_hint: Option<String>,
 ) -> anyhow::Result<bastion_runtime::task::TaskStatus> {
-    let status = coding_cycle(store, registry, owner, observer.clone())
+    let status = coding_cycle(store, registry, owner, observer.clone(), model_hint)
         .run(owner, task, None)
         .await?;
     if status.is_terminal() {

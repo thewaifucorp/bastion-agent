@@ -121,6 +121,7 @@ pub async fn run_delegated(
     parent: TaskCase,
     children_objectives: Vec<String>,
     observer: Arc<dyn bastion_runtime::hooks::Observer>,
+    model_hint: Option<String>,
 ) -> anyhow::Result<ChildSummary> {
     let orch = Orchestrator::new(store.clone());
     let owner = parent.owner.clone();
@@ -149,6 +150,7 @@ pub async fn run_delegated(
         let memory_c = memory.clone();
         let owner_c = owner.clone();
         let observer_c = observer.clone();
+        let model_hint_c = model_hint.clone();
         handles.push(tokio::spawn(async move {
             // Bound concurrency: only `max_parallel` children run at once.
             let _permit = permit_sem.acquire_owned().await;
@@ -159,6 +161,7 @@ pub async fn run_delegated(
                 &owner_c,
                 &child_id,
                 &observer_c,
+                model_hint_c,
             )
             .await
             {

@@ -1413,8 +1413,20 @@ mod tests {
         let msg = apply(dir.path(), "p", &payload, &res).await.unwrap();
         assert!(msg.contains("chat_turn → llama3.2"), "{msg}");
         assert!(msg.contains("reflection → mistral"), "{msg}");
-        // Honest v1: unsupported classes say so instead of pretending.
+        // compaction/pursue_task are both startup-resolved (next restart),
+        // like reflection — reachable, just not hot.
         assert!(msg.contains("compaction → qwen3"), "{msg}");
+        assert!(
+            msg.contains("compaction") && msg.contains("takes effect on the next restart"),
+            "{msg}"
+        );
+        assert!(msg.contains("pursue_task → codestral"), "{msg}");
+        assert!(
+            msg.contains("pursue_task") && msg.contains("threaded through every delegated-task"),
+            "{msg}"
+        );
+        // Honest v1: cabinet is the one class still unsupported.
+        assert!(msg.contains("cabinet → phi3"), "{msg}");
         assert!(msg.contains("requires core support"), "{msg}");
         // `cabinet` is now startup-resolved too, like reflection/compaction
         // were meant to be — this is the seam this test exists to pin.
