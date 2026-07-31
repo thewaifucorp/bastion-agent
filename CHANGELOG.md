@@ -10,33 +10,18 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
-- **`CodexConnector`** (`src/codex_connector.rs`) — the concrete Codex/ChatGPT
-  connector, the last piece of BACOMP-01..05. Registered as the first entry
-  in `SubscriptionAuthService`'s connector map (composition root, `main.rs`):
-  `/auth connect codex` now runs a real device-code login end to end, and
-  `/model codex/<model_id>[@profile]` builds a real `CodexProvider`.
-  - `SqliteCodexTokenStore` is the ONLY place the raw OAuth `refresh_token`
-    and ChatGPT account id live — a table deliberately separate from
-    `CredentialStateStore`'s (which persists just the lifecycle's state
-    machine, never a secret). Overwrites rather than accumulates rows on
-    every refresh, since the refresh token OpenAI issues is single-use and
-    rotates on every exchange.
-  - `CodexConnector` implements both `SubscriptionLoginFlow` (device-code
-    start/poll/exchange, thin wrappers over `bastion-providers::codex`'s
-    already-tested primitives; the in-flight device-authorization state
-    between `start`/`wait_for_approval` is in-memory only — a restart
-    mid-login just means the operator reruns `/auth connect`) and
-    `SubscriptionModelProvider` (`build` reads the account id back from its
-    own token store, since `ResolvedProviderCredential`'s bearer material
-    alone isn't enough for Codex's inference call).
-  - This is deliberately the ONLY module that imports
-    `bastion_providers::codex` directly — `subscription_auth.rs` stays
-    connector-agnostic exactly as its own module doc requires.
-  - 7 new tests, all against a real `SqliteCodexTokenStore` (round-trip,
-    overwrite-not-accumulate, cross-owner isolation, restart survival) plus
-    two pure-logic connector tests (`wait_for_approval` without a prior
-    `start` fails closed; `build` sources `account_id` from the token
-    store, not the credential).
+- **`pursue_task` routing class gains a real model knob (SEAM-03/04)** —
+  repins `bastion-core` to the commit adding `bastion-agent-runtime`
+  0.1.1's `SessionSpec`/`TaskInput::model_hint` (SEAM-01/02). `main.rs`
+  resolves `routing.rules`' `pursue_task` entry once at boot into
+  `pursue_task_model_hint`, threaded through `daemon_loop` to every
+  `RuntimeTaskExecutor` a delegated task spawns
+  (`adaptive/exec.rs::coding_cycle`/`run_coding_pursue`/`run_delegated`).
+  `RouteClass::PursueTask` moves to `supported: true` on `GET /routing`
+  (next-restart semantics, same as `reflection`/`compaction` — not hot).
+  `None` (no rule configured) is byte-identical to pre-seam behavior; the
+  harness still decides whether to honor a `Some` hint, since not every
+  protocol exposes model selection.
 
 - **`/model <provider_id>/<model_id>[@profile]` — subscription-backed
   providers in the native `AgentLoop`** (BACOMP-01..05, `src/subscription_auth.rs`,

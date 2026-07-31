@@ -22,17 +22,16 @@
 //!   (`resolve_reflector_provider`, main.rs's reflector block); the routing
 //!   rule overrides `[reflector].model` there. The spawned Reflector holds
 //!   its provider privately, so a runtime change lands on the NEXT restart.
-//! - `pursue_task` — NOT supported: delegated tasks run inside an external
-//!   agent runtime (Codex/Claude CLI harness); the `SessionSpec` the
-//!   executor builds (`adaptive/exec.rs`) has a `runtime_id` but NO model
-//!   field — the harness picks its own model.
-//!   TODO(core seam): add a model hint to `SessionSpec`/`TaskInput` in
-//!   bastion-core's `bastion-agent-runtime` and thread it through
-//!   `RuntimeTaskExecutor::execute`. EVALUATED 2026-07-25 (fabric-readiness
-//!   pass, `bastion-core/docs/VERSIONING.md` §6): consciously deferred —
-//!   `bastion-agent-runtime` is Extension-tier, not Kernel, so this does not
-//!   gate the kernel's path to 1.0; picked up on `bastion-agent-runtime`'s
-//!   own 0.x schedule.
+//! - `pursue_task` — SUPPORTED (next restart): `bastion-agent-runtime`
+//!   0.1.1's `SessionSpec`/`TaskInput::model_hint` (SEAM-01/02) gives the
+//!   executor a real knob — `main.rs` resolves this class's rule once at
+//!   daemon start into `pursue_task_model_hint`, threaded through
+//!   `daemon_loop` to every `RuntimeTaskExecutor` a delegated task spawns
+//!   (`adaptive/exec.rs::coding_cycle`/`run_coding_pursue`/`run_delegated`).
+//!   The harness still decides whether to honor it — not every protocol
+//!   exposes model selection — but the hint now reaches the session. No
+//!   rule (or a runtime change) is byte-identical to pre-seam behavior:
+//!   `None` all the way through.
 //! - `cabinet` — NOT supported: Cabinet legs run on the SAME
 //!   `SharedProvider` as chat turns (bastion-personas `persona/runner.rs`
 //!   receives the loop's handle) — swapping it would re-route chat too,
@@ -106,7 +105,10 @@ impl RouteClass {
     pub fn supported(&self) -> bool {
         matches!(
             self,
-            RouteClass::ChatTurn | RouteClass::Reflection | RouteClass::Compaction
+            RouteClass::ChatTurn
+                | RouteClass::PursueTask
+                | RouteClass::Reflection
+                | RouteClass::Compaction
         )
     }
 
@@ -252,14 +254,18 @@ mod tests {
             .filter(RouteClass::supported)
             .map(|c| c.as_str())
             .collect();
-        assert_eq!(supported, vec!["chat_turn", "reflection", "compaction"]);
-        // And only chat_turn applies hot — reflection and compaction are both
-        // read once at daemon start (constructor arguments).
+        assert_eq!(
+            supported,
+            vec!["chat_turn", "pursue_task", "reflection", "compaction"]
+        );
+        // And only chat_turn applies hot — pursue_task, reflection and
+        // compaction are all read once at daemon start (constructor
+        // arguments / a value threaded into daemon_loop).
         assert!(RouteClass::ChatTurn.hot());
+        assert!(!RouteClass::PursueTask.hot());
         assert!(!RouteClass::Reflection.hot());
         assert!(!RouteClass::Compaction.hot());
-        // The two that still wait on a core seam of their own.
-        assert!(!RouteClass::PursueTask.supported());
+        // The one that still waits on a core seam of its own.
         assert!(!RouteClass::Cabinet.supported());
     }
 

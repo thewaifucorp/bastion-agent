@@ -789,6 +789,14 @@ async fn main() -> anyhow::Result<()> {
     // constructed here (key gone since it was approved) logs and falls back
     // to the default model instead of failing startup.
     let routing_table = bastion::routing::load_table(&config_store, &cfg.routing.rules).await;
+    // SEAM-03: resolved once at boot, same "next restart" semantics as
+    // `compaction` below — `RuntimeTaskExecutor` carries this straight
+    // through to every delegated-task session it opens (bastion-agent-runtime
+    // 0.1.1's `SessionSpec`/`TaskInput::model_hint`). `None` (no rule
+    // configured) is byte-identical to pre-seam behavior.
+    let pursue_task_model_hint = routing_table
+        .model_for(bastion::routing::RouteClass::PursueTask)
+        .map(|s| s.to_string());
     let boot_provider = match routing_table.model_for(bastion::routing::RouteClass::ChatTurn) {
         Some(model) => {
             // Same connectivity guard as `proposals::apply_model_config`:
@@ -1181,6 +1189,7 @@ async fn main() -> anyhow::Result<()> {
                 provider.clone(),
                 events_tx,
                 companion_handle,
+                pursue_task_model_hint,
             )
             .await?;
         }
@@ -1454,6 +1463,12 @@ async fn daemon_loop(
     // `POST /companion/care` / `POST /companion/event` below wire the
     // other end.
     companion_handle: bastion::tui::CompanionHandle,
+    // SEAM-03: resolved once at boot from `routing.rules`'s `pursue_task`
+    // entry (same `routing_table` `chat_turn`/`compaction` already read from
+    // in `main()`) — threaded through to every `RuntimeTaskExecutor` this
+    // loop spawns via `run_coding_pursue`/`run_delegated`. `None` (no rule
+    // configured) is byte-identical to pre-seam behavior.
+    pursue_task_model_hint: Option<String>,
 ) -> anyhow::Result<()> {
     use bastion::agent::command::{CommandResources, CommandResult};
     use tokio::io::{AsyncBufReadExt, BufReader};
@@ -2328,6 +2343,7 @@ async fn daemon_loop(
         let memory_for_sched = memory.clone();
         let pending_tx_for_sched = agent.pending_tx.clone();
         let observer_for_sched = lifecycle_observer.clone();
+        let pursue_task_model_hint_for_sched = pursue_task_model_hint.clone();
         tokio::spawn(adaptive::run_scheduler(
             schedule_store,
             std::time::Duration::from_secs(30),
@@ -2337,6 +2353,7 @@ async fn daemon_loop(
                 let memory = memory_for_sched.clone();
                 let tx = pending_tx_for_sched.clone();
                 let observer = observer_for_sched.clone();
+                let model_hint = pursue_task_model_hint_for_sched.clone();
                 async move {
                     let decision = adaptive::select_mode(&spec.intent);
                     if decision.mode == bastion_runtime::task::ExecutionMode::Pursue {
@@ -2354,6 +2371,7 @@ async fn daemon_loop(
                                 tokio::spawn(async move {
                                     if let Err(e) = adaptive::run_coding_pursue(
                                         &store, &registry, &memory, &owner, &id, &observer,
+                                        model_hint,
                                     )
                                     .await
                                     {
@@ -2905,6 +2923,7 @@ async fn daemon_loop(
                                     let observer = lifecycle_observer.clone();
                                     let owner =
                                         bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string();
+                                    let model_hint = pursue_task_model_hint.clone();
                                     tokio::spawn(async move {
                                         match bastion::adaptive::decompose(&objective) {
                                             Some(children) => {
@@ -2912,7 +2931,7 @@ async fn daemon_loop(
                                                     Ok(Some(parent)) => {
                                                         if let Err(e) = bastion::adaptive::run_delegated(
                                                             store, registry, memory, parent,
-                                                            children, observer,
+                                                            children, observer, model_hint,
                                                         )
                                                         .await
                                                         {
@@ -2925,7 +2944,7 @@ async fn daemon_loop(
                                             None => {
                                                 if let Err(e) = bastion::adaptive::run_coding_pursue(
                                                     &store, &registry, &memory, &owner, &id,
-                                                    &observer,
+                                                    &observer, model_hint,
                                                 ).await {
                                                     tracing::error!(event = "pursue_cycle_error", task = %id, error = %e);
                                                 }
@@ -3167,6 +3186,7 @@ async fn daemon_loop(
                                 let owner = req.owner.clone();
                                 let task_id = id.clone();
                                 let observer = lifecycle_observer.clone();
+                                let model_hint = pursue_task_model_hint.clone();
                                 tokio::spawn(async move {
                                     match bastion::adaptive::decompose(&objective) {
                                         Some(children) => {
@@ -3175,7 +3195,7 @@ async fn daemon_loop(
                                                     if let Err(e) =
                                                         bastion::adaptive::run_delegated(
                                                             store, registry, memory, parent,
-                                                            children, observer,
+                                                            children, observer, model_hint,
                                                         )
                                                         .await
                                                     {
@@ -3188,7 +3208,7 @@ async fn daemon_loop(
                                         None => {
                                             if let Err(e) = bastion::adaptive::run_coding_pursue(
                                                 &store, &registry, &memory, &owner, &task_id,
-                                                &observer,
+                                                &observer, model_hint,
                                             ).await {
                                                 tracing::error!(event = "pursue_cycle_error", task = %task_id, error = %e);
                                             }
