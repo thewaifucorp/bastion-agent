@@ -22,25 +22,29 @@
 //!   (`resolve_reflector_provider`, main.rs's reflector block); the routing
 //!   rule overrides `[reflector].model` there. The spawned Reflector holds
 //!   its provider privately, so a runtime change lands on the NEXT restart.
-//! - `pursue_task` — SUPPORTED (next restart): `bastion-agent-runtime`
-//!   0.1.1's `SessionSpec`/`TaskInput::model_hint` (SEAM-01/02) gives the
-//!   executor a real knob — `main.rs` resolves this class's rule once at
-//!   daemon start into `pursue_task_model_hint`, threaded through
-//!   `daemon_loop` to every `RuntimeTaskExecutor` a delegated task spawns
-//!   (`adaptive/exec.rs::coding_cycle`/`run_coding_pursue`/`run_delegated`).
-//!   The harness still decides whether to honor it — not every protocol
-//!   exposes model selection — but the hint now reaches the session. No
-//!   rule (or a runtime change) is byte-identical to pre-seam behavior:
-//!   `None` all the way through.
-//! - `cabinet` — NOT supported: Cabinet legs run on the SAME
-//!   `SharedProvider` as chat turns (bastion-personas `persona/runner.rs`
-//!   receives the loop's handle) — swapping it would re-route chat too,
-//!   never class-scoped.
-//!   TODO(core seam): a per-mode provider override on `PersonaResponder` /
-//!   the Cabinet orchestrator in bastion-core. EVALUATED 2026-07-25
-//!   (fabric-readiness pass, `bastion-core/docs/VERSIONING.md` §6):
-//!   consciously deferred — `bastion-personas` is Extension-tier, not
-//!   Kernel, same reasoning as `pursue_task` above.
+//! - `pursue_task` — NOT supported: delegated tasks run inside an external
+//!   agent runtime (Codex/Claude CLI harness); the `SessionSpec` the
+//!   executor builds (`adaptive/exec.rs`) has a `runtime_id` but NO model
+//!   field — the harness picks its own model.
+//!   TODO(core seam): add a model hint to `SessionSpec`/`TaskInput` in
+//!   bastion-core's `bastion-agent-runtime` and thread it through
+//!   `RuntimeTaskExecutor::execute`. EVALUATED 2026-07-25 (fabric-readiness
+//!   pass, `bastion-core/docs/VERSIONING.md` §6): consciously deferred —
+//!   `bastion-agent-runtime` is Extension-tier, not Kernel, so this does not
+//!   gate the kernel's path to 1.0; picked up on `bastion-agent-runtime`'s
+//!   own 0.x schedule.
+//! - `cabinet` — SUPPORTED (next restart): `bastion-personas` 0.2.1's
+//!   `PersonaResponder::with_cabinet_provider` gives Cabinet's legs
+//!   (`orchestrator::deliberate`) and its synthesis/egress-gate call a
+//!   provider genuinely distinct from the turn's `SharedProvider` —
+//!   swapping one can never re-route the other. `main.rs` resolves this
+//!   class's rule once at daemon start into its own `Arc<RwLock<_>>`
+//!   handle (never sharing `provider`'s Arc) and wires it into the
+//!   `PersonaResponder` the composition root builds, so a runtime change
+//!   lands on the NEXT restart — same semantics as `reflection`/
+//!   `compaction`. No rule (or a rule whose provider cannot be built)
+//!   leaves Cabinet on the turn's own provider, byte-identical to the
+//!   pre-seam behavior.
 //! - `compaction` — SUPPORTED (next restart): `AutoCompact::compact`'s
 //!   summarization call runs on `AgentLoop::compaction_provider` when one is
 //!   set (bastion-core 0.3.0's `with_compaction_provider` seam), instead of
@@ -106,7 +110,7 @@ impl RouteClass {
         matches!(
             self,
             RouteClass::ChatTurn
-                | RouteClass::PursueTask
+                | RouteClass::Cabinet
                 | RouteClass::Reflection
                 | RouteClass::Compaction
         )
@@ -256,17 +260,17 @@ mod tests {
             .collect();
         assert_eq!(
             supported,
-            vec!["chat_turn", "pursue_task", "reflection", "compaction"]
+            vec!["chat_turn", "cabinet", "reflection", "compaction"]
         );
-        // And only chat_turn applies hot — pursue_task, reflection and
+        // And only chat_turn applies hot — cabinet, reflection and
         // compaction are all read once at daemon start (constructor
-        // arguments / a value threaded into daemon_loop).
+        // arguments / values threaded into the composition root).
         assert!(RouteClass::ChatTurn.hot());
-        assert!(!RouteClass::PursueTask.hot());
+        assert!(!RouteClass::Cabinet.hot());
         assert!(!RouteClass::Reflection.hot());
         assert!(!RouteClass::Compaction.hot());
         // The one that still waits on a core seam of its own.
-        assert!(!RouteClass::Cabinet.supported());
+        assert!(!RouteClass::PursueTask.supported());
     }
 
     #[test]
@@ -326,7 +330,7 @@ mod tests {
         let cabinet = &report[2];
         assert_eq!(cabinet.model, None);
         assert_eq!(cabinet.source, None);
-        assert!(!cabinet.supported);
+        assert!(cabinet.supported);
     }
 
     #[test]

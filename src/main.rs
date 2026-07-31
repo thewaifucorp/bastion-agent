@@ -832,6 +832,43 @@ async fn main() -> anyhow::Result<()> {
         Some(p) => p,
         None => resolve_provider(&default_model)?,
     }));
+    // CAB-01..04: same resolve-and-connectivity-guard pattern as chat_turn
+    // above, but a GENUINELY SEPARATE `Arc<RwLock<_>>` handle — this must
+    // never share `provider`'s Arc, or "distinct from the turn's
+    // conversational provider" would be a lie. `None` (no rule, or an
+    // unconstructible one) leaves Cabinet on the turn's own provider,
+    // byte-identical to pre-seam behavior — same fail-closed-to-default
+    // discipline `chat_turn` already uses, never a failed startup.
+    let cabinet_provider: Option<bastion_providers::SharedProvider> = match routing_table
+        .model_for(bastion::routing::RouteClass::Cabinet)
+    {
+        Some(model) => {
+            let kind = bastion_providers::registry::resolve_provider_kind(model);
+            let connected = bastion::model_catalog::env_key_for_provider(kind)
+                .is_none_or(|env_key| std::env::var(env_key).is_ok_and(|v| !v.is_empty()));
+            let resolved = if connected {
+                resolve_provider(model)
+            } else {
+                Err(anyhow::anyhow!("provider '{kind}' is not connected"))
+            };
+            match resolved {
+                Ok(p) => {
+                    tracing::info!(event = "routing_cabinet_applied", model = %model);
+                    Some(Arc::new(RwLock::new(p)))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        event = "routing_cabinet_failed",
+                        model = %model,
+                        error = %e,
+                        "cabinet routing rule unusable — Cabinet falls back to the turn's own provider",
+                    );
+                    None
+                }
+            }
+        }
+        None => None,
+    };
     // A4 S2: the fallback ladder gets the same overlay treatment as
     // `default_model` above — an approved `model_config` proposal persists
     // `model.fallbacks` in the config store, and it is read HERE (the ladder
@@ -864,11 +901,14 @@ async fn main() -> anyhow::Result<()> {
     // a `config.applied` event on the same stream `/events` serves (startup
     // migration/reads above ran before any subscriber could exist).
     let config_store = config_store.with_events(events_tx.clone());
+    let mut persona_responder =
+        bastion_personas::persona::responder::PersonaResponder::new(registry);
+    if let Some(cabinet_provider) = cabinet_provider {
+        persona_responder = persona_responder.with_cabinet_provider(cabinet_provider);
+    }
     let responder: Arc<dyn bastion_runtime::agent::ports::Responder> =
         Arc::new(bastion::observability::ObservedResponder::new(
-            Arc::new(bastion_personas::persona::responder::PersonaResponder::new(
-                registry,
-            )),
+            Arc::new(persona_responder),
             events_tx.clone(),
         ));
 
