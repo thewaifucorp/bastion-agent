@@ -15,6 +15,7 @@ use bastion_personas::persona::PersonaRegistry;
 use bastion_providers::registry::resolve_provider;
 use bastion_runtime::agent::handle;
 use bastion_runtime::agent::loop_::AgentLoop;
+use bastion_runtime::provider_auth::{Clock, SystemClock};
 use bastion_runtime::session::SessionManager;
 use bastion_runtime::task::{SqliteTaskStore, TaskStore};
 
@@ -2256,16 +2257,67 @@ async fn daemon_loop(
     // both `/auth` dispatch sites below (console stdin + channel inbound)
     // AND `/model <provider_id>/<model_id>[@profile]` (BACOMP-01, wired via
     // `CommandResources::subscription_auth` below) — one instance, four
-    // surfaces. No connector is registered yet: `bastion-providers::codex`
-    // needs this repo's core pin to advance past v0.3.1 first (tracked
-    // separately). Until then the empty registry means `/auth connect`
-    // fails with a clear "unknown provider" and `/model codex/...` falls
-    // through to ordinary `resolve_provider` handling, same as any other
-    // unrecognized prefix — never a silent no-op.
+    // surfaces.
+    //
+    // The Codex/ChatGPT connector (BACOMP-01..05) is the first (and today
+    // only) registered connector: `SqliteCredentialStateStore` persists the
+    // lifecycle's state machine (no secret), `codex_connector::SqliteCodexTokenStore`
+    // persists the raw refresh token + account id (the ONLY table that does
+    // — deliberately separate from the state store, same BAAUTH-01/02
+    // discipline `subscription_auth`'s own module doc requires), and
+    // `CodexConnector` is the thin adapter over `bastion-providers::codex`'s
+    // already-tested device-code/refresh/inference primitives, implementing
+    // both `SubscriptionLoginFlow` and `SubscriptionModelProvider`.
+    let codex_credential_state_store = Arc::new(
+        bastion::provider_credential_state::SqliteCredentialStateStore::new(
+            cfg.session.db_path.clone(),
+        ),
+    );
+    if let Err(e) = codex_credential_state_store.init_schema().await {
+        tracing::error!(event = "codex_credential_state_store_init_failed", error = %e);
+    }
+    let codex_token_store = Arc::new(bastion::codex_connector::SqliteCodexTokenStore::new(
+        cfg.session.db_path.clone(),
+    ));
+    if let Err(e) = codex_token_store.init_schema().await {
+        tracing::error!(event = "codex_token_store_init_failed", error = %e);
+    }
+    // One shared config for both the connector and the refresher — building
+    // it twice risked the two silently diverging the day either gains a
+    // real operator override (client_id/issuer/api_base) instead of the
+    // default; a single instance makes that impossible by construction.
+    let codex_config = bastion_providers::codex::CodexConfig::default();
+    let codex_connector = Arc::new(bastion::codex_connector::CodexConnector::new(
+        codex_config.clone(),
+        codex_token_store.clone() as Arc<dyn bastion_providers::codex::CodexTokenStore>,
+    ));
+    let codex_refresher = Arc::new(bastion_providers::codex::CodexRefresher::new(
+        codex_config,
+        codex_token_store as Arc<dyn bastion_providers::codex::CodexTokenStore>,
+    ));
+    let codex_lifecycle = Arc::new(
+        bastion_runtime::provider_auth::ProviderCredentialLifecycle::new(
+            codex_credential_state_store,
+            codex_refresher as Arc<dyn bastion_runtime::provider_auth::ProviderCredentialRefresher>,
+            Arc::new(bastion_runtime::provider_auth::SystemClock),
+            Arc::new(bastion_runtime::provider_auth::ExponentialBackoff::new_default()),
+        ),
+    );
+    let mut subscription_connectors = std::collections::HashMap::new();
+    subscription_connectors.insert(
+        bastion_providers::codex::CODEX_PROVIDER_ID.to_string(),
+        bastion::subscription_auth::ConnectorRegistration {
+            flow: codex_connector.clone()
+                as Arc<dyn bastion::subscription_auth::SubscriptionLoginFlow>,
+            lifecycle: codex_lifecycle,
+            provider_factory: codex_connector
+                as Arc<dyn bastion::subscription_auth::SubscriptionModelProvider>,
+        },
+    );
     let subscription_auth_service =
         Arc::new(bastion::subscription_auth::SubscriptionAuthService::new(
             cfg.session.db_path.clone(),
-            std::collections::HashMap::new(),
+            subscription_connectors,
         ));
     if let Err(e) = subscription_auth_service.init_schema().await {
         tracing::error!(event = "subscription_auth_service_init_failed", error = %e);
@@ -2765,6 +2817,32 @@ async fn daemon_loop(
                             }
                             continue;
                         }
+                        // M8 (BAUX-01..05): "/model status" needs
+                        // `agent.backend_profile`/`agent.provider` — same
+                        // reason `/backend` above is special-cased instead
+                        // of routed through the generic `handle_command`.
+                        // Every other "/model ..." form falls through
+                        // unchanged to the match below.
+                        if first_token == "/model"
+                            && trimmed.split_once(' ').map(|x| x.1.trim()) == Some("status")
+                        {
+                            let (model_id, provider_id) = {
+                                let guard = provider.read().await;
+                                (guard.model_name().to_string(), guard.name())
+                            };
+                            let now = SystemClock.now_nanos();
+                            let msg = bastion::agent::model_status_command::handle(
+                                &agent.backend_profile,
+                                &model_id,
+                                provider_id,
+                                bastion_runtime::agent::loop_::DEFAULT_OWNER,
+                                Some(&subscription_auth_service),
+                                now,
+                            )
+                            .await;
+                            println!("{msg}");
+                            continue;
+                        }
                         match agent
                             .handle_command(
                                 trimmed,
@@ -3002,6 +3080,29 @@ async fn daemon_loop(
                         Ok(msg) => Ok(msg),
                         Err(e) => Ok(format!("Erro no comando: {e}")),
                     }
+                } else if matches!(command_token, Some("/model"))
+                    && trimmed.split_once(' ').map(|x| x.1.trim()) == Some("status")
+                {
+                    // M8 (BAUX-01..05): same reason "/backend" above is
+                    // special-cased instead of routed through
+                    // `handle_command` — needs `agent.backend_profile`/
+                    // `agent.provider`. Every other "/model ..." form falls
+                    // through to the generic dispatch below, unchanged.
+                    let (model_id, provider_id) = {
+                        let guard = provider.read().await;
+                        (guard.model_name().to_string(), guard.name())
+                    };
+                    let now = SystemClock.now_nanos();
+                    let msg = bastion::agent::model_status_command::handle(
+                        &agent.backend_profile,
+                        &model_id,
+                        provider_id,
+                        &req.owner,
+                        Some(&subscription_auth_service),
+                        now,
+                    )
+                    .await;
+                    Ok(msg)
                 } else if command_token.is_some() {
                     match agent
                         .handle_command(trimmed, &req.owner, &command_handler)

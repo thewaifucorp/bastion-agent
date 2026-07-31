@@ -6,6 +6,7 @@ pub mod committee_store;
 pub mod console_prompt;
 pub mod credential_command;
 pub mod extension_command;
+pub mod model_status_command;
 pub mod prompt;
 pub mod proposal_command;
 pub mod schedule_command;
