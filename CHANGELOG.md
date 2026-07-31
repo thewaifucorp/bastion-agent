@@ -8,6 +8,8 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-31
+
 ### Added
 
 - **`cabinet` routing class gains a real model knob (CAB seam, agent-side
