@@ -2266,12 +2266,17 @@ async fn daemon_loop(
     if let Err(e) = codex_token_store.init_schema().await {
         tracing::error!(event = "codex_token_store_init_failed", error = %e);
     }
+    // One shared config for both the connector and the refresher — building
+    // it twice risked the two silently diverging the day either gains a
+    // real operator override (client_id/issuer/api_base) instead of the
+    // default; a single instance makes that impossible by construction.
+    let codex_config = bastion_providers::codex::CodexConfig::default();
     let codex_connector = Arc::new(bastion::codex_connector::CodexConnector::new(
-        bastion_providers::codex::CodexConfig::default(),
+        codex_config.clone(),
         codex_token_store.clone() as Arc<dyn bastion_providers::codex::CodexTokenStore>,
     ));
     let codex_refresher = Arc::new(bastion_providers::codex::CodexRefresher::new(
-        bastion_providers::codex::CodexConfig::default(),
+        codex_config,
         codex_token_store as Arc<dyn bastion_providers::codex::CodexTokenStore>,
     ));
     let codex_lifecycle = Arc::new(
