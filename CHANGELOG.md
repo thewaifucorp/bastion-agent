@@ -10,6 +10,21 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **`/model status` — subscription model/usage status (BAUX-01..05,
+  `src/subscription_view.rs`, `src/agent/model_status_command.rs`)**.
+  Reports who owns the active conversation loop (`ExecutionOwner`: Bastion
+  or an external runtime), whether the active model is confirmed valid
+  against a live catalog, and usage/quota — all with an explicit
+  "unavailable" state (`CatalogUnavailable`/`SourceUnavailable`) instead of
+  inventing a verdict or a number: no connector in this repo produces a
+  real `ProviderCatalog`/`ProviderUsageSnapshot` yet, so today this always
+  reports honestly that the source doesn't exist rather than a fake 0% or
+  "válido". A corrective action (`Reconnect` > `SelectAnotherModel` >
+  `WaitUntil` > none) is derived in a fixed priority order, never guessed
+  from a partially-known state. Special-cased in `main.rs`'s dispatch (both
+  console and channel arms) for the same reason `/backend` is — it needs
+  `agent.backend_profile`/`agent.provider`, which the generic
+  `CommandHandler` port doesn't receive.
 - **`/model <provider_id>/<model_id>[@profile]` — subscription-backed
   providers in the native `AgentLoop`** (BACOMP-01..05, `src/subscription_auth.rs`,
   `src/agent/command.rs`). Closes the gap between "connect an account"
