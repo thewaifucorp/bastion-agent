@@ -10,6 +10,29 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **Live end-to-end proof of the subscription-provider flow (release 0.3.0
+  gate)** — `tests/providers_e2e_live.rs`, opt-in (`#[ignore]`, `cargo test
+  --test providers_e2e_live -- --ignored --nocapture`, same convention as
+  `tests/agent_runtime_backend_live.rs`). Connects a real Codex/ChatGPT
+  account through `/auth connect` (real device-code flow, needs a human to
+  approve in a browser within 15 minutes), runs one real inference turn
+  through the resolved subscription-backed provider, checks `/model status`
+  reports `ExecutionOwner::Bastion`, simulates a daemon restart by rebuilding
+  `SubscriptionAuthService` against the same sqlite file, then confirms
+  `/auth status` still reports the credential as ready and `/auth
+  disconnect` actually removes it. Exercises the real command glue
+  (`src/agent/auth_command.rs`, `src/agent/model_status_command.rs`), not a
+  bypass around it. Requires manual approval to run (spends real inference
+  tokens); `cargo test --test providers_e2e_live --no-run` and `cargo
+  clippy --all-targets` both stay green without running it.
+  - **GitHub Copilot stays Core-only for 0.3.0.** Confirmed via a full grep
+    of `bastion-agent`: zero references to Copilot outside a single negative
+    test assertion (`subscription_auth.rs`, `!service.is_registered("copilot")`).
+    The Copilot connector (`bastion-core`'s `feat/copilot-subscription-connector`)
+    is not wired into this crate's composition root — agent-side wiring is a
+    follow-up, consistent with how Codex's connector shipped first and was
+    wired here separately.
+
 - **`cabinet` routing class gains a real model knob (CAB seam, agent-side
   wiring)** — repins `bastion-core` to the commit adding `bastion-personas`
   0.2.1's `PersonaResponder::with_cabinet_provider` (CAB-01..04). `main.rs`
