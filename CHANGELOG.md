@@ -22,6 +22,20 @@ for how that differs from the library crates it depends on).
   or an unconstructible one) is byte-identical to pre-seam behavior —
   Cabinet keeps using the turn's own provider.
 
+- **`pursue_task` routing class gains a real model knob (SEAM-03/04)** —
+  repins `bastion-core` to the commit adding `bastion-agent-runtime`
+  0.1.1's `SessionSpec`/`TaskInput::model_hint` (SEAM-01/02). `main.rs`
+  resolves `routing.rules`' `pursue_task` entry once at boot into
+  `pursue_task_model_hint`, threaded through `daemon_loop` to every
+  `RuntimeTaskExecutor` a delegated task spawns
+  (`adaptive/exec.rs::coding_cycle`/`run_coding_pursue`/`run_delegated`).
+  `RouteClass::PursueTask` moves to `supported: true` on `GET /routing`
+  (next-restart semantics, same as `reflection`/`compaction` — not hot).
+  `None` (no rule configured) is byte-identical to pre-seam behavior; the
+  harness still decides whether to honor a `Some` hint, since not every
+  protocol exposes model selection. Corrects the `[0.2.4]` entry below,
+  which predates this seam and still lists `pursue_task` as unsupported.
+
 - **`/model <provider_id>/<model_id>[@profile]` — subscription-backed
   providers in the native `AgentLoop`** (BACOMP-01..05, `src/subscription_auth.rs`,
   `src/agent/command.rs`). Closes the gap between "connect an account"
@@ -188,6 +202,17 @@ for how that differs from the library crates it depends on).
   0.2.0→0.2.2 (both additive on the Core side). No source changes on the
   agent side beyond the pin — `cargo test --workspace`: 33 test binaries, 0
   failures, unchanged from before the repin.
+
+- **Core pin advances to `bastion-core` `4d8eba00876b8e8359f3a25e929e8df1436340d5`**
+  (all 11 git dependencies in `Cargo.toml`), up from `v0.3.2`. Brings
+  `bastion-mesh`'s product doc (docs only, no API change), the
+  `pursue_task`/`cabinet` routing seams above, and
+  `bastion-providers::copilot` (the GitHub Copilot subscription connector —
+  not wired into this repo's composition root yet, see the "Providers E2E"
+  gate in the `0.3.0` release PR). `bastion-agent-runtime` 0.1.0→0.1.1,
+  `bastion-personas` 0.2.0→0.2.1, `bastion-providers` 0.2.2→0.2.3 (all
+  additive on the Core side). This commit predates a `bastion-core` tag —
+  pinned by commit until one is cut.
 
 ## [0.2.4] — 2026-07-27
 

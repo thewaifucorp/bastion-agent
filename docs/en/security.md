@@ -45,8 +45,6 @@ this section only summarizes what an operator needs to know:
   concept, so MCP-created/listed tasks are never project-scoped yet.
   Owner is still the real, always-enforced boundary either way — `project`
   is a refinement on top of it, not a substitute.
-- **Webhook subscriptions can be created but not listed or revoked** via the
-  API yet — track what you register out-of-band until that surface exists.
 
 ## Incident response
 
