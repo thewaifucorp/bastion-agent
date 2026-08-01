@@ -12,10 +12,11 @@
 //! the operator's configured persona directory — the SAME directory
 //! `PersonaRegistry::load_dir` already reads from; a pack's personas never
 //! route through `ExtensionManifest` at all (mirrors how `bastion-extensions`
-//! itself describes the split). Skills are copied alongside for the record,
-//! but bastion-agent doesn't scan a skills directory at startup yet
-//! (`SkillsLoader::load_all` exists but nothing calls it from `main()`) — a
-//! pre-existing gap this command surfaces rather than silently papering over.
+//! itself describes the split). Skills are copied alongside for the record;
+//! `main.rs` scans the configured skills directory once at boot
+//! (`SkillsLoader::load_all`) so a copied skill is picked up on the next
+//! restart, same "next restart, not hot" semantics as an installed
+//! extension reactivating (see `persistence`'s module doc).
 //!
 //! Optional persona selection: a pack's `pack.toml` may declare
 //! `[personas_selection] required = [...]` — any name in `personas` not listed there is optional,
@@ -46,6 +47,7 @@ use bastion_extension_protocol::{
 };
 
 use crate::extension::declarative::DeclarativeExtension;
+use crate::extension::persistence::{PersistedExtension, ReconstructKind, SqliteExtensionStore};
 use crate::extension::{CliCapability, ExtensionHost, ExtensionInstance, HostFacade};
 
 /// Result of `/extension <sub>`. `install` can produce `AwaitingPersonaSelection`
@@ -81,6 +83,7 @@ pub enum HandleOutcome {
 /// Handle `/extension <sub> [args]`.
 pub async fn handle(
     host: &mut ExtensionHost,
+    store: &SqliteExtensionStore,
     personas_dir: &str,
     bastion_toml_path: &str,
     arg: Option<&str>,
@@ -94,7 +97,7 @@ pub async fn handle(
     match sub {
         "" | "list" => Ok(HandleOutcome::Done(list(host))),
         "install" => Ok(
-            match install(host, personas_dir, bastion_toml_path, owner, rest).await {
+            match install(host, store, personas_dir, bastion_toml_path, owner, rest).await {
                 InstallOutcome::Done(msg) => HandleOutcome::Done(msg),
                 InstallOutcome::AwaitingPersonaSelection {
                     report,
@@ -152,6 +155,7 @@ enum InstallOutcome {
 /// produced before persona selection existed.
 async fn install(
     host: &mut ExtensionHost,
+    store: &SqliteExtensionStore,
     personas_dir: &str,
     bastion_toml_path: &str,
     owner: &str,
@@ -192,6 +196,7 @@ async fn install(
     if optional.is_empty() {
         let report = install_commit(
             host,
+            store,
             personas_dir,
             bastion_toml_path,
             owner,
@@ -234,8 +239,10 @@ async fn install(
 /// prompt boundary between `install`'s preview and this call) and copies
 /// `required` ∪ `selection` — this is the body `install` itself used to run
 /// unconditionally before persona selection existed.
+#[allow(clippy::too_many_arguments)] // command-glue bag, same precedent as loadout::router
 pub(crate) async fn install_commit(
     host: &mut ExtensionHost,
+    store: &SqliteExtensionStore,
     personas_dir: &str,
     bastion_toml_path: &str,
     owner: &str,
@@ -294,7 +301,7 @@ pub(crate) async fn install_commit(
     let manifests = load_extension_manifests(&pack_dir.join("extensions"));
     for (ext_id, _version_req) in &pack.extensions {
         report.push_str(
-            &install_one_extension(host, owner, &manifests, bastion_toml_path, ext_id).await,
+            &install_one_extension(host, store, owner, &manifests, bastion_toml_path, ext_id).await,
         );
     }
 
@@ -393,6 +400,7 @@ const GIT_CAPABILITY_CRATE_NAME: &str = "bastion/git-capability";
 
 async fn install_one_extension(
     host: &mut ExtensionHost,
+    store: &SqliteExtensionStore,
     owner: &str,
     manifests: &HashMap<String, (ExtensionManifest, String)>,
     bastion_toml_path: &str,
@@ -407,7 +415,7 @@ async fn install_one_extension(
 
     if let Entrypoint::NativeCrate { crate_name } = &manifest.entrypoint {
         if crate_name == GIT_CAPABILITY_CRATE_NAME {
-            report.push_str(&install_git_capability(host, owner, manifest).await);
+            report.push_str(&install_git_capability(host, store, owner, manifest).await);
             return report;
         }
         report.push_str(&format!(
@@ -435,7 +443,24 @@ async fn install_one_extension(
         Arc::new(DeclarativeExtension::new(manifest.clone(), vec![]));
     report.push_str(
         &match host.install(instance, owner, &PermissionSet::none()).await {
-            Ok(()) => format!("  + {ext_id}: installed\n"),
+            Ok(()) => {
+                if let Err(e) = store.save(owner, manifest, ReconstructKind::Declarative).await {
+                    // The extension IS active (host.install already
+                    // succeeded) — a persistence failure here means it just
+                    // won't survive the next restart, not that the install
+                    // itself is broken. Reported, not silently swallowed.
+                    tracing::error!(
+                        event = "extension_persist_failed",
+                        id = %ext_id,
+                        error = %e,
+                    );
+                    format!(
+                        "  + {ext_id}: installed (warning: failed to persist — won't survive a restart: {e})\n"
+                    )
+                } else {
+                    format!("  + {ext_id}: installed\n")
+                }
+            }
             Err(e) => format!("  ! {ext_id}: install failed — {e}\n"),
         },
     );
@@ -500,6 +525,7 @@ impl ExtensionInstance for GitCliExtension {
 
 async fn install_git_capability(
     host: &mut ExtensionHost,
+    store: &SqliteExtensionStore,
     owner: &str,
     manifest: &ExtensionManifest,
 ) -> String {
@@ -513,10 +539,28 @@ async fn install_git_capability(
         ..PermissionSet::none()
     };
     match host.install(instance, owner, &ceiling).await {
-        Ok(()) => format!(
-            "  + {GIT_CAPABILITY_CRATE_NAME}: installed (workspace: {})\n",
-            workspace.display()
-        ),
+        Ok(()) => {
+            if let Err(e) = store
+                .save(owner, manifest, ReconstructKind::GitCapability)
+                .await
+            {
+                tracing::error!(
+                    event = "extension_persist_failed",
+                    id = %GIT_CAPABILITY_CRATE_NAME,
+                    error = %e,
+                );
+                format!(
+                    "  + {GIT_CAPABILITY_CRATE_NAME}: installed (workspace: {}) (warning: failed \
+                     to persist — won't survive a restart: {e})\n",
+                    workspace.display()
+                )
+            } else {
+                format!(
+                    "  + {GIT_CAPABILITY_CRATE_NAME}: installed (workspace: {})\n",
+                    workspace.display()
+                )
+            }
+        }
         Err(e) => format!("  ! {GIT_CAPABILITY_CRATE_NAME}: install failed — {e}\n"),
     }
 }
@@ -545,9 +589,24 @@ fn revoke_preview(host: &ExtensionHost, id: &str) -> HandleOutcome {
 /// correct defense (nothing else can uninstall it in between on this
 /// single-threaded REPL loop, but `host.revoke` is the actual source of
 /// truth either way).
-pub(crate) async fn revoke_commit(host: &mut ExtensionHost, id: &str) -> String {
+pub(crate) async fn revoke_commit(
+    host: &mut ExtensionHost,
+    store: &SqliteExtensionStore,
+    id: &str,
+) -> String {
     match host.revoke(id).await {
-        Ok(()) => format!("extension {id} revoked."),
+        Ok(()) => {
+            if let Err(e) = store.remove(id).await {
+                // The extension IS revoked (deactivated, capability
+                // removed) — a failure here only means the persisted
+                // record could reappear on next restart if the store is
+                // later fixed, not that revoke itself failed.
+                tracing::error!(event = "extension_persist_remove_failed", id = %id, error = %e);
+                format!("extension {id} revoked (warning: failed to clear persisted record: {e}).")
+            } else {
+                format!("extension {id} revoked.")
+            }
+        }
         Err(e) => format!("cannot revoke {id}: {e}"),
     }
 }
@@ -634,6 +693,60 @@ fn load_extension_manifests(dir: &Path) -> HashMap<String, (ExtensionManifest, S
     out
 }
 
+/// Boot-time reload: reactivate every persisted extension against a fresh
+/// `ExtensionHost`, reusing the EXACT SAME `Arc<dyn ExtensionInstance>`
+/// construction `install_one_extension`/`install_git_capability` use for a
+/// live `/extension install` — never a second activation path. Best-effort
+/// per row: a row that fails to parse or reactivate is logged and skipped,
+/// never fatal to daemon startup (one corrupt/stale record must not block
+/// boot). The permission ceiling passed to `host.install` is the manifest's
+/// own `permissions` — this is a re-activation of something already vetted
+/// once at original install time, not a fresh authority grant, so checking
+/// it against itself (always a subset of itself) is the honest ceiling
+/// here, not a loosened check.
+pub async fn reload_persisted(
+    host: &mut ExtensionHost,
+    store: &SqliteExtensionStore,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let persisted = match store.load_all_parsed().await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!(event = "extension_persistence_load_failed", error = %e);
+            lines.push(format!("  ! failed to read persisted extensions: {e}"));
+            return lines;
+        }
+    };
+    for PersistedExtension {
+        owner,
+        manifest,
+        kind,
+    } in persisted
+    {
+        let id = manifest.id.clone();
+        let ceiling = manifest.permissions.clone();
+        let instance: Arc<dyn ExtensionInstance> = match kind {
+            ReconstructKind::Declarative => Arc::new(DeclarativeExtension::new(manifest, vec![])),
+            ReconstructKind::GitCapability => {
+                let workspace =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                Arc::new(GitCliExtension {
+                    manifest,
+                    workspace,
+                })
+            }
+        };
+        match host.install(instance, &owner, &ceiling).await {
+            Ok(()) => lines.push(format!("  + {id}: reactivated from persisted loadout")),
+            Err(e) => {
+                tracing::warn!(event = "extension_reload_failed", id = %id, error = %e);
+                lines.push(format!("  ! {id}: failed to reactivate — {e}"));
+            }
+        }
+    }
+    lines
+}
+
 fn copy_dir(src: &Path, dest: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dest)?;
     for entry in std::fs::read_dir(src)? {
@@ -664,6 +777,17 @@ fn copy_dir(src: &Path, dest: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// A fresh, isolated `SqliteExtensionStore` per test — persistence
+    /// itself is covered by `extension::persistence`'s own tests; here it
+    /// only needs to exist so `install`/`install_commit`/`revoke_commit`
+    /// have somewhere to write.
+    async fn test_store() -> (tempfile::NamedTempFile, SqliteExtensionStore) {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        let s = SqliteExtensionStore::new(f.path().to_str().unwrap());
+        s.init_schema().await.unwrap();
+        (f, s)
+    }
 
     fn write_pack(
         root: &Path,
@@ -728,8 +852,10 @@ mod tests {
         );
 
         let mut host = ExtensionHost::new();
+        let (_f, store) = test_store().await;
         let InstallOutcome::Done(report) = install(
             &mut host,
+            &store,
             personas_dest.path().to_str().unwrap(),
             "/nonexistent/bastion.toml",
             "alice",
@@ -791,8 +917,10 @@ mod tests {
         );
 
         let mut host = ExtensionHost::new();
+        let (_f, store) = test_store().await;
         let InstallOutcome::Done(report) = install(
             &mut host,
+            &store,
             personas_dest.path().to_str().unwrap(),
             "/nonexistent/bastion.toml",
             "alice",
@@ -857,8 +985,10 @@ mod tests {
         );
 
         let mut host = ExtensionHost::new();
+        let (_f, store) = test_store().await;
         let InstallOutcome::Done(report) = install(
             &mut host,
+            &store,
             ".",
             "/nonexistent/bastion.toml",
             "alice",
@@ -935,8 +1065,10 @@ mod tests {
         );
 
         let mut host = ExtensionHost::new();
+        let (_f, store) = test_store().await;
         let InstallOutcome::Done(report) = install(
             &mut host,
+            &store,
             ".",
             bastion_toml.to_str().unwrap(),
             "alice",
@@ -962,6 +1094,7 @@ mod tests {
         let mut host2 = ExtensionHost::new();
         let InstallOutcome::Done(report2) = install(
             &mut host2,
+            &store,
             ".",
             bastion_toml.to_str().unwrap(),
             "alice",
@@ -983,8 +1116,10 @@ mod tests {
     async fn install_reports_missing_pack_toml_clearly() {
         let empty = TempDir::new().unwrap();
         let mut host = ExtensionHost::new();
+        let (_f, store) = test_store().await;
         let InstallOutcome::Done(report) = install(
             &mut host,
+            &store,
             ".",
             "/nonexistent/bastion.toml",
             "alice",
@@ -1040,8 +1175,10 @@ mod tests {
         );
 
         let mut host = ExtensionHost::new();
+        let (_f, store) = test_store().await;
         install(
             &mut host,
+            &store,
             ".",
             "/nonexistent/bastion.toml",
             "alice",
@@ -1055,6 +1192,7 @@ mod tests {
 
         let out = handle(
             &mut host,
+            &store,
             ".",
             "/nonexistent/bastion.toml",
             Some("revoke acme/noop-mcp"),
@@ -1075,7 +1213,7 @@ mod tests {
             "installed extensions:\n  acme/noop-mcp  v1.0.0"
         );
 
-        let report = revoke_commit(&mut host, &id).await;
+        let report = revoke_commit(&mut host, &store, &id).await;
         assert_eq!(report, "extension acme/noop-mcp revoked.");
         assert_eq!(list(&host), "no extensions installed.");
     }
@@ -1083,8 +1221,10 @@ mod tests {
     #[tokio::test]
     async fn revoke_of_unknown_id_fails_immediately_without_asking() {
         let mut host = ExtensionHost::new();
+        let (_f, store) = test_store().await;
         let out = handle(
             &mut host,
+            &store,
             ".",
             "/nonexistent/bastion.toml",
             Some("revoke nope"),
@@ -1146,8 +1286,10 @@ mod tests {
         );
 
         let mut host = ExtensionHost::new();
+        let (_f, store) = test_store().await;
         let InstallOutcome::Done(report) = install(
             &mut host,
+            &store,
             personas_dest.path().to_str().unwrap(),
             "/nonexistent/bastion.toml",
             "alice",
@@ -1312,8 +1454,10 @@ mod tests {
         write_hedge_fund_style_pack(pack_root.path());
 
         let mut host = ExtensionHost::new();
+        let (_f, store) = test_store().await;
         let outcome = install(
             &mut host,
+            &store,
             personas_dest.path().to_str().unwrap(),
             "/nonexistent/bastion.toml",
             "alice",
@@ -1349,10 +1493,12 @@ mod tests {
         write_hedge_fund_style_pack(pack_root.path());
 
         let mut host = ExtensionHost::new();
+        let (_f, store) = test_store().await;
         let required = opt(&["risk-manager", "portfolio-manager"]);
         let selection = opt(&["burry"]); // ackman intentionally NOT selected
         let report = install_commit(
             &mut host,
+            &store,
             personas_dest.path().to_str().unwrap(),
             "/nonexistent/bastion.toml",
             "alice",
@@ -1384,9 +1530,11 @@ mod tests {
         write_hedge_fund_style_pack(pack_root.path());
 
         let mut host = ExtensionHost::new();
+        let (_f, store) = test_store().await;
         let required = opt(&["risk-manager", "portfolio-manager"]);
         install_commit(
             &mut host,
+            &store,
             personas_dest.path().to_str().unwrap(),
             "/nonexistent/bastion.toml",
             "alice",
@@ -1429,8 +1577,10 @@ mod tests {
         );
 
         let mut host = ExtensionHost::new();
+        let (_f, store) = test_store().await;
         let outcome = install(
             &mut host,
+            &store,
             personas_dest.path().to_str().unwrap(),
             "/nonexistent/bastion.toml",
             "alice",
@@ -1445,5 +1595,208 @@ mod tests {
         assert!(report.contains("implementer"), "{report}");
         assert!(personas_dest.path().join("tech-lead").exists());
         assert!(personas_dest.path().join("implementer").exists());
+    }
+
+    // ---------------------------------------------------------------------
+    // Persistence across a restart — the actual M4.2 acceptance criterion:
+    // an extension installed before a restart reappears already active,
+    // without the operator reinstalling it.
+    // ---------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn a_declarative_extension_survives_a_simulated_restart() {
+        let pack_root = TempDir::new().unwrap();
+        write_pack(
+            pack_root.path(),
+            r#"
+                id = "acme/test-pack"
+                version = "1.0.0"
+                extensions = [["acme/noop-mcp", "*"]]
+                skills = []
+                personas = []
+
+                [defaults]
+                enabled_extensions = []
+            "#,
+            &[],
+            &[(
+                "noop-mcp",
+                r#"
+                    id = "acme/noop-mcp"
+                    version = "1.0.0"
+                    kind = "declarative"
+                    compat = "*"
+                    provides = []
+                    requires = []
+                    secrets = []
+                    migrations = []
+
+                    [permissions]
+
+                    [entrypoint]
+                    kind = "declarative"
+                    artifact_path = "noop.json"
+
+                    [signature]
+                    publisher = "test"
+                    algorithm = "ed25519"
+                    value = "dGVzdA=="
+                "#,
+            )],
+        );
+
+        // "Before the restart": a real install, through the real command
+        // path, into a real (temp-file-backed) store.
+        let (_f, store) = test_store().await;
+        let mut host = ExtensionHost::new();
+        install(
+            &mut host,
+            &store,
+            ".",
+            "/nonexistent/bastion.toml",
+            "alice",
+            pack_root.path().to_str().unwrap(),
+        )
+        .await;
+        assert!(host.is_installed("acme/noop-mcp"));
+
+        // "The restart": a FRESH host, exactly what `main.rs` constructs at
+        // boot — nothing carried over except what the store persisted.
+        let mut fresh_host = ExtensionHost::new();
+        assert!(!fresh_host.is_installed("acme/noop-mcp"));
+
+        let lines = reload_persisted(&mut fresh_host, &store).await;
+
+        assert!(
+            fresh_host.is_installed("acme/noop-mcp"),
+            "a persisted extension must reactivate on the next boot without \
+             the operator reinstalling it"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("acme/noop-mcp")),
+            "{lines:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoking_an_extension_removes_it_from_persistence_too() {
+        let pack_root = TempDir::new().unwrap();
+        write_pack(
+            pack_root.path(),
+            r#"
+                id = "acme/test-pack"
+                version = "1.0.0"
+                extensions = [["acme/noop-mcp", "*"]]
+                skills = []
+                personas = []
+
+                [defaults]
+                enabled_extensions = []
+            "#,
+            &[],
+            &[(
+                "noop-mcp",
+                r#"
+                    id = "acme/noop-mcp"
+                    version = "1.0.0"
+                    kind = "declarative"
+                    compat = "*"
+                    provides = []
+                    requires = []
+                    secrets = []
+                    migrations = []
+
+                    [permissions]
+
+                    [entrypoint]
+                    kind = "declarative"
+                    artifact_path = "noop.json"
+
+                    [signature]
+                    publisher = "test"
+                    algorithm = "ed25519"
+                    value = "dGVzdA=="
+                "#,
+            )],
+        );
+
+        let (_f, store) = test_store().await;
+        let mut host = ExtensionHost::new();
+        install(
+            &mut host,
+            &store,
+            ".",
+            "/nonexistent/bastion.toml",
+            "alice",
+            pack_root.path().to_str().unwrap(),
+        )
+        .await;
+
+        revoke_commit(&mut host, &store, "acme/noop-mcp").await;
+
+        // A "restart" after the revoke must NOT bring it back.
+        let mut fresh_host = ExtensionHost::new();
+        reload_persisted(&mut fresh_host, &store).await;
+        assert!(!fresh_host.is_installed("acme/noop-mcp"));
+    }
+
+    #[tokio::test]
+    async fn one_corrupt_persisted_row_does_not_block_the_others_from_reloading() {
+        let (_f, store) = test_store().await;
+        store.init_schema().await.unwrap();
+
+        // A good row, through the real typed API.
+        store
+            .save(
+                "alice",
+                &manifest_for_persistence_test("acme/good-one"),
+                ReconstructKind::Declarative,
+            )
+            .await
+            .unwrap();
+
+        // A row this build's `ReconstructKind` can't parse — simulates a
+        // future format change or a hand-edited db — written directly with
+        // rusqlite, bypassing `save`'s typed API on purpose. `_f` is the
+        // same temp-file path `store` itself was constructed from.
+        {
+            use rusqlite::Connection;
+            let conn = Connection::open(_f.path()).unwrap();
+            conn.execute(
+                "INSERT INTO installed_extension (id, owner, kind, manifest_json) \
+                 VALUES ('acme/from-the-future', 'alice', 'wasm_v2', '{}')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let mut host = ExtensionHost::new();
+        let lines = reload_persisted(&mut host, &store).await;
+
+        // The good row reactivated — one bad row never stops the batch.
+        assert!(
+            host.is_installed("acme/good-one"),
+            "a corrupt sibling row must not block a valid row from reloading"
+        );
+        assert!(!host.is_installed("acme/from-the-future"));
+        assert!(lines.iter().any(|l| l.contains("acme/good-one")));
+    }
+
+    fn manifest_for_persistence_test(id: &str) -> ExtensionManifest {
+        ExtensionManifest {
+            id: id.to_string(),
+            version: semver::Version::new(1, 0, 0),
+            kind: ExtensionKind::Declarative,
+            compat: semver::VersionReq::parse("*").unwrap(),
+            provides: vec![],
+            requires: vec![],
+            permissions: PermissionSet::none(),
+            secrets: vec![],
+            entrypoint: Entrypoint::Declarative {
+                artifact_path: "noop.json".into(),
+            },
+            migrations: vec![],
+            signature: None,
+        }
     }
 }

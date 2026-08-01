@@ -10,6 +10,37 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **Expansion Packs survive a daemon restart; installed skills load at
+  boot (release 0.3.0 gate)** — closes two gaps `extension_command.rs`'s
+  own module doc used to disclose:
+  - `SqliteExtensionStore` (`src/extension/persistence.rs`) — same
+    `spawn_blocking` + WAL pattern already used 3x in this crate. Never a
+    second source of truth for WHETHER something is active: it only
+    records enough (owner, manifest, a `ReconstructKind` tag) to
+    reconstruct the exact same `Arc<dyn ExtensionInstance>`
+    `install_one_extension`/`install_git_capability` build live, and
+    `reload_persisted` re-`install()`s each row through `ExtensionHost`'s
+    own already-atomic path at boot — never a second activation
+    mechanism. `/extension install`/`revoke` write through the store at
+    the same call site the in-memory operation already succeeds at.
+  - `main.rs` calls `SkillsLoader::load_all` once at boot (env
+    `SKILLS_DIR`, same convention `SkillReloadObserver` already used for
+    a single-file rescan) — `SkillsLoader::load_all` existed, tested, but
+    had zero call sites in `main()` before this.
+  - `GET /loadout`'s `skills` field (new) reports what was actually
+    found; `extensions` stays empty at that specific snapshot capture
+    point for now (a boot-ordering constraint, not a missing mechanism —
+    `ExtensionHost` is constructed later in the boot sequence).
+  - Upgrade/rollback of already-installed packs were already implemented
+    and tested (`host.rs`) — not new work here. Remote **signed**
+    installation remains out of scope for `0.3.0`, already documented in
+    `extension/review.rs`.
+  - 9 new tests: persistence round-trip/overwrite/remove
+    (`extension::persistence`), a full persist→simulated-restart→reload
+    proof, revoke clearing the persisted record too, and one corrupt
+    sibling row never blocking the others from reloading
+    (`extension_command`).
+
 - **`cabinet` routing class gains a real model knob (CAB seam, agent-side
   wiring)** — repins `bastion-core` to the commit adding `bastion-personas`
   0.2.1's `PersonaResponder::with_cabinet_provider` (CAB-01..04). `main.rs`

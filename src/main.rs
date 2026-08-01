@@ -1884,9 +1884,31 @@ async fn daemon_loop(
             let runtime_registry_for_webhook = runtime_registry_for_product.clone();
             let auth_for_webhook = cfg.auth.clone();
             let updates_for_webhook = updates.clone();
+            // Boot-time skills scan (M4.2): `SkillsLoader::load_all` existed
+            // but nothing called it from `main()` — a pre-existing gap
+            // `extension_command.rs`'s own module doc used to call out.
+            // Same `SKILLS_DIR` convention `SkillReloadObserver` already
+            // uses for a single-file rescan (default `/skills`, the
+            // skill-writer container's mount point) — one canonical
+            // directory, not a second convention invented here.
+            let skills_dir = std::env::var("SKILLS_DIR").unwrap_or_else(|_| "/skills".to_string());
+            let loaded_skill_names: Vec<String> =
+                match bastion::agent::skills::SkillsLoader::load_all(&skills_dir) {
+                    Ok(skills) => skills.into_iter().map(|s| s.name).collect(),
+                    Err(e) => {
+                        tracing::warn!(event = "skills_load_failed", error = %e);
+                        Vec::new()
+                    }
+                };
             // Observability A2 (Loadout): boot-time composition snapshot —
             // personas, tools, runtimes, channels, MCP servers — served at
             // GET /loadout for the web app's assembled-pieces view.
+            // `extensions` stays empty HERE specifically: `ExtensionHost` is
+            // constructed later in `daemon_loop`'s boot sequence (after the
+            // subscription/credential stores), out of scope for this
+            // snapshot's capture point — not the same "mechanism doesn't
+            // exist" gap this comment used to describe, just a boot-order
+            // constraint on this one field.
             let loadout_routes = Some(bastion::loadout::router(
                 bastion::loadout::snapshot(
                     registry_for_product
@@ -1936,6 +1958,8 @@ async fn daemon_loop(
                         },
                     ],
                     cfg.mcp.servers.keys().cloned().collect(),
+                    Vec::new(),
+                    loaded_skill_names,
                 ),
                 owner_map.clone(),
                 jwt_secret.clone(),
@@ -2284,11 +2308,26 @@ async fn daemon_loop(
 
     // Extension pack cockpit (`/extension install|list|revoke`): in-memory
     // `ExtensionHost` (install/upgrade/rollback/revoke, atomic, zero-orphan —
-    // `src/extension/host.rs`), console-only like `/credential`. v1 has no
-    // sqlite-backed loadout — a daemon restart loses the installed set, same
-    // disclosed limitation as `bastion-extensions`' own README documents;
-    // persistence is a follow-up, not this cut's scope.
+    // `src/extension/host.rs`), console-only like `/credential`.
+    // `SqliteExtensionStore` (`src/extension/persistence.rs`) is what makes
+    // this survive a restart: `/extension install`/`revoke` write through it
+    // at the same call site the in-memory operation already succeeds at
+    // (`extension_command.rs`), and boot reloads every persisted row back
+    // into a fresh `ExtensionHost` via `reload_persisted` — reusing the
+    // EXACT same `Arc<dyn ExtensionInstance>` construction a live install
+    // uses, never a second activation path.
     let mut extension_host = bastion::extension::ExtensionHost::new();
+    let extension_store =
+        bastion::extension::SqliteExtensionStore::new(cfg.session.db_path.clone());
+    if let Err(e) = extension_store.init_schema().await {
+        tracing::error!(event = "extension_store_init_failed", error = %e);
+    }
+    for line in
+        bastion::agent::extension_command::reload_persisted(&mut extension_host, &extension_store)
+            .await
+    {
+        tracing::info!(event = "extension_reload", line = %line);
+    }
 
     // Bastion Agent — oferecer login e gestão de assinaturas (BAAUTH-03): one
     // `SubscriptionAuthService` instance, shared via `Arc` with the CLI
@@ -2629,6 +2668,7 @@ async fn daemon_loop(
                                 prompt,
                                 "none",
                                 &mut extension_host,
+                                &extension_store,
                                 &personas_dir,
                                 &bastion_toml_path,
                                 bastion_runtime::agent::loop_::DEFAULT_OWNER,
@@ -2644,6 +2684,7 @@ async fn daemon_loop(
                                 prompt,
                                 &s,
                                 &mut extension_host,
+                                &extension_store,
                                 &personas_dir,
                                 &bastion_toml_path,
                                 bastion_runtime::agent::loop_::DEFAULT_OWNER,
@@ -2722,6 +2763,7 @@ async fn daemon_loop(
                                 .unwrap_or_else(|_| "bastion.toml".to_owned());
                             match bastion::agent::extension_command::handle(
                                 &mut extension_host,
+                                &extension_store,
                                 &personas_dir,
                                 &bastion_toml_path,
                                 ext_arg,
