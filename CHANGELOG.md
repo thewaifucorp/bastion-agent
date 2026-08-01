@@ -10,6 +10,32 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **Installer dry run + sqlite schema audit (release 0.3.0 gate)** — ran
+  `installer.sh --prepare-only` against a fresh, isolated clone (not the
+  local checkout — `installer.sh`'s own `script_dir()` auto-detection
+  silently prefers a local checkout with `Cargo.toml`+`docker-compose.yml`
+  over `--dir` when run FROM one, a real footgun worth knowing about when
+  testing this script). Clone, `.env` generation (fresh
+  `APP_JWT_SECRET`/`BASTION_BOOTSTRAP_TOKEN`/`BASTION_INFER_TOKEN`/
+  `BASTION_UPDATER_TOKEN`, `0600`), and the missing-provider-key warning
+  all worked cleanly.
+  - Audited every `CREATE TABLE` in this crate against the `v0.2.4` tag
+    (`git diff v0.2.4` on each store file): zero schema-relevant diff on
+    any pre-existing table — every change since 0.2.4 added a brand-new
+    table (`codex_token`, `provider_credential_state`,
+    `subscription_profile_label`), never altered an existing one. Also
+    confirmed no `DROP`/`RENAME` DDL anywhere in this crate or in the
+    pinned `bastion-core` crates that share `session.db_path`.
+    `bastion-runtime`'s `SqliteMemory` does run real migrations
+    (`ALTER TABLE sessions/beliefs ADD COLUMN ...`, best-effort and
+    idempotent) — additive-only, same discipline, not a gap.
+  - **Fixed**: `BASTION_DATA_DIR` (`src/config.rs::apply_data_dir_defaults`
+    — a real, tested, single-portable-state-dir convention that fills in
+    `BASTION__SESSION__DB_PATH`/`BASTION__LOGGING__LOG_PATH`/
+    `BASTION_SECRETS_DIR`/`BASTION_PERSONAS_DIR`/`BASTION_COMPANION_PATH`)
+    was undocumented in `.env.example` — only the granular
+    `BASTION__SESSION__DB_PATH` override was shown. Added.
+
 - **`cabinet` routing class gains a real model knob (CAB seam, agent-side
   wiring)** — repins `bastion-core` to the commit adding `bastion-personas`
   0.2.1's `PersonaResponder::with_cabinet_provider` (CAB-01..04). `main.rs`
