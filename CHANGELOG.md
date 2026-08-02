@@ -12,6 +12,84 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **Expansion Packs survive a daemon restart; installed skills load at
+  boot (release 0.3.0 gate)** — closes two gaps `extension_command.rs`'s
+  own module doc used to disclose:
+  - `SqliteExtensionStore` (`src/extension/persistence.rs`) — same
+    `spawn_blocking` + WAL pattern already used 3x in this crate. Never a
+    second source of truth for WHETHER something is active: it only
+    records enough (owner, manifest, a `ReconstructKind` tag) to
+    reconstruct the exact same `Arc<dyn ExtensionInstance>`
+    `install_one_extension`/`install_git_capability` build live, and
+    `reload_persisted` re-`install()`s each row through `ExtensionHost`'s
+    own already-atomic path at boot — never a second activation
+    mechanism. `/extension install`/`revoke` write through the store at
+    the same call site the in-memory operation already succeeds at.
+  - `main.rs` calls `SkillsLoader::load_all` once at boot (env
+    `SKILLS_DIR`, same convention `SkillReloadObserver` already used for
+    a single-file rescan) — `SkillsLoader::load_all` existed, tested, but
+    had zero call sites in `main()` before this.
+  - `GET /loadout`'s `skills` field (new) reports what was actually
+    found; `extensions` stays empty at that specific snapshot capture
+    point for now (a boot-ordering constraint, not a missing mechanism —
+    `ExtensionHost` is constructed later in the boot sequence).
+  - Upgrade/rollback of already-installed packs were already implemented
+    and tested (`host.rs`) — not new work here. Remote **signed**
+    installation remains out of scope for `0.3.0`, already documented in
+    `extension/review.rs`.
+  - 9 new tests: persistence round-trip/overwrite/remove
+    (`extension::persistence`), a full persist→simulated-restart→reload
+    proof, revoke clearing the persisted record too, and one corrupt
+    sibling row never blocking the others from reloading
+    (`extension_command`).
+- **Live end-to-end proof of the subscription-provider flow (release 0.3.0
+  gate)** — `tests/providers_e2e_live.rs`, opt-in (`#[ignore]`, `cargo test
+  --test providers_e2e_live -- --ignored --nocapture`, same convention as
+  `tests/agent_runtime_backend_live.rs`). Connects a real Codex/ChatGPT
+  account through `/auth connect` (real device-code flow, needs a human to
+  approve in a browser within 15 minutes), runs one real inference turn
+  through the resolved subscription-backed provider, checks `/model status`
+  reports `ExecutionOwner::Bastion`, simulates a daemon restart by rebuilding
+  `SubscriptionAuthService` against the same sqlite file, then confirms
+  `/auth status` still reports the credential as ready and `/auth
+  disconnect` actually removes it. Exercises the real command glue
+  (`src/agent/auth_command.rs`, `src/agent/model_status_command.rs`), not a
+  bypass around it. Requires manual approval to run (spends real inference
+  tokens); `cargo test --test providers_e2e_live --no-run` and `cargo
+  clippy --all-targets` both stay green without running it.
+  - **GitHub Copilot stays Core-only for 0.3.0.** Confirmed via a full grep
+    of `bastion-agent`: zero references to Copilot outside a single negative
+    test assertion (`subscription_auth.rs`, `!service.is_registered("copilot")`).
+    The Copilot connector (`bastion-core`'s `feat/copilot-subscription-connector`)
+    is not wired into this crate's composition root — agent-side wiring is a
+    follow-up, consistent with how Codex's connector shipped first and was
+    wired here separately.
+- **Installer dry run + sqlite schema audit (release 0.3.0 gate)** — ran
+  `installer.sh --prepare-only` against a fresh, isolated clone (not the
+  local checkout — `installer.sh`'s own `script_dir()` auto-detection
+  silently prefers a local checkout with `Cargo.toml`+`docker-compose.yml`
+  over `--dir` when run FROM one, a real footgun worth knowing about when
+  testing this script). Clone, `.env` generation (fresh
+  `APP_JWT_SECRET`/`BASTION_BOOTSTRAP_TOKEN`/`BASTION_INFER_TOKEN`/
+  `BASTION_UPDATER_TOKEN`, `0600`), and the missing-provider-key warning
+  all worked cleanly.
+  - Audited every `CREATE TABLE` in this crate against the `v0.2.4` tag
+    (`git diff v0.2.4` on each store file): zero schema-relevant diff on
+    any pre-existing table — every change since 0.2.4 added a brand-new
+    table (`codex_token`, `provider_credential_state`,
+    `subscription_profile_label`), never altered an existing one. Also
+    confirmed no `DROP`/`RENAME` DDL anywhere in this crate or in the
+    pinned `bastion-core` crates that share `session.db_path`.
+    `bastion-runtime`'s `SqliteMemory` does run real migrations
+    (`ALTER TABLE sessions/beliefs ADD COLUMN ...`, best-effort and
+    idempotent) — additive-only, same discipline, not a gap.
+  - **Fixed**: `BASTION_DATA_DIR` (`src/config.rs::apply_data_dir_defaults`
+    — a real, tested, single-portable-state-dir convention that fills in
+    `BASTION__SESSION__DB_PATH`/`BASTION__LOGGING__LOG_PATH`/
+    `BASTION_SECRETS_DIR`/`BASTION_PERSONAS_DIR`/`BASTION_COMPANION_PATH`)
+    was undocumented in `.env.example` — only the granular
+    `BASTION__SESSION__DB_PATH` override was shown. Added.
+
 - **`cabinet` routing class gains a real model knob (CAB seam, agent-side
   wiring)** — repins `bastion-core` to the commit adding `bastion-personas`
   0.2.1's `PersonaResponder::with_cabinet_provider` (CAB-01..04). `main.rs`
@@ -23,6 +101,20 @@ for how that differs from the library crates it depends on).
   same as `reflection`/`compaction` — not hot). `None` (no rule configured,
   or an unconstructible one) is byte-identical to pre-seam behavior —
   Cabinet keeps using the turn's own provider.
+
+- **`pursue_task` routing class gains a real model knob (SEAM-03/04)** —
+  repins `bastion-core` to the commit adding `bastion-agent-runtime`
+  0.1.1's `SessionSpec`/`TaskInput::model_hint` (SEAM-01/02). `main.rs`
+  resolves `routing.rules`' `pursue_task` entry once at boot into
+  `pursue_task_model_hint`, threaded through `daemon_loop` to every
+  `RuntimeTaskExecutor` a delegated task spawns
+  (`adaptive/exec.rs::coding_cycle`/`run_coding_pursue`/`run_delegated`).
+  `RouteClass::PursueTask` moves to `supported: true` on `GET /routing`
+  (next-restart semantics, same as `reflection`/`compaction` — not hot).
+  `None` (no rule configured) is byte-identical to pre-seam behavior; the
+  harness still decides whether to honor a `Some` hint, since not every
+  protocol exposes model selection. Corrects the `[0.2.4]` entry below,
+  which predates this seam and still lists `pursue_task` as unsupported.
 
 - **`/model <provider_id>/<model_id>[@profile]` — subscription-backed
   providers in the native `AgentLoop`** (BACOMP-01..05, `src/subscription_auth.rs`,
@@ -190,6 +282,17 @@ for how that differs from the library crates it depends on).
   0.2.0→0.2.2 (both additive on the Core side). No source changes on the
   agent side beyond the pin — `cargo test --workspace`: 33 test binaries, 0
   failures, unchanged from before the repin.
+
+- **Core pin advances to `bastion-core` `4d8eba00876b8e8359f3a25e929e8df1436340d5`**
+  (all 11 git dependencies in `Cargo.toml`), up from `v0.3.2`. Brings
+  `bastion-mesh`'s product doc (docs only, no API change), the
+  `pursue_task`/`cabinet` routing seams above, and
+  `bastion-providers::copilot` (the GitHub Copilot subscription connector —
+  not wired into this repo's composition root yet, see the "Providers E2E"
+  gate in the `0.3.0` release PR). `bastion-agent-runtime` 0.1.0→0.1.1,
+  `bastion-personas` 0.2.0→0.2.1, `bastion-providers` 0.2.2→0.2.3 (all
+  additive on the Core side). This commit predates a `bastion-core` tag —
+  pinned by commit until one is cut.
 
 ## [0.2.4] — 2026-07-27
 

@@ -19,6 +19,15 @@ struct SkillFrontmatter {
     pub triggers: Option<Vec<String>>,
 }
 
+/// Canonical skills directory: `SKILLS_DIR` env var, defaulting to `/skills`
+/// (the skill-writer container's mount point). Shared by the boot-time full
+/// scan (`SkillsLoader::load_all`, called from `main()`) and
+/// `SkillReloadObserver`'s single-file rescan below — one convention, not
+/// two independently-maintained defaults.
+pub fn skills_dir() -> String {
+    std::env::var("SKILLS_DIR").unwrap_or_else(|_| "/skills".to_string())
+}
+
 pub struct SkillsLoader;
 
 impl SkillsLoader {
@@ -169,8 +178,7 @@ impl bastion_runtime::agent::ports::ToolResultObserver for SkillReloadObserver {
         // skill-writer returns /skills/<name>/SKILL.md (its container path).
         if result.get("skill_reloaded").and_then(|v| v.as_bool()) == Some(true) {
             if let Some(raw_path) = result.get("skill_path").and_then(|v| v.as_str()) {
-                let skills_dir =
-                    std::env::var("SKILLS_DIR").unwrap_or_else(|_| "/skills".to_string());
+                let skills_dir = skills_dir();
                 // SEC: skill_path crosses the skill-writer→core container trust
                 // boundary. Keep ONLY Normal components — discarding RootDir,
                 // Prefix, CurDir and ParentDir ("..") — so a malicious segment

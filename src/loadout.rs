@@ -5,9 +5,10 @@
 //! what your agent is assembled from and what each piece may do. This route
 //! answers with the composition snapshot taken at boot — personas loaded
 //! from `./personas/`, tools in the shared `CapabilityRegistry`, coding
-//! runtimes, enabled channels, configured MCP servers, and installed
-//! extension packs (honest empty until the `ExtensionHost` is wired into
-//! the daemon: mechanism exists, product wiring is backlog).
+//! runtimes, enabled channels, configured MCP servers, installed extension
+//! packs (`ExtensionHost`'s state right after `reload_persisted` restores
+//! whatever survived the last restart), and skills
+//! (`SkillsLoader::load_all`, also read once at boot).
 //!
 //! Owner-token authenticated (same `resolve_owner_or_401` as `/webhook`):
 //! the composition fingerprints an installation — it is for its operator,
@@ -57,10 +58,15 @@ pub struct LoadoutSnapshot {
     pub runtimes: Vec<RuntimePiece>,
     pub channels: Vec<ChannelPiece>,
     pub mcp_servers: Vec<String>,
-    /// Always empty today: the sandboxed `ExtensionHost` mechanism exists
-    /// (`src/extension/`) but nothing installs packs into the running
-    /// daemon yet — reported honestly rather than omitted.
+    /// Every extension `ExtensionHost` had active the moment this snapshot
+    /// was captured (boot time) — reflects `reload_persisted`'s result when
+    /// something survived a restart, empty when nothing did.
     pub extensions: Vec<String>,
+    /// Skill names `SkillsLoader::load_all` found under the configured
+    /// skills directory at boot. Empty is honest ("no skills directory, or
+    /// none found"), not an error — same discipline `extensions` above
+    /// already follows.
+    pub skills: Vec<String>,
     /// Nanoseconds since epoch when this snapshot was captured (boot time).
     pub captured_at: i64,
 }
@@ -794,6 +800,8 @@ pub fn snapshot(
     runtime_ids: Vec<String>,
     channels: Vec<ChannelPiece>,
     mcp_servers: Vec<String>,
+    extension_ids: Vec<String>,
+    skill_names: Vec<String>,
 ) -> LoadoutSnapshot {
     LoadoutSnapshot {
         personas: persona_names,
@@ -804,7 +812,8 @@ pub fn snapshot(
             .collect(),
         channels,
         mcp_servers,
-        extensions: Vec::new(),
+        extensions: extension_ids,
+        skills: skill_names,
         captured_at: now_nanos(),
     }
 }
@@ -833,6 +842,8 @@ mod tests {
                 enabled: true,
             }],
             vec!["memupalace".into()],
+            vec![],
+            vec![],
         );
         let f = tempfile::NamedTempFile::new().unwrap();
         let store = Arc::new(SqliteProposalStore::new(
