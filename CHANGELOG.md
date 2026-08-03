@@ -283,13 +283,14 @@ for how that differs from the library crates it depends on).
   agent side beyond the pin — `cargo test --workspace`: 33 test binaries, 0
   failures, unchanged from before the repin.
 
-- **Core pin advances to `bastion-core` `4d8eba00876b8e8359f3a25e929e8df1436340d5`**
+- **Core pin advances to `bastion-core` `dca705563f49971c51cb7bdddb5583993ff6b597`**
   (all 11 git dependencies in `Cargo.toml`), up from `v0.3.2`. Brings
   `bastion-mesh`'s product doc (docs only, no API change), the
   `pursue_task`/`cabinet` routing seams above, and
   `bastion-providers::copilot` (the GitHub Copilot subscription connector —
   not wired into this repo's composition root yet, see the "Providers E2E"
-  gate in the `0.3.0` release PR). `bastion-agent-runtime` 0.1.0→0.1.1,
+  gate in the `0.3.0` release PR), plus the corrected Codex device-code
+  endpoints under `/api/accounts/deviceauth/*`. `bastion-agent-runtime` 0.1.0→0.1.1,
   `bastion-personas` 0.2.0→0.2.1, `bastion-providers` 0.2.2→0.2.3 (all
   additive on the Core side). This commit predates a `bastion-core` tag —
   pinned by commit until one is cut.
