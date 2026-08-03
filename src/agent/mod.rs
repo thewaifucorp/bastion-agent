@@ -68,7 +68,8 @@ pub fn default_context_providers(
     // operationally available, not just observable in `GET /loadout`.
     // `SkillCatalogProvider` re-scans `skills_dir()` fresh every turn (never
     // caches — a skill installed mid-session is visible without a restart)
-    // and injects a compact name+description catalog; `skills::SkillCapability`
+    // and injects a compact catalog of validated directory ids (never
+    // author-controlled frontmatter); `skills::SkillCapability`
     // (registered separately in `main.rs` as an ordinary capability) is what
     // the agent then calls to read a listed skill's full content.
     providers.push(Box::new(skills::SkillCatalogProvider::new(

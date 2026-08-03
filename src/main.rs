@@ -1922,7 +1922,7 @@ async fn daemon_loop(
             })
             .await
             {
-                Ok(Ok(skills)) => skills.into_iter().map(|s| s.name).collect(),
+                Ok(Ok(skills)) => skills.into_iter().map(|s| s.id).collect(),
                 Ok(Err(e)) => {
                     tracing::warn!(event = "skills_load_failed", error = %e);
                     Vec::new()

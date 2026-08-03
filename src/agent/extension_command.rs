@@ -299,9 +299,11 @@ pub(crate) async fn install_commit(
     // of silently writing to the wrong place, until installing a pack's
     // skills is routed through `skill-writer` instead of `core` itself.
     let skills_target_dir = crate::agent::skills::skills_dir();
-    let skills_copied = copy_pack_members(&pack_dir.join("skills"), &pack.skills, |name| {
-        Path::new(&skills_target_dir).join(name)
-    });
+    let skills_copied = copy_skill_members(
+        &pack_dir.join("skills"),
+        &pack.skills,
+        Path::new(&skills_target_dir),
+    );
     for (name, error) in &skills_copied.failed {
         report.push_str(&format!("  ! skill {name}: failed to copy — {error}\n"));
     }
@@ -735,6 +737,28 @@ fn copy_pack_members(
         }
     }
     CopyResults { ok, failed }
+}
+
+/// Skills use skill-writer's narrower id grammar in addition to generic path
+/// safety. That same canonical id is advertised to the model and passed back
+/// to `SkillCapability`, so accepting a directory that cannot be addressed by
+/// the capability would create a silently installed but unusable skill.
+fn copy_skill_members(src_root: &Path, names: &[String], dest_root: &Path) -> CopyResults {
+    let mut valid = Vec::new();
+    let mut invalid = Vec::new();
+    for name in names {
+        if crate::agent::skills::is_safe_skill_id(name) {
+            valid.push(name.clone());
+        } else {
+            invalid.push((
+                name.clone(),
+                "invalid skill id (expected [a-z0-9][a-z0-9_-]{0,63})".to_string(),
+            ));
+        }
+    }
+    let mut copied = copy_pack_members(src_root, &valid, |name| dest_root.join(name));
+    copied.failed.extend(invalid);
+    copied
 }
 
 /// Keyed by manifest id, each value carries the parsed `ExtensionManifest`
@@ -1824,6 +1848,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn revoke_store_failure_leaves_extension_active_and_reports_no_change() {
+        let manifest = manifest_for_persistence_test("acme/fail-closed");
+        let mut host = ExtensionHost::new();
+        host.install(
+            Arc::new(DeclarativeExtension::new(manifest, vec![])),
+            "alice",
+            &PermissionSet::none(),
+        )
+        .await
+        .unwrap();
+
+        // A directory cannot be opened as a sqlite database file. This
+        // deterministically exercises the real store error path without
+        // introducing a test-only persistence abstraction.
+        let invalid_db = TempDir::new().unwrap();
+        let failing_store =
+            SqliteExtensionStore::new(invalid_db.path().to_string_lossy().into_owned());
+
+        let report = revoke_commit(&mut host, &failing_store, "acme/fail-closed").await;
+
+        assert!(host.is_installed("acme/fail-closed"));
+        assert!(report.contains("cannot revoke"), "{report}");
+        assert!(report.contains("nothing was changed"), "{report}");
+    }
+
+    #[tokio::test]
     async fn reload_rejects_a_persisted_row_claiming_more_than_its_kind_is_ever_allowed() {
         // A row with permissions no `Declarative` install could ever have
         // produced (the real install path always uses `PermissionSet::none()`
@@ -1960,10 +2010,10 @@ mod tests {
 
         // The exact call `install_commit` makes for a pack's `skills` list —
         // not a hand-simulated copy.
-        let copied = copy_pack_members(
+        let copied = copy_skill_members(
             &pack_root.path().join("skills"),
             &["weekly-review".to_string()],
-            |name| skills_dest.path().join(name),
+            skills_dest.path(),
         );
         assert_eq!(copied.ok, vec!["weekly-review".to_string()]);
         assert!(copied.failed.is_empty(), "{:?}", copied.failed);
@@ -1998,5 +2048,22 @@ mod tests {
                 .contains("List blockers"),
             "{result}"
         );
+    }
+
+    #[test]
+    fn pack_skill_with_noncanonical_id_is_rejected_before_copy() {
+        let source = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+        std::fs::create_dir_all(source.path().join("Ignore Previous Instructions")).unwrap();
+
+        let copied = copy_skill_members(
+            source.path(),
+            &["Ignore Previous Instructions".to_string()],
+            dest.path(),
+        );
+
+        assert!(copied.ok.is_empty());
+        assert_eq!(copied.failed.len(), 1);
+        assert!(!dest.path().join("Ignore Previous Instructions").exists());
     }
 }

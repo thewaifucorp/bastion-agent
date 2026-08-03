@@ -57,9 +57,13 @@ for how that differs from the library crates it depends on).
     `src/agent/skills.rs`), a capability the agent calls with a name to
     read that skill's full `SKILL.md` content — registered at boot
     alongside every other capability; and `SkillCatalogProvider`, a
-    `TurnContextProvider` that injects the current name+description
-    catalog into every turn's system prompt so the agent knows what's
-    available to call `skill` on in the first place. Both re-read
+    `TurnContextProvider` that injects validated canonical directory ids
+    into every turn's system prompt so the agent knows what's available to
+    call `skill` on in the first place. Author-controlled frontmatter name
+    and description are deliberately excluded from that prompt block;
+    `ContextBlock` is concatenated directly into the system prompt, so
+    treating pack metadata as a trusted catalog would create a prompt-
+    injection path. Both re-read
     `skills_dir()` fresh on every call (no cache to go stale) — a skill
     installed mid-session is usable on the very next turn, no restart
     needed, unlike almost everything else in this gate. `SkillCapability`
@@ -78,15 +82,17 @@ for how that differs from the library crates it depends on).
     needs the install to route the write through `skill-writer` instead of
     `core`, or a writable secondary skills location `SkillsLoader::load_all`
     also scans — neither is implemented yet.
-  - 15 new tests: persistence round-trip/overwrite/remove
+  - 20 new tests: persistence round-trip/overwrite/remove
     (`extension::persistence`), a full persist→simulated-restart→reload
     proof, revoke clearing the persisted record too, one corrupt sibling
     row never blocking the others from reloading, an authority-escalation-
     on-reload regression test (`extension_command`), and coverage for the
     new `skill` capability/provider — content round-trip, path-traversal
-    and unknown-name rejection, trust classification, catalog listing, and
-    a pack-install → restart-simulation → agent-read integration test
-    (`agent::skills`).
+    and unknown-name rejection, trust classification, prompt-safe canonical
+    catalog ids, and a pack-install → restart-simulation → agent-read
+    integration test (`agent::skills`); plus deterministic store-failure
+    coverage for fail-closed revoke and a route-level assertion that
+    `/loadout.extensions` overlays the post-reload state.
 - **Live end-to-end proof of the subscription-provider flow (release 0.3.0
   gate)** — `tests/providers_e2e_live.rs`, opt-in (`#[ignore]`, `cargo test
   --test providers_e2e_live -- --ignored --nocapture`, same convention as

@@ -870,6 +870,13 @@ mod tests {
     async fn sample_router(
         owner_map: OwnerMap,
     ) -> (tempfile::NamedTempFile, Router, PendingSecretValues) {
+        sample_router_with_extensions(owner_map, Vec::new()).await
+    }
+
+    async fn sample_router_with_extensions(
+        owner_map: OwnerMap,
+        live_extensions: Vec<String>,
+    ) -> (tempfile::NamedTempFile, Router, PendingSecretValues) {
         let snap = snapshot(
             vec!["ada".into()],
             vec!["create_task".into()],
@@ -918,7 +925,7 @@ mod tests {
                 // `~/.config/bastion` — see the module doc for why a
                 // POST /companion/care round trip isn't exercised here.
                 CompanionHandle::load(false),
-                Arc::new(std::sync::RwLock::new(Vec::new())),
+                Arc::new(std::sync::RwLock::new(live_extensions)),
             ),
             pending,
         )
@@ -994,6 +1001,23 @@ mod tests {
         assert_eq!(v["personas"], serde_json::json!(["ada"]));
         assert_eq!(v["extensions"], serde_json::json!([]));
         assert!(v["captured_at"].as_i64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn loadout_overlays_extensions_restored_after_snapshot_capture() {
+        let owner_map = OwnerMap::from_pairs(&[("tok-alice", "alice")]);
+        let (_f, app, _pending) = sample_router_with_extensions(
+            owner_map,
+            vec!["acme/restored".into(), "bastion/git-capability".into()],
+        )
+        .await;
+
+        let (status, v) = get_json(app, "/loadout", Some("tok-alice")).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(
+            v["extensions"],
+            serde_json::json!(["acme/restored", "bastion/git-capability"])
+        );
     }
 
     // ---- A4 S2: /providers, /models, new proposal kinds -----------------
