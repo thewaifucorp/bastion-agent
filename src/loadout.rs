@@ -58,9 +58,15 @@ pub struct LoadoutSnapshot {
     pub runtimes: Vec<RuntimePiece>,
     pub channels: Vec<ChannelPiece>,
     pub mcp_servers: Vec<String>,
-    /// Every extension `ExtensionHost` had active the moment this snapshot
-    /// was captured (boot time) — reflects `reload_persisted`'s result when
-    /// something survived a restart, empty when nothing did.
+    /// Every extension `ExtensionHost` has active, reflecting
+    /// `reload_persisted`'s result when something survived a restart, empty
+    /// when nothing did. NOT captured at the same instant as this struct's
+    /// other fields — `ExtensionHost` is constructed later than this
+    /// snapshot in `daemon_loop`'s boot sequence, so `loadout_handler`
+    /// overlays this field from a live handle at request time instead
+    /// (`LoadoutState::extensions_live`). Always reflects boot-time state
+    /// by the time a real request can reach the handler, same as every
+    /// other field here — just not stored in the same `Arc`.
     pub extensions: Vec<String>,
     /// Skill names `SkillsLoader::load_all` found under the configured
     /// skills directory at boot. Empty is honest ("no skills directory, or
@@ -107,6 +113,11 @@ struct LoadoutState {
     /// single writer of `companion.json` (see `tui::CompanionHandle`'s doc
     /// comment for the residual TUI-process race this does NOT close).
     companion: CompanionHandle,
+    /// Live extension ids, written once by `daemon_loop` right after
+    /// `reload_persisted` restores whatever survived the last restart — see
+    /// `router`'s doc comment for why this one field isn't captured in the
+    /// otherwise-frozen `snapshot` like everything else here.
+    extensions_live: Arc<std::sync::RwLock<Vec<String>>>,
 }
 
 fn auth(
@@ -124,7 +135,19 @@ async fn loadout_handler(
     if let Err(resp) = auth(&state, &headers, "loadout_unauthorized") {
         return *resp;
     }
-    Json(state.snapshot.as_ref().clone()).into_response()
+    let mut snapshot = state.snapshot.as_ref().clone();
+    // `ExtensionHost` is constructed (and `reload_persisted` run) later in
+    // `daemon_loop`'s boot sequence than this snapshot's other fields are
+    // captured — read the live handle at request time instead of the stale
+    // `Vec::new()` `snapshot.extensions` would otherwise always report. By
+    // the time any real request reaches this handler, boot has long
+    // finished and `reload_persisted` has already run, so this is
+    // effectively still "the state at boot", just not literally baked into
+    // the same `Arc` as the rest of the snapshot.
+    if let Ok(extensions) = state.extensions_live.read() {
+        snapshot.extensions = extensions.clone();
+    }
+    Json(snapshot).into_response()
 }
 
 async fn personas_list_handler(
@@ -740,6 +763,12 @@ async fn proposals_create_handler(
 /// Build the operator sub-router: `/loadout`, persona reads, and staged
 /// proposals. Merged into the webhook app after `.with_state` — same slot
 /// as `control_plane_routes`.
+///
+/// `extensions_live` is a handle `daemon_loop` keeps a clone of and writes
+/// to once, right after `reload_persisted` runs later in boot — see
+/// `LoadoutState::extensions_live`'s doc comment for why `/loadout`'s
+/// `extensions` field can't just be part of `snapshot` like everything else
+/// this function takes.
 #[allow(clippy::too_many_arguments)] // composition-root bag, same as serve_with_mesh
 pub fn router(
     snapshot: LoadoutSnapshot,
@@ -756,6 +785,7 @@ pub fn router(
     // `POST /companion/care` and hook-triggered session events serialize
     // through one in-process writer.
     companion: CompanionHandle,
+    extensions_live: Arc<std::sync::RwLock<Vec<String>>>,
 ) -> Router {
     Router::new()
         .route("/loadout", get(loadout_handler))
@@ -790,6 +820,7 @@ pub fn router(
             routing_toml: Arc::new(routing_toml),
             events_tx,
             companion,
+            extensions_live,
         })
 }
 
@@ -882,6 +913,7 @@ mod tests {
                 // `~/.config/bastion` — see the module doc for why a
                 // POST /companion/care round trip isn't exercised here.
                 CompanionHandle::load(false),
+                Arc::new(std::sync::RwLock::new(Vec::new())),
             ),
             pending,
         )

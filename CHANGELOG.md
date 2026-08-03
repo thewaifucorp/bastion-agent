@@ -29,14 +29,34 @@ for how that differs from the library crates it depends on).
     `SKILLS_DIR`, same convention `SkillReloadObserver` already used for
     a single-file rescan) — `SkillsLoader::load_all` existed, tested, but
     had zero call sites in `main()` before this.
-  - `GET /loadout`'s `skills` field (new) reports what was actually
-    found; `extensions` stays empty at that specific snapshot capture
-    point for now (a boot-ordering constraint, not a missing mechanism —
-    `ExtensionHost` is constructed later in the boot sequence).
+  - `GET /loadout`'s `skills` and `extensions` fields both report what was
+    actually found — `extensions` is filled in by a live handle
+    `daemon_loop` writes once `reload_persisted` has run (it's constructed
+    later in boot than the rest of the snapshot; see
+    `loadout::LoadoutState::extensions_live`'s doc comment), not baked into
+    the same frozen `Arc` as everything else `GET /loadout` reports.
   - Upgrade/rollback of already-installed packs were already implemented
     and tested (`host.rs`) — not new work here. Remote **signed**
     installation remains out of scope for `0.3.0`, already documented in
     `extension/review.rs`.
+  - `revoke_commit` clears the persisted record BEFORE deactivating the
+    extension in memory (fail-closed): a persistence failure now blocks
+    the whole revoke instead of reporting success while leaving a
+    reactivatable record on disk. `reload_persisted` checks each row
+    against the SAME fixed permission ceiling the original install used
+    (per `ReconstructKind`), not the row's own `manifest.permissions`
+    checked against itself — the latter is a no-op check by construction.
+  - **Known gap, not closed by this release**: a pack's `skills` members
+    copy into the SAME directory `SkillsLoader::load_all`/`skill-writer`
+    read from — but in the Docker Compose deployment specifically, `core`'s
+    `/skills` mount is read-only by design (only `skill-writer` writes
+    skills there), so `/extension install` cannot actually place a pack's
+    skill files there today; it fails with a clear permission error rather
+    than silently miswriting them (the previous bug). Running natively
+    (no `:ro` mount) this works as documented. Closing this for Docker
+    needs the install to route the write through `skill-writer` instead of
+    `core`, or a writable secondary skills location `SkillsLoader::load_all`
+    also scans — neither is implemented yet.
   - 9 new tests: persistence round-trip/overwrite/remove
     (`extension::persistence`), a full persist→simulated-restart→reload
     proof, revoke clearing the persisted record too, and one corrupt
@@ -92,6 +112,32 @@ for how that differs from the library crates it depends on).
     `BASTION_SECRETS_DIR`/`BASTION_PERSONAS_DIR`/`BASTION_COMPANION_PATH`)
     was undocumented in `.env.example` — only the granular
     `BASTION__SESSION__DB_PATH` override was shown. Added.
+
+- **Release-gate status, stated plainly — what's automated-verified vs. what
+  still needs a human before this ships**: none of the bullets above should
+  be read as "gate closed." Specifically:
+  - `docs/en/release-surfaces.md`'s manual UAT checklist (onboarding,
+    model switching, `/connect` flows, restart recovery, loading/error
+    states) has NOT been executed — every item in it is still an
+    unchecked `- [ ]`. The document says outright it "cannot substitute"
+    for a human actually opening `/app` and the TUI; that substitution
+    has not happened.
+  - `tests/providers_e2e_live.rs` is `#[ignore]`d by design (needs a
+    human to approve a real device-code login within 15 minutes and
+    spends real inference tokens) — a green CI run proves this crate
+    compiles against the real command glue, never that the live
+    connect→infer→restart→disconnect flow actually completed end to end.
+    It has been run manually once against a real Codex account (see the
+    bullet above), not repeated, and not run at all for Claude/OpenCode.
+  - The "installer dry run + sqlite schema audit" bullet above is exactly
+    that: a fresh-clone dry run plus a table-by-table schema diff against
+    `v0.2.4`. Neither is a real `v0.2.4` → `v0.3.0` upgrade: there is no
+    reproducible evidence in this release of `installer.sh` run against
+    an actual `v0.2.4` deployment with real session/credential/task data,
+    confirming that data survives, and confirming `bastion update`'s
+    rollback path actually restores a working `v0.2.4` afterward. That
+    remains an open item for whoever has a real `v0.2.4` deployment to
+    test it against.
 
 - **`cabinet` routing class gains a real model knob (CAB seam, agent-side
   wiring)** — repins `bastion-core` to the commit adding `bastion-personas`

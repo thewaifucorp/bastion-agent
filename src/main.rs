@@ -1636,6 +1636,15 @@ async fn daemon_loop(
     #[cfg(feature = "channels-extra")]
     let email_owner_map = bastion::config::owner_map_for_email(&cfg.identity);
 
+    // GET /loadout's `extensions` field: `ExtensionHost` isn't constructed
+    // until well after the webhook router below (`reload_persisted` runs
+    // near the end of this function's boot sequence) — declared here, above
+    // the webhook block, so a clone can go into `loadout::router` now and
+    // the original still be around later to write the real list into once
+    // `reload_persisted` has run. See `loadout::LoadoutState::extensions_live`.
+    let extensions_live: std::sync::Arc<std::sync::RwLock<Vec<String>>> =
+        std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
+
     // A channel starts only when it is enabled in bastion.toml AND its required
     // secret/address is present in the environment.
     if cfg.channels.webhook.enabled {
@@ -1884,6 +1893,10 @@ async fn daemon_loop(
             let runtime_registry_for_webhook = runtime_registry_for_product.clone();
             let auth_for_webhook = cfg.auth.clone();
             let updates_for_webhook = updates.clone();
+            // See the `extensions_live` declaration above `if
+            // cfg.channels.webhook.enabled` — the ORIGINAL is written to
+            // later, after `reload_persisted` runs.
+            let extensions_live_for_webhook = extensions_live.clone();
             // Boot-time skills scan (M4.2): `SkillsLoader::load_all` existed
             // but nothing called it from `main()` — a pre-existing gap
             // `extension_command.rs`'s own module doc used to call out.
@@ -1994,6 +2007,7 @@ async fn daemon_loop(
                 // `POST /companion/event`, and the hook-bridge capability
                 // all share one in-process writer.
                 companion_handle,
+                extensions_live_for_webhook,
             ));
             // Extension UI: the mechanism (`extension::ui::router`) shipped
             // with its isolation contract already tested, but was never
@@ -2337,6 +2351,19 @@ async fn daemon_loop(
             .await
     {
         tracing::info!(event = "extension_reload", line = %line);
+    }
+    // Fill in what `GET /loadout`'s snapshot couldn't capture directly (see
+    // `extensions_live`'s declaration above the webhook block): now that
+    // `reload_persisted` has run, the real post-restart extension list is
+    // known — write it once so `loadout_handler` stops reporting an
+    // always-empty `extensions` field.
+    if let Ok(mut extensions) = extensions_live.write() {
+        *extensions = extension_host
+            .loadout()
+            .extensions
+            .into_iter()
+            .map(|(id, _version)| id)
+            .collect();
     }
 
     // Bastion Agent — oferecer login e gestão de assinaturas (BAAUTH-03): one

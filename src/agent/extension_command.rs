@@ -12,11 +12,15 @@
 //! the operator's configured persona directory — the SAME directory
 //! `PersonaRegistry::load_dir` already reads from; a pack's personas never
 //! route through `ExtensionManifest` at all (mirrors how `bastion-extensions`
-//! itself describes the split). Skills are copied alongside for the record;
-//! `main.rs` scans the configured skills directory once at boot
-//! (`SkillsLoader::load_all`) so a copied skill is picked up on the next
-//! restart, same "next restart, not hot" semantics as an installed
-//! extension reactivating (see `persistence`'s module doc).
+//! itself describes the split). Skills are copied into the SAME directory
+//! `SkillsLoader::load_all` scans at boot and `skill-writer`'s own MCP tools
+//! read from (`skills_dir()`, `SKILLS_DIR` env var) — in the Docker
+//! deployment specifically, `core`'s `/skills` mount is read-only by design
+//! (D-10: only `skill-writer` writes skills), so a pack's skill members
+//! fail to copy there today with a clear permission error rather than
+//! silently landing somewhere unwatched; running natively (no `:ro` mount)
+//! they copy and get picked up on the next boot-time scan or a
+//! `skill-writer` reload signal.
 //!
 //! Optional persona selection: a pack's `pack.toml` may declare
 //! `[personas_selection] required = [...]` — any name in `personas` not listed there is optional,
@@ -284,16 +288,27 @@ pub(crate) async fn install_commit(
         ));
     }
 
+    // Target the SAME directory `SkillsLoader::load_all`/`skill-writer`'s own
+    // MCP tools read (`skills_dir()`, `SKILLS_DIR` env var, default
+    // `/skills`) — a bare relative "skills" here previously resolved
+    // against the daemon's cwd, which only ever matched `/skills` in the
+    // Docker deployment by accident (cwd there happens to be `/`) and never
+    // matched it running natively. In Docker, `core`'s own `/skills` mount
+    // is read-only by design (D-10: only `skill-writer` writes skills) —
+    // this now fails honestly with a clear permission error there instead
+    // of silently writing to the wrong place, until installing a pack's
+    // skills is routed through `skill-writer` instead of `core` itself.
+    let skills_target_dir = crate::agent::skills::skills_dir();
     let skills_copied = copy_pack_members(&pack_dir.join("skills"), &pack.skills, |name| {
-        Path::new("skills").join(name)
+        Path::new(&skills_target_dir).join(name)
     });
     for (name, error) in &skills_copied.failed {
         report.push_str(&format!("  ! skill {name}: failed to copy — {error}\n"));
     }
     if !skills_copied.ok.is_empty() {
         report.push_str(&format!(
-            "  skills copied: {} (note: bastion-agent doesn't scan a skills directory at \
-             startup yet — a pre-existing gap, not caused by this install)\n",
+            "  skills copied: {} (picked up by the next boot-time scan or a skill-writer \
+             reload signal, same as any other skill under {skills_target_dir})\n",
             skills_copied.ok.join(", ")
         ));
     }
@@ -614,25 +629,46 @@ fn revoke_preview(host: &ExtensionHost, id: &str) -> HandleOutcome {
 /// correct defense (nothing else can uninstall it in between on this
 /// single-threaded REPL loop, but `host.revoke` is the actual source of
 /// truth either way).
+///
+/// Fail-closed ordering: the persisted record is cleared FIRST, before the
+/// in-memory `host.revoke`. If clearing the record fails, the extension
+/// stays fully active (both in memory and on disk) and the operator is told
+/// revoke did NOT happen — the previous ordering deactivated in memory
+/// first and only warned on a persistence failure, which left a revoked
+/// extension's record on disk to be silently reactivated by
+/// `reload_persisted` on the next restart. This ordering can still leave
+/// the opposite (safe) split — persisted record gone, in-memory revoke
+/// itself fails — reported honestly below rather than claiming success.
 pub(crate) async fn revoke_commit(
     host: &mut ExtensionHost,
     store: &SqliteExtensionStore,
     id: &str,
 ) -> String {
+    if let Err(e) = store.remove(id).await {
+        tracing::error!(event = "extension_persist_remove_failed", id = %id, error = %e);
+        return format!(
+            "cannot revoke {id}: failed to clear persisted record — {e}. Extension is still \
+             active; nothing was changed."
+        );
+    }
     match host.revoke(id).await {
-        Ok(()) => {
-            if let Err(e) = store.remove(id).await {
-                // The extension IS revoked (deactivated, capability
-                // removed) — a failure here only means the persisted
-                // record could reappear on next restart if the store is
-                // later fixed, not that revoke itself failed.
-                tracing::error!(event = "extension_persist_remove_failed", id = %id, error = %e);
-                format!("extension {id} revoked (warning: failed to clear persisted record: {e}).")
-            } else {
-                format!("extension {id} revoked.")
-            }
+        Ok(()) => format!("extension {id} revoked."),
+        Err(e) => {
+            // The persisted record is already gone, so a restart will NOT
+            // reactivate this extension — the fail-closed direction is
+            // already secured. It just means the operator must know it's
+            // still live in THIS process until the next restart clears it.
+            tracing::error!(
+                event = "extension_revoke_failed_after_persist_removed",
+                id = %id,
+                error = %e,
+            );
+            format!(
+                "extension {id}: persisted record cleared, but deactivating it in this running \
+                 process failed — {e}. It will not survive a restart, but is still active until \
+                 then."
+            )
         }
-        Err(e) => format!("cannot revoke {id}: {e}"),
     }
 }
 
@@ -718,17 +754,37 @@ fn load_extension_manifests(dir: &Path) -> HashMap<String, (ExtensionManifest, S
     out
 }
 
+/// The SAME fixed ceiling `install_one_extension`/`install_git_capability`
+/// pass to `host.install` for a live `/extension install`, indexed by
+/// `ReconstructKind` — `reload_persisted` below reuses this instead of
+/// `manifest.permissions.clone()`, which would check the manifest's
+/// permissions against ITSELF (`X.is_subset_of(X)` is always true) and so
+/// enforce no real ceiling at all. If a persisted row's `permissions` were
+/// ever wider than what its kind is actually allowed (a corrupted row, or a
+/// future bug elsewhere writing a bad record), the live-install path would
+/// have rejected it — reload must reject it too, not wave every persisted
+/// row through unchecked.
+fn reload_ceiling_for(kind: &ReconstructKind) -> PermissionSet {
+    match kind {
+        ReconstructKind::Declarative => PermissionSet::none(),
+        ReconstructKind::GitCapability => PermissionSet {
+            capabilities: vec!["git".to_string()],
+            ..PermissionSet::none()
+        },
+    }
+}
+
 /// Boot-time reload: reactivate every persisted extension against a fresh
 /// `ExtensionHost`, reusing the EXACT SAME `Arc<dyn ExtensionInstance>`
 /// construction `install_one_extension`/`install_git_capability` use for a
 /// live `/extension install` — never a second activation path. Best-effort
 /// per row: a row that fails to parse or reactivate is logged and skipped,
 /// never fatal to daemon startup (one corrupt/stale record must not block
-/// boot). The permission ceiling passed to `host.install` is the manifest's
-/// own `permissions` — this is a re-activation of something already vetted
-/// once at original install time, not a fresh authority grant, so checking
-/// it against itself (always a subset of itself) is the honest ceiling
-/// here, not a loosened check.
+/// boot). The permission ceiling passed to `host.install` is
+/// `reload_ceiling_for(kind)` — the same FIXED ceiling the original install
+/// used, independent of whatever this row's own `manifest.permissions`
+/// says, so a persisted row can never grant itself more authority than its
+/// kind was ever allowed to have.
 pub async fn reload_persisted(
     host: &mut ExtensionHost,
     store: &SqliteExtensionStore,
@@ -749,7 +805,7 @@ pub async fn reload_persisted(
     } in persisted
     {
         let id = manifest.id.clone();
-        let ceiling = manifest.permissions.clone();
+        let ceiling = reload_ceiling_for(&kind);
         let instance: Arc<dyn ExtensionInstance> = match kind {
             ReconstructKind::Declarative => Arc::new(DeclarativeExtension::new(manifest, vec![])),
             ReconstructKind::GitCapability => {
@@ -1762,6 +1818,61 @@ mod tests {
         let mut fresh_host = ExtensionHost::new();
         reload_persisted(&mut fresh_host, &store).await;
         assert!(!fresh_host.is_installed("acme/noop-mcp"));
+    }
+
+    #[tokio::test]
+    async fn reload_rejects_a_persisted_row_claiming_more_than_its_kind_is_ever_allowed() {
+        // A row with permissions no `Declarative` install could ever have
+        // produced (the real install path always uses `PermissionSet::none()`
+        // as the ceiling for this kind) — simulates a corrupted row or a
+        // future bug elsewhere writing one. Before the fix, `reload_persisted`
+        // checked this manifest's `permissions` against ITSELF
+        // (`X.is_subset_of(X)`, always true) and would have reactivated it
+        // with the escalated authority intact.
+        let (_f, store) = test_store().await;
+        let mut escalated = manifest_for_persistence_test("acme/escalated");
+        escalated.permissions = PermissionSet {
+            capabilities: vec!["some-dangerous-capability".to_string()],
+            ..PermissionSet::none()
+        };
+        store
+            .save("alice", &escalated, ReconstructKind::Declarative)
+            .await
+            .unwrap();
+
+        let mut host = ExtensionHost::new();
+        let lines = reload_persisted(&mut host, &store).await;
+
+        assert!(
+            !host.is_installed("acme/escalated"),
+            "a persisted row must never be granted more authority on reload than its \
+             ReconstructKind's fixed ceiling allows, even if its own stored \
+             `permissions` claims it"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("acme/escalated")),
+            "the rejection must be reported, not silently dropped: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn reload_ceiling_matches_the_live_install_ceiling_for_each_kind() {
+        // Pins `reload_ceiling_for` to the exact same ceilings
+        // `install_one_extension`/`install_git_capability` pass to
+        // `host.install` for a live `/extension install` — the whole point
+        // of this function is that reload can never grant more than a live
+        // install could have.
+        assert_eq!(
+            reload_ceiling_for(&ReconstructKind::Declarative),
+            PermissionSet::none()
+        );
+        assert_eq!(
+            reload_ceiling_for(&ReconstructKind::GitCapability),
+            PermissionSet {
+                capabilities: vec!["git".to_string()],
+                ..PermissionSet::none()
+            }
+        );
     }
 
     #[tokio::test]
