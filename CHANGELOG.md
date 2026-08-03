@@ -57,6 +57,9 @@ for how that differs from the library crates it depends on).
   bypass around it. Requires manual approval to run (spends real inference
   tokens); `cargo test --test providers_e2e_live --no-run` and `cargo
   clippy --all-targets` both stay green without running it.
+  - The live model defaults to `gpt-5.6-sol`, verified with Codex CLI 0.146.0;
+    the previous `gpt-5` default is rejected for ChatGPT-authenticated Codex
+    accounts with HTTP 400 before inference starts.
   - **GitHub Copilot stays Core-only for 0.3.0.** Confirmed via a full grep
     of `bastion-agent`: zero references to Copilot outside a single negative
     test assertion (`subscription_auth.rs`, `!service.is_registered("copilot")`).

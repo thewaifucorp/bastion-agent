@@ -19,9 +19,8 @@
 //! browser signed into the ChatGPT account you want to test with; the test
 //! blocks on `wait_for_approval` until you do (or 15 minutes elapse).
 //!
-//! Model id defaults to `gpt-5` (matches the existing unit tests in
-//! `src/codex_connector.rs`) — override with `CODEX_E2E_MODEL` if the
-//! vendor's currently-available model id has moved on by the time this runs.
+//! Model id defaults to `gpt-5.6-sol`, verified against Codex CLI 0.146.0 on
+//! 2026-08-03. Override with `CODEX_E2E_MODEL` when the vendor catalog moves.
 //!
 //! Fixture note: this integration test binary cannot reuse fixtures from
 //! other files under `tests/` (each compiles as its own crate) — the small
@@ -101,7 +100,7 @@ async fn codex_connect_infer_restart_status_disconnect_live() {
         .with_env_filter("info")
         .try_init();
 
-    let model_id = std::env::var("CODEX_E2E_MODEL").unwrap_or_else(|_| "gpt-5".to_string());
+    let model_id = std::env::var("CODEX_E2E_MODEL").unwrap_or_else(|_| "gpt-5.6-sol".to_string());
     let f = NamedTempFile::new().unwrap();
     let db_path = f.path().to_str().unwrap().to_string();
 
