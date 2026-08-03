@@ -693,8 +693,11 @@ struct CopyResults {
 /// path segment before it ever reaches a `Path::join`. Blocks `..`,
 /// separators (`/`, `\`), and absolute paths, which would otherwise let a
 /// malicious pack write outside both the source pack directory and the
-/// operator's persona/skills directory.
-fn is_safe_member_name(name: &str) -> bool {
+/// operator's persona/skills directory. `pub(crate)`: `agent::skills::
+/// SkillCapability` reuses this exact check for the same reason (a skill
+/// NAME requested at invoke time is just as untrusted as a pack's own
+/// declared member list).
+pub(crate) fn is_safe_member_name(name: &str) -> bool {
     !name.is_empty()
         && name != "."
         && name != ".."
@@ -1933,5 +1936,67 @@ mod tests {
             migrations: vec![],
             signature: None,
         }
+    }
+
+    /// Covers the reviewer's ask directly: install → (simulated restart) →
+    /// load, for a pack's skill member specifically. Exercises the SAME
+    /// `copy_pack_members` call `install_commit` uses (not a hand-rolled
+    /// substitute), then a FRESH `SkillCapability` — standing in for the
+    /// "restart" a real reload would be, since skill files aren't in the
+    /// SQLite persistence store at all, just on disk — reads the content
+    /// back through the real capability path an agent turn would use.
+    #[tokio::test]
+    async fn a_pack_skill_survives_install_and_is_readable_via_skill_capability() {
+        let pack_root = TempDir::new().unwrap();
+        let skills_dest = TempDir::new().unwrap();
+        let skill_src = pack_root.path().join("skills").join("weekly-review");
+        std::fs::create_dir_all(&skill_src).unwrap();
+        std::fs::write(
+            skill_src.join("SKILL.md"),
+            "---\nname: weekly-review\ndescription: Runs a weekly review\n---\n\
+             1. Summarize the week.\n2. List blockers.\n",
+        )
+        .unwrap();
+
+        // The exact call `install_commit` makes for a pack's `skills` list —
+        // not a hand-simulated copy.
+        let copied = copy_pack_members(
+            &pack_root.path().join("skills"),
+            &["weekly-review".to_string()],
+            |name| skills_dest.path().join(name),
+        );
+        assert_eq!(copied.ok, vec!["weekly-review".to_string()]);
+        assert!(copied.failed.is_empty(), "{:?}", copied.failed);
+
+        // "Restart": a brand-new SkillsLoader scan finds it (what the boot-
+        // time catalog scan and `SkillCatalogProvider` both do).
+        let found =
+            crate::agent::skills::SkillsLoader::load_all(skills_dest.path().to_str().unwrap())
+                .unwrap();
+        assert!(found.iter().any(|s| s.name == "weekly-review"), "{found:?}");
+
+        // And the capability an agent turn actually calls can read it.
+        let cap = crate::agent::skills::SkillCapability::new(
+            skills_dest.path().to_str().unwrap().to_string(),
+        );
+        let ctx = bastion_runtime::capability::InvokeCtx {
+            owner: "alice".to_string(),
+            privacy_tier: None,
+            allowed_tools: None,
+        };
+        let result = <crate::agent::skills::SkillCapability as bastion_runtime::capability::Capability>::invoke(
+            &cap,
+            serde_json::json!({ "name": "weekly-review" }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        assert!(
+            result["content"]
+                .as_str()
+                .unwrap()
+                .contains("List blockers"),
+            "{result}"
+        );
     }
 }

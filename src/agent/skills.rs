@@ -3,6 +3,7 @@
 /// `load_all` scans a directory for SKILL.md files and parses their YAML frontmatter (Phase 4).
 /// `rescan` parses a single SKILL.md on demand, called by AgentLoop after a `skill_reloaded`
 /// signal from skill-writer (Phase 3, D-06).
+#[derive(Debug)]
 pub struct SkillMetadata {
     pub name: String,
     pub description: String,
@@ -257,6 +258,191 @@ impl bastion_runtime::agent::ports::ToolResultObserver for SkillReloadObserver {
     }
 }
 
+/// Reads an installed skill's full `SKILL.md` content on demand — this,
+/// not `SkillsLoader::load_all`'s boot-time scan, is what makes an
+/// installed skill actually usable by the agent. The boot scan only ever
+/// extracts `name`/`description` for `GET /loadout`'s display; nothing
+/// consumed that result to hand the agent anything to act on before this
+/// capability existed, so an installed skill was observable but never
+/// operationally available. Registered once at boot like any other
+/// capability (`main.rs`); reads the skill fresh on every call — no
+/// separate cache to go stale between an `/extension install` and the next
+/// time the agent reaches for it, same "read fresh, never cache"
+/// discipline `SkillReloadObserver` above already follows.
+pub struct SkillCapability {
+    skills_dir: String,
+    schema: serde_json::Value,
+}
+
+impl SkillCapability {
+    pub fn new(skills_dir: impl Into<String>) -> Self {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Skill name, exactly as listed in this capability's own \
+                                     description."
+                }
+            },
+            "required": ["name"],
+            "additionalProperties": false
+        });
+        Self {
+            skills_dir: skills_dir.into(),
+            schema,
+        }
+    }
+
+    /// The catalog line this capability's `description()` lists — built
+    /// fresh each time `main.rs` constructs one at boot, from whatever
+    /// `SkillsLoader::load_all` already found. A separate function (not
+    /// baked into `new()`) so a caller can rebuild just the description
+    /// string without needing a fresh `SkillCapability` instance.
+    pub fn catalog_line(skills: &[SkillMetadata]) -> String {
+        if skills.is_empty() {
+            return "No skills are installed.".to_string();
+        }
+        let listed = skills
+            .iter()
+            .map(|s| {
+                if s.description.is_empty() {
+                    format!("- {}", s.name)
+                } else {
+                    format!("- {}: {}", s.name, s.description)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("Installed skills:\n{listed}")
+    }
+}
+
+#[async_trait::async_trait]
+impl bastion_runtime::capability::Capability for SkillCapability {
+    fn name(&self) -> &str {
+        "skill"
+    }
+
+    fn description(&self) -> &str {
+        "Read an installed skill's full SKILL.md instructions by name — call this before \
+         following any workflow one of your installed skills suggests is relevant. The \
+         current catalog of installed skills (with descriptions) is listed in your system \
+         prompt."
+    }
+
+    fn input_schema(&self) -> &serde_json::Value {
+        &self.schema
+    }
+
+    // Reads the local skills mount only — never leaves the host.
+    fn is_local(&self) -> bool {
+        true
+    }
+
+    // Overrides the `is_local()` default: a skill's CONTENT is pack-author-
+    // supplied text (declarative extension packs copy skills in, same as
+    // any other extension member), not core-authored — SEC-04 spotlighting
+    // must still flag it untrusted even though fetching it never leaves
+    // the host.
+    fn is_trusted(&self) -> bool {
+        false
+    }
+
+    async fn invoke(
+        &self,
+        args: serde_json::Value,
+        _ctx: &bastion_runtime::capability::InvokeCtx,
+    ) -> anyhow::Result<serde_json::Value> {
+        let name = args
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing 'name'"))?;
+        // Same discipline as `extension_command::is_safe_member_name`: a
+        // skill name is untrusted input reaching a `Path::join` — reject
+        // anything that isn't a single plain path segment before it does.
+        if !crate::agent::extension_command::is_safe_member_name(name) {
+            anyhow::bail!("invalid skill name '{name}'");
+        }
+        let base = std::path::Path::new(&self.skills_dir);
+        let skill_md = base.join(name).join("SKILL.md");
+        // Defense in depth, mirroring `SkillReloadObserver` above: a
+        // lexically safe name still can't escape `skills_dir` on its own,
+        // but a symlink planted inside it could redirect the read outside —
+        // resolve symlinks before trusting the path is actually contained.
+        let canon_base = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+        let contained = match std::fs::canonicalize(&skill_md) {
+            Ok(canon) => canon.starts_with(&canon_base),
+            Err(_) => skill_md.starts_with(base),
+        };
+        if !contained {
+            anyhow::bail!("skill '{name}' not found");
+        }
+        let content = tokio::fs::read_to_string(&skill_md)
+            .await
+            .map_err(|e| anyhow::anyhow!("skill '{name}' not found or unreadable: {e}"))?;
+        Ok(serde_json::json!({ "name": name, "content": content }))
+    }
+}
+
+/// Injects the current skill catalog (name + description per installed
+/// skill) into every turn's system prompt — the other half of what makes
+/// an installed skill "operationally available": `SkillCapability` above
+/// lets the agent READ a skill's content once it knows the name; this is
+/// what tells the agent a skill exists and is worth reading in the first
+/// place. Re-scans `skills_dir` fresh on every call (never caches, same
+/// discipline `SkillReloadObserver` already uses) — a skill installed
+/// mid-session is visible on the very next turn, no restart needed, unlike
+/// `GET /loadout`'s boot-time snapshot.
+pub struct SkillCatalogProvider {
+    skills_dir: String,
+}
+
+impl SkillCatalogProvider {
+    pub fn new(skills_dir: impl Into<String>) -> Self {
+        Self {
+            skills_dir: skills_dir.into(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl bastion_runtime::agent::context::TurnContextProvider for SkillCatalogProvider {
+    async fn context_for_turn(
+        &self,
+        _owner: &str,
+        _turn_msg: &str,
+        _persona: Option<&str>,
+    ) -> Vec<bastion_runtime::agent::context::ContextBlock> {
+        let skills_dir = self.skills_dir.clone();
+        // spawn_blocking: SkillsLoader::load_all does synchronous directory +
+        // file I/O — called every turn here, so this matters even more than
+        // the one-time boot scan in main.rs does.
+        let skills =
+            match tokio::task::spawn_blocking(move || SkillsLoader::load_all(&skills_dir)).await {
+                Ok(Ok(skills)) => skills,
+                Ok(Err(e)) => {
+                    tracing::warn!(event = "skill_catalog_context_failed", error = %e);
+                    return Vec::new();
+                }
+                Err(e) => {
+                    tracing::warn!(event = "skill_catalog_context_join_failed", error = %e);
+                    return Vec::new();
+                }
+            };
+        if skills.is_empty() {
+            return Vec::new();
+        }
+        vec![bastion_runtime::agent::context::ContextBlock {
+            content: SkillCapability::catalog_line(&skills),
+            // Skill names/descriptions are pack metadata, not owner data —
+            // no reason to withhold this block from a cloud provider the
+            // turn is already using.
+            max_tier: bastion_memory::PrivacyTier::CloudOk,
+        }]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,5 +499,108 @@ mod tests {
             "desc: {}",
             meta.description
         );
+    }
+
+    fn write_skill(dir: &std::path::Path, name: &str, description: &str, body: &str) {
+        let skill_dir = dir.join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\n{body}\n"),
+        )
+        .unwrap();
+    }
+
+    fn invoke_ctx() -> bastion_runtime::capability::InvokeCtx {
+        bastion_runtime::capability::InvokeCtx {
+            owner: "alice".to_string(),
+            privacy_tier: None,
+            allowed_tools: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn skill_capability_reads_installed_skill_content() {
+        use bastion_runtime::capability::Capability;
+        let dir = tempfile::tempdir().unwrap();
+        write_skill(dir.path(), "weekly-review", "desc", "Do the review.");
+
+        let cap = SkillCapability::new(dir.path().to_str().unwrap().to_string());
+        let result = cap
+            .invoke(
+                serde_json::json!({ "name": "weekly-review" }),
+                &invoke_ctx(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["name"], "weekly-review");
+        assert!(result["content"]
+            .as_str()
+            .unwrap()
+            .contains("Do the review."));
+    }
+
+    #[tokio::test]
+    async fn skill_capability_rejects_path_traversal() {
+        use bastion_runtime::capability::Capability;
+        let dir = tempfile::tempdir().unwrap();
+        let cap = SkillCapability::new(dir.path().to_str().unwrap().to_string());
+        let result = cap
+            .invoke(
+                serde_json::json!({ "name": "../../etc/passwd" }),
+                &invoke_ctx(),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn skill_capability_rejects_unknown_skill() {
+        use bastion_runtime::capability::Capability;
+        let dir = tempfile::tempdir().unwrap();
+        let cap = SkillCapability::new(dir.path().to_str().unwrap().to_string());
+        let result = cap
+            .invoke(
+                serde_json::json!({ "name": "does-not-exist" }),
+                &invoke_ctx(),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    // is_trusted() overrides the is_local()-mirroring default — see the
+    // doc comment on the impl: skill content is pack-author-supplied, not
+    // core-authored, so it must stay spotlighted even though reading it
+    // never leaves the host.
+    #[test]
+    fn skill_capability_is_local_but_not_trusted() {
+        use bastion_runtime::capability::Capability;
+        let cap = SkillCapability::new("/skills".to_string());
+        assert!(cap.is_local());
+        assert!(!cap.is_trusted());
+    }
+
+    #[tokio::test]
+    async fn skill_catalog_provider_lists_installed_skills() {
+        use bastion_runtime::agent::context::TurnContextProvider;
+        let dir = tempfile::tempdir().unwrap();
+        write_skill(dir.path(), "weekly-review", "Runs a weekly review", "body");
+        write_skill(dir.path(), "daily-standup", "Runs a daily standup", "body");
+
+        let provider = SkillCatalogProvider::new(dir.path().to_str().unwrap().to_string());
+        let blocks = provider.context_for_turn("alice", "hi", None).await;
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].content.contains("weekly-review"));
+        assert!(blocks[0].content.contains("daily-standup"));
+        assert!(blocks[0].content.contains("Runs a weekly review"));
+    }
+
+    #[tokio::test]
+    async fn skill_catalog_provider_returns_nothing_when_no_skills_installed() {
+        use bastion_runtime::agent::context::TurnContextProvider;
+        let dir = tempfile::tempdir().unwrap();
+        let provider = SkillCatalogProvider::new(dir.path().to_str().unwrap().to_string());
+        let blocks = provider.context_for_turn("alice", "hi", None).await;
+        assert!(blocks.is_empty(), "{blocks:?}");
     }
 }

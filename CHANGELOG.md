@@ -46,6 +46,26 @@ for how that differs from the library crates it depends on).
     against the SAME fixed permission ceiling the original install used
     (per `ReconstructKind`), not the row's own `manifest.permissions`
     checked against itself — the latter is a no-op check by construction.
+  - **A pack's skills are now operationally usable by the agent, not just
+    listed at `/loadout`.** Before this, `SkillsLoader::load_all`'s
+    boot-time scan only ever fed `GET /loadout`'s display — nothing
+    consumed its result to hand the agent anything to act on, so an
+    installed skill was observable but never actually reachable in a
+    turn (no tool anywhere could read a skill's content; `skill-writer`'s
+    own MCP surface only ever exposed `create`/`edit`/`rollback`/`list`,
+    never a read). Two new pieces close that: `skill` (`SkillCapability`,
+    `src/agent/skills.rs`), a capability the agent calls with a name to
+    read that skill's full `SKILL.md` content — registered at boot
+    alongside every other capability; and `SkillCatalogProvider`, a
+    `TurnContextProvider` that injects the current name+description
+    catalog into every turn's system prompt so the agent knows what's
+    available to call `skill` on in the first place. Both re-read
+    `skills_dir()` fresh on every call (no cache to go stale) — a skill
+    installed mid-session is usable on the very next turn, no restart
+    needed, unlike almost everything else in this gate. `SkillCapability`
+    is explicitly untrusted output (`is_trusted() == false`) despite being
+    `is_local()`: skill content is pack-author-supplied text, not
+    core-authored, so SEC-04 spotlighting still applies.
   - **Known gap, not closed by this release**: a pack's `skills` members
     copy into the SAME directory `SkillsLoader::load_all`/`skill-writer`
     read from — but in the Docker Compose deployment specifically, `core`'s
@@ -53,15 +73,20 @@ for how that differs from the library crates it depends on).
     skills there), so `/extension install` cannot actually place a pack's
     skill files there today; it fails with a clear permission error rather
     than silently miswriting them (the previous bug). Running natively
-    (no `:ro` mount) this works as documented. Closing this for Docker
+    (no `:ro` mount) this works as documented, including the new
+    `skill`/`SkillCatalogProvider` wiring above. Closing this for Docker
     needs the install to route the write through `skill-writer` instead of
     `core`, or a writable secondary skills location `SkillsLoader::load_all`
     also scans — neither is implemented yet.
-  - 9 new tests: persistence round-trip/overwrite/remove
+  - 15 new tests: persistence round-trip/overwrite/remove
     (`extension::persistence`), a full persist→simulated-restart→reload
-    proof, revoke clearing the persisted record too, and one corrupt
-    sibling row never blocking the others from reloading
-    (`extension_command`).
+    proof, revoke clearing the persisted record too, one corrupt sibling
+    row never blocking the others from reloading, an authority-escalation-
+    on-reload regression test (`extension_command`), and coverage for the
+    new `skill` capability/provider — content round-trip, path-traversal
+    and unknown-name rejection, trust classification, catalog listing, and
+    a pack-install → restart-simulation → agent-read integration test
+    (`agent::skills`).
 - **Live end-to-end proof of the subscription-provider flow (release 0.3.0
   gate)** — `tests/providers_e2e_live.rs`, opt-in (`#[ignore]`, `cargo test
   --test providers_e2e_live -- --ignored --nocapture`, same convention as
@@ -125,10 +150,21 @@ for how that differs from the library crates it depends on).
   - `tests/providers_e2e_live.rs` is `#[ignore]`d by design (needs a
     human to approve a real device-code login within 15 minutes and
     spends real inference tokens) — a green CI run proves this crate
-    compiles against the real command glue, never that the live
+    compiles against the real command glue, never by itself that the live
     connect→infer→restart→disconnect flow actually completed end to end.
-    It has been run manually once against a real Codex account (see the
-    bullet above), not repeated, and not run at all for Claude/OpenCode.
+    **Update**: it has now actually been run to completion against a real
+    Codex/ChatGPT account, twice — an initial run surfaced a real bug (the
+    then-pinned core sent `stream: false`/`max_output_tokens` against a
+    backend that's SSE-only, HTTP 400; fixed upstream in
+    `thewaifucorp/bastion-core#23`), and the final rerun against released
+    `bastion-core v0.3.3` passed outright: device-code connect, real
+    inference on `codex/gpt-5.6-sol` (exact marker match), `/model status`
+    reporting the right owner/model/profile, a simulated restart
+    (`SubscriptionAuthService` rebuilt from the same sqlite file),
+    post-restart `/auth status` still `ready`, and `/auth disconnect`
+    actually removing it — `1 passed`, ~50s, no credentials left behind
+    (temporary database, dropped after). Not run at all for Claude/OpenCode
+    subscriptions.
   - The "installer dry run + sqlite schema audit" bullet above is exactly
     that: a fresh-clone dry run plus a table-by-table schema diff against
     `v0.2.4`. Neither is a real `v0.2.4` → `v0.3.0` upgrade: there is no

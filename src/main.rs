@@ -1053,6 +1053,15 @@ async fn main() -> anyhow::Result<()> {
         .register(Arc::new(bastion::adaptive::BrowserCapability::http(
             std::env::temp_dir().join("bastion-browser"),
         )))?;
+    // Gate 1 follow-up: pairs with `SkillCatalogProvider`
+    // (`agent::default_context_providers`) — the provider tells the agent
+    // which skills exist, this capability is what actually lets it read
+    // one's content.
+    agent
+        .capability_registry
+        .register(Arc::new(bastion::agent::skills::SkillCapability::new(
+            bastion::agent::skills::skills_dir(),
+        )))?;
 
     // Build the
     // RuntimeRegistry from whatever AgentRuntime adapters are actually
@@ -1926,12 +1935,13 @@ async fn daemon_loop(
             // Observability A2 (Loadout): boot-time composition snapshot —
             // personas, tools, runtimes, channels, MCP servers — served at
             // GET /loadout for the web app's assembled-pieces view.
-            // `extensions` stays empty HERE specifically: `ExtensionHost` is
-            // constructed later in `daemon_loop`'s boot sequence (after the
-            // subscription/credential stores), out of scope for this
-            // snapshot's capture point — not the same "mechanism doesn't
-            // exist" gap this comment used to describe, just a boot-order
-            // constraint on this one field.
+            // `extensions` isn't part of this snapshot at all anymore
+            // (`loadout::snapshot` no longer even takes it as a param):
+            // `ExtensionHost` is constructed later in `daemon_loop`'s boot
+            // sequence, so `extensions_live` (declared above the webhook
+            // block) carries it instead — `loadout_handler` overlays that
+            // live value onto this otherwise-frozen snapshot at request
+            // time. See `loadout::LoadoutState::extensions_live`.
             let loadout_routes = Some(bastion::loadout::router(
                 bastion::loadout::snapshot(
                     registry_for_product
@@ -1981,7 +1991,6 @@ async fn daemon_loop(
                         },
                     ],
                     cfg.mcp.servers.keys().cloned().collect(),
-                    Vec::new(),
                     loaded_skill_names,
                 ),
                 owner_map.clone(),

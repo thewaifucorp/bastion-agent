@@ -64,5 +64,16 @@ pub fn default_context_providers(
     )));
     tracing::info!(event = "procedural_belief_provider_enabled");
 
+    // Gate 1 follow-up: the other half of making an installed skill
+    // operationally available, not just observable in `GET /loadout`.
+    // `SkillCatalogProvider` re-scans `skills_dir()` fresh every turn (never
+    // caches — a skill installed mid-session is visible without a restart)
+    // and injects a compact name+description catalog; `skills::SkillCapability`
+    // (registered separately in `main.rs` as an ordinary capability) is what
+    // the agent then calls to read a listed skill's full content.
+    providers.push(Box::new(skills::SkillCatalogProvider::new(
+        skills::skills_dir(),
+    )));
+
     providers
 }

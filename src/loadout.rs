@@ -825,13 +825,19 @@ pub fn router(
 }
 
 /// Capture the composition from the pieces `daemon_loop` already holds.
+///
+/// No `extension_ids` parameter: `ExtensionHost` doesn't exist yet at the
+/// point in `daemon_loop`'s boot sequence where this gets called (it's
+/// constructed later, after `reload_persisted` runs) — `extensions` starts
+/// empty and `loadout_handler` always overlays the real, live list from
+/// `LoadoutState::extensions_live` before serving a response. See that
+/// field's doc comment.
 pub fn snapshot(
     persona_names: Vec<String>,
     tool_names: Vec<String>,
     runtime_ids: Vec<String>,
     channels: Vec<ChannelPiece>,
     mcp_servers: Vec<String>,
-    extension_ids: Vec<String>,
     skill_names: Vec<String>,
 ) -> LoadoutSnapshot {
     LoadoutSnapshot {
@@ -843,7 +849,7 @@ pub fn snapshot(
             .collect(),
         channels,
         mcp_servers,
-        extensions: extension_ids,
+        extensions: Vec::new(),
         skills: skill_names,
         captured_at: now_nanos(),
     }
@@ -873,7 +879,6 @@ mod tests {
                 enabled: true,
             }],
             vec!["memupalace".into()],
-            vec![],
             vec![],
         );
         let f = tempfile::NamedTempFile::new().unwrap();
