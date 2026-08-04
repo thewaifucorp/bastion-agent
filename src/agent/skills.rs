@@ -33,6 +33,26 @@ pub fn skills_dir() -> String {
     std::env::var("SKILLS_DIR").unwrap_or_else(|_| "/skills".to_string())
 }
 
+/// Writable destination for skills installed from extension packs. Native
+/// installs keep the historical single-directory behavior by default; the
+/// Docker deployment sets this to a separate named volume so core never needs
+/// write access to skill-writer's read-only `/skills` bind mount.
+pub fn extension_skills_dir() -> String {
+    std::env::var("EXTENSION_SKILLS_DIR").unwrap_or_else(|_| skills_dir())
+}
+
+/// Ordered lookup roots. The skill-writer directory wins on duplicate ids so
+/// an extension pack cannot shadow an operator-managed skill.
+pub fn skill_dirs() -> Vec<String> {
+    let primary = skills_dir();
+    let extension = extension_skills_dir();
+    if extension == primary {
+        vec![primary]
+    } else {
+        vec![primary, extension]
+    }
+}
+
 /// Keep Rust-side skill lookup aligned with skill-writer's `_SAFE_SEGMENT`:
 /// lowercase ASCII letter/digit first, then lowercase ASCII, digits, `_` or
 /// `-`, at most 64 bytes. Besides path safety, this makes catalog entries safe
@@ -51,6 +71,26 @@ pub(crate) fn is_safe_skill_id(id: &str) -> bool {
 pub struct SkillsLoader;
 
 impl SkillsLoader {
+    /// Scan every configured root, preserving root order on duplicate ids.
+    pub fn load_all_from(skills_dirs: &[String]) -> anyhow::Result<Vec<SkillMetadata>> {
+        let mut result = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for dir in skills_dirs {
+            for skill in Self::load_all(dir)? {
+                if seen.insert(skill.id.clone()) {
+                    result.push(skill);
+                } else {
+                    tracing::warn!(
+                        event = "duplicate_skill_id_ignored",
+                        id = %skill.id,
+                        dir = %dir,
+                    );
+                }
+            }
+        }
+        Ok(result)
+    }
+
     /// Scan `skills_dir` for SKILL.md files and parse their YAML frontmatter.
     ///
     /// Returns one SkillMetadata per SKILL.md found. Non-fatal errors (bad frontmatter,
@@ -324,12 +364,16 @@ impl bastion_runtime::agent::ports::ToolResultObserver for SkillReloadObserver {
 /// time the agent reaches for it, same "read fresh, never cache"
 /// discipline `SkillReloadObserver` above already follows.
 pub struct SkillCapability {
-    skills_dir: String,
+    skills_dirs: Vec<String>,
     schema: serde_json::Value,
 }
 
 impl SkillCapability {
     pub fn new(skills_dir: impl Into<String>) -> Self {
+        Self::new_many(vec![skills_dir.into()])
+    }
+
+    pub fn new_many(skills_dirs: Vec<String>) -> Self {
         let schema = serde_json::json!({
             "type": "object",
             "properties": {
@@ -343,7 +387,7 @@ impl SkillCapability {
             "additionalProperties": false
         });
         Self {
-            skills_dir: skills_dir.into(),
+            skills_dirs,
             schema,
         }
     }
@@ -414,24 +458,29 @@ impl bastion_runtime::capability::Capability for SkillCapability {
         if !is_safe_skill_id(name) {
             anyhow::bail!("invalid skill name '{name}'");
         }
-        let base = std::path::Path::new(&self.skills_dir);
-        let skill_md = base.join(name).join("SKILL.md");
-        // Defense in depth, mirroring `SkillReloadObserver` above: a
-        // lexically safe name still can't escape `skills_dir` on its own,
-        // but a symlink planted inside it could redirect the read outside —
-        // resolve symlinks before trusting the path is actually contained.
-        let canon_base = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
-        let contained = match std::fs::canonicalize(&skill_md) {
-            Ok(canon) => canon.starts_with(&canon_base),
-            Err(_) => skill_md.starts_with(base),
-        };
-        if !contained {
-            anyhow::bail!("skill '{name}' not found");
+        for skills_dir in &self.skills_dirs {
+            let base = std::path::Path::new(skills_dir);
+            let skill_md = base.join(name).join("SKILL.md");
+            if !skill_md.exists() {
+                continue;
+            }
+            // Defense in depth, mirroring `SkillReloadObserver` above: a
+            // lexically safe name still can't escape a configured root on its
+            // own, but a symlink planted inside it could redirect the read.
+            let canon_base = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+            let contained = match std::fs::canonicalize(&skill_md) {
+                Ok(canon) => canon.starts_with(&canon_base),
+                Err(_) => skill_md.starts_with(base),
+            };
+            if !contained {
+                anyhow::bail!("skill '{name}' not found or unreadable");
+            }
+            let content = tokio::fs::read_to_string(&skill_md)
+                .await
+                .map_err(|_| anyhow::anyhow!("skill '{name}' not found or unreadable"))?;
+            return Ok(serde_json::json!({ "name": name, "content": content }));
         }
-        let content = tokio::fs::read_to_string(&skill_md)
-            .await
-            .map_err(|e| anyhow::anyhow!("skill '{name}' not found or unreadable: {e}"))?;
-        Ok(serde_json::json!({ "name": name, "content": content }))
+        anyhow::bail!("skill '{name}' not found or unreadable")
     }
 }
 
@@ -446,14 +495,16 @@ impl bastion_runtime::capability::Capability for SkillCapability {
 /// mid-session is visible on the very next turn, no restart needed, unlike
 /// `GET /loadout`'s boot-time snapshot.
 pub struct SkillCatalogProvider {
-    skills_dir: String,
+    skills_dirs: Vec<String>,
 }
 
 impl SkillCatalogProvider {
     pub fn new(skills_dir: impl Into<String>) -> Self {
-        Self {
-            skills_dir: skills_dir.into(),
-        }
+        Self::new_many(vec![skills_dir.into()])
+    }
+
+    pub fn new_many(skills_dirs: Vec<String>) -> Self {
+        Self { skills_dirs }
     }
 }
 
@@ -465,12 +516,14 @@ impl bastion_runtime::agent::context::TurnContextProvider for SkillCatalogProvid
         _turn_msg: &str,
         _persona: Option<&str>,
     ) -> Vec<bastion_runtime::agent::context::ContextBlock> {
-        let skills_dir = self.skills_dir.clone();
+        let skills_dirs = self.skills_dirs.clone();
         // spawn_blocking: SkillsLoader::load_all does synchronous directory +
         // file I/O — called every turn here, so this matters even more than
         // the one-time boot scan in main.rs does.
         let skills =
-            match tokio::task::spawn_blocking(move || SkillsLoader::load_all(&skills_dir)).await {
+            match tokio::task::spawn_blocking(move || SkillsLoader::load_all_from(&skills_dirs))
+                .await
+            {
                 Ok(Ok(skills)) => skills,
                 Ok(Err(e)) => {
                     tracing::warn!(event = "skill_catalog_context_failed", error = %e);
@@ -693,5 +746,61 @@ mod tests {
         let provider = SkillCatalogProvider::new(dir.path().to_str().unwrap().to_string());
         let blocks = provider.context_for_turn("alice", "hi", None).await;
         assert!(blocks.is_empty(), "{blocks:?}");
+    }
+
+    #[tokio::test]
+    async fn multiple_roots_are_visible_and_primary_wins_duplicate_ids() {
+        use bastion_runtime::agent::context::TurnContextProvider;
+        use bastion_runtime::capability::Capability;
+
+        let primary = tempfile::tempdir().unwrap();
+        let extension = tempfile::tempdir().unwrap();
+        write_skill(primary.path(), "shared", "primary", "Primary instructions.");
+        write_skill(
+            extension.path(),
+            "shared",
+            "extension",
+            "Shadow instructions.",
+        );
+        write_skill(
+            extension.path(),
+            "pack-only",
+            "extension",
+            "Pack instructions.",
+        );
+
+        let roots = vec![
+            primary.path().to_string_lossy().into_owned(),
+            extension.path().to_string_lossy().into_owned(),
+        ];
+        let loaded = SkillsLoader::load_all_from(&roots).unwrap();
+        assert_eq!(
+            loaded.iter().filter(|skill| skill.id == "shared").count(),
+            1
+        );
+        assert!(loaded.iter().any(|skill| skill.id == "pack-only"));
+
+        let provider = SkillCatalogProvider::new_many(roots.clone());
+        let blocks = provider.context_for_turn("alice", "hi", None).await;
+        assert!(blocks[0].content.contains("shared"));
+        assert!(blocks[0].content.contains("pack-only"));
+
+        let cap = SkillCapability::new_many(roots);
+        let shared = cap
+            .invoke(serde_json::json!({ "name": "shared" }), &invoke_ctx())
+            .await
+            .unwrap();
+        assert!(shared["content"]
+            .as_str()
+            .unwrap()
+            .contains("Primary instructions"));
+        let pack = cap
+            .invoke(serde_json::json!({ "name": "pack-only" }), &invoke_ctx())
+            .await
+            .unwrap();
+        assert!(pack["content"]
+            .as_str()
+            .unwrap()
+            .contains("Pack instructions"));
     }
 }

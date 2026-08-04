@@ -1057,11 +1057,9 @@ async fn main() -> anyhow::Result<()> {
     // (`agent::default_context_providers`) — the provider tells the agent
     // which skills exist, this capability is what actually lets it read
     // one's content.
-    agent
-        .capability_registry
-        .register(Arc::new(bastion::agent::skills::SkillCapability::new(
-            bastion::agent::skills::skills_dir(),
-        )))?;
+    agent.capability_registry.register(Arc::new(
+        bastion::agent::skills::SkillCapability::new_many(bastion::agent::skills::skill_dirs()),
+    ))?;
 
     // Build the
     // RuntimeRegistry from whatever AgentRuntime adapters are actually
@@ -1909,16 +1907,16 @@ async fn daemon_loop(
             // Boot-time skills scan (M4.2): `SkillsLoader::load_all` existed
             // but nothing called it from `main()` — a pre-existing gap
             // `extension_command.rs`'s own module doc used to call out.
-            // Same `SKILLS_DIR` convention `SkillReloadObserver` already
-            // uses for a single-file rescan (default `/skills`, the
-            // skill-writer container's mount point) — one canonical
-            // directory, not a second convention invented here.
+            // Scan both the operator-managed `SKILLS_DIR` and the optional
+            // core-writable `EXTENSION_SKILLS_DIR`; native installs collapse
+            // them to one root by default. SkillReloadObserver still handles
+            // skill-writer's single-file signals from the primary root.
             // `spawn_blocking`: `load_all` does synchronous directory/file
             // I/O (one read per skill's SKILL.md) — never run inline on the
             // async boot path's worker thread.
-            let skills_dir = bastion::agent::skills::skills_dir();
+            let skills_dirs = bastion::agent::skills::skill_dirs();
             let loaded_skill_names: Vec<String> = match tokio::task::spawn_blocking(move || {
-                bastion::agent::skills::SkillsLoader::load_all(&skills_dir)
+                bastion::agent::skills::SkillsLoader::load_all_from(&skills_dirs)
             })
             .await
             {

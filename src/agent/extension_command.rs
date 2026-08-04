@@ -13,14 +13,10 @@
 //! `PersonaRegistry::load_dir` already reads from; a pack's personas never
 //! route through `ExtensionManifest` at all (mirrors how `bastion-extensions`
 //! itself describes the split). Skills are copied into the SAME directory
-//! `SkillsLoader::load_all` scans at boot and `skill-writer`'s own MCP tools
-//! read from (`skills_dir()`, `SKILLS_DIR` env var) — in the Docker
-//! deployment specifically, `core`'s `/skills` mount is read-only by design
-//! (D-10: only `skill-writer` writes skills), so a pack's skill members
-//! fail to copy there today with a clear permission error rather than
-//! silently landing somewhere unwatched; running natively (no `:ro` mount)
-//! they copy and get picked up on the next boot-time scan or a
-//! `skill-writer` reload signal.
+//! `SkillsLoader` scans and `SkillCapability` reads. Native installs default
+//! to the same `SKILLS_DIR`; Docker uses a separate writable
+//! `EXTENSION_SKILLS_DIR` named volume so core can install pack skills without
+//! gaining write access to skill-writer's read-only `/skills` mount.
 //!
 //! Optional persona selection: a pack's `pack.toml` may declare
 //! `[personas_selection] required = [...]` — any name in `personas` not listed there is optional,
@@ -288,17 +284,11 @@ pub(crate) async fn install_commit(
         ));
     }
 
-    // Target the SAME directory `SkillsLoader::load_all`/`skill-writer`'s own
-    // MCP tools read (`skills_dir()`, `SKILLS_DIR` env var, default
-    // `/skills`) — a bare relative "skills" here previously resolved
-    // against the daemon's cwd, which only ever matched `/skills` in the
-    // Docker deployment by accident (cwd there happens to be `/`) and never
-    // matched it running natively. In Docker, `core`'s own `/skills` mount
-    // is read-only by design (D-10: only `skill-writer` writes skills) —
-    // this now fails honestly with a clear permission error there instead
-    // of silently writing to the wrong place, until installing a pack's
-    // skills is routed through `skill-writer` instead of `core` itself.
-    let skills_target_dir = crate::agent::skills::skills_dir();
+    // Native installs preserve the historical single-directory behavior.
+    // Docker points EXTENSION_SKILLS_DIR at a core-owned named volume, keeping
+    // skill-writer's `/skills` bind mount read-only while making pack installs
+    // immediately discoverable through the ordered multi-root skill catalog.
+    let skills_target_dir = crate::agent::skills::extension_skills_dir();
     let skills_copied = copy_skill_members(
         &pack_dir.join("skills"),
         &pack.skills,
@@ -309,8 +299,8 @@ pub(crate) async fn install_commit(
     }
     if !skills_copied.ok.is_empty() {
         report.push_str(&format!(
-            "  skills copied: {} (picked up by the next boot-time scan or a skill-writer \
-             reload signal, same as any other skill under {skills_target_dir})\n",
+            "  skills copied: {} (available to the agent immediately from \
+             {skills_target_dir})\n",
             skills_copied.ok.join(", ")
         ));
     }

@@ -70,18 +70,13 @@ for how that differs from the library crates it depends on).
     is explicitly untrusted output (`is_trusted() == false`) despite being
     `is_local()`: skill content is pack-author-supplied text, not
     core-authored, so SEC-04 spotlighting still applies.
-  - **Known gap, not closed by this release**: a pack's `skills` members
-    copy into the SAME directory `SkillsLoader::load_all`/`skill-writer`
-    read from — but in the Docker Compose deployment specifically, `core`'s
-    `/skills` mount is read-only by design (only `skill-writer` writes
-    skills there), so `/extension install` cannot actually place a pack's
-    skill files there today; it fails with a clear permission error rather
-    than silently miswriting them (the previous bug). Running natively
-    (no `:ro` mount) this works as documented, including the new
-    `skill`/`SkillCatalogProvider` wiring above. Closing this for Docker
-    needs the install to route the write through `skill-writer` instead of
-    `core`, or a writable secondary skills location `SkillsLoader::load_all`
-    also scans — neither is implemented yet.
+  - Docker Compose now gives extension-pack skills their own persistent,
+    core-writable `/extension-skills` named volume while retaining `/skills`
+    as the read-only skill-writer surface. `SkillsLoader`, the per-turn
+    catalog, and the `skill` capability scan both roots in deterministic
+    order; operator-managed `/skills` entries win on duplicate ids, so a pack
+    cannot shadow them. Native installs keep the historical single-directory
+    default unless `EXTENSION_SKILLS_DIR` is explicitly configured.
   - 20 new tests: persistence round-trip/overwrite/remove
     (`extension::persistence`), a full persist→simulated-restart→reload
     proof, revoke clearing the persisted record too, one corrupt sibling
