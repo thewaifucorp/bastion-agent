@@ -39,7 +39,7 @@ export default function About() {
             desc="Control Plane task API — frozen OpenAPI contract at /v1/openapi.yaml (bcp_ credential)"
           />
           <Row
-            title="GET /status · /health · /readyz"
+            title="GET /status · /health · /ready"
             desc="operational booleans, unauthenticated"
           />
         </Section>

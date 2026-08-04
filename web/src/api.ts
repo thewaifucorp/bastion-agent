@@ -360,12 +360,12 @@ export async function status(): Promise<StatusSnapshot> {
   return resp.json();
 }
 
-export async function health(): Promise<{ health: boolean; readyz: boolean }> {
+export async function health(): Promise<{ health: boolean; ready: boolean }> {
   const [h, r] = await Promise.all([
     fetch("/health").then((x) => x.ok).catch(() => false),
-    fetch("/readyz").then((x) => x.ok).catch(() => false),
+    fetch("/ready").then((x) => x.ok).catch(() => false),
   ]);
-  return { health: h, readyz: r };
+  return { health: h, ready: r };
 }
 
 export async function agentCard(): Promise<Record<string, unknown> | null> {

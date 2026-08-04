@@ -169,7 +169,7 @@ struct AppState {
     /// (requires COMPOSIO_API_KEY).
     composio_oauth: Option<std::sync::Arc<bastion_mcp::oauth::ComposioOAuth>>,
     /// Boot-sequence
-    /// readiness gate backing `/readyz` — extracted via `FromRef` below so
+    /// readiness gate backing `/ready` — extracted via `FromRef` below so
     /// `operational::readiness_handler` (`State<Arc<ReadinessState>>`)
     /// mounts directly onto this SAME `Router<AppState>`.
     readiness: std::sync::Arc<crate::channel::operational::ReadinessState>,
@@ -1268,7 +1268,7 @@ pub async fn serve_with_mesh(
     // 501 rather than panicking — opt-in, requires COMPOSIO_API_KEY.
     composio_oauth: Option<std::sync::Arc<bastion_mcp::oauth::ComposioOAuth>>,
     // Boot-sequence
-    // readiness gate backing `/readyz` — built and threaded by the caller
+    // readiness gate backing `/ready` — built and threaded by the caller
     // (`daemon_loop`/`serve`) so ITS OWN startup sequence decides when each
     // component is actually ready, never this function.
     readiness: std::sync::Arc<crate::channel::operational::ReadinessState>,
@@ -1322,7 +1322,7 @@ pub async fn serve_with_mesh(
             axum::routing::get(crate::channel::operational::liveness_handler),
         )
         .route(
-            "/readyz",
+            "/ready",
             axum::routing::get(crate::channel::operational::readiness_handler),
         )
         // Fase 2.9: booleans-only runtime/login status — see module doc.
@@ -1463,7 +1463,7 @@ mod tests {
     }
 
     /// Loop 3-D: builds a router with the SAME operational routes
-    /// `serve_with_mesh` mounts in production (`/health`, `/readyz`,
+    /// `serve_with_mesh` mounts in production (`/health`, `/ready`,
     /// `/lifecycle/stop`, `/lifecycle/reload`), over caller-supplied
     /// readiness/lifecycle state — proves the `FromRef<AppState>` wiring
     /// actually works end to end, not just the handlers in isolation
@@ -1503,7 +1503,7 @@ mod tests {
                 axum::routing::get(crate::channel::operational::liveness_handler),
             )
             .route(
-                "/readyz",
+                "/ready",
                 axum::routing::get(crate::channel::operational::readiness_handler),
             )
             .route(
@@ -1518,26 +1518,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mounted_health_replaces_healthz() {
+    async fn mounted_health_always_200() {
         let (readiness, lifecycle) = test_operational_state();
         let app = build_operational_router(readiness, lifecycle);
         let req = Request::builder()
             .uri("/health")
             .body(Body::empty())
             .unwrap();
-        let resp = app.clone().oneshot(req).await.unwrap();
+        let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-
-        let old_req = Request::builder()
-            .uri("/healthz")
-            .body(Body::empty())
-            .unwrap();
-        let old_resp = app.oneshot(old_req).await.unwrap();
-        assert_eq!(old_resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
-    async fn mounted_readyz_503_before_ready_200_after() {
+    async fn mounted_ready_503_before_ready_200_after() {
         let readiness = crate::channel::operational::ReadinessState::new();
         let lifecycle = crate::channel::operational::LifecycleControl::new(
             crate::channel::operational::DaemonAccessAuth::new(None),
@@ -1545,7 +1538,7 @@ mod tests {
         let app = build_operational_router(readiness.clone(), lifecycle);
 
         let req = Request::builder()
-            .uri("/readyz")
+            .uri("/ready")
             .body(Body::empty())
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
@@ -1557,7 +1550,7 @@ mod tests {
         readiness.mark_channels_ready();
 
         let req = Request::builder()
-            .uri("/readyz")
+            .uri("/ready")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();

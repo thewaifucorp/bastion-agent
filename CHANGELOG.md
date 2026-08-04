@@ -10,9 +10,9 @@ for how that differs from the library crates it depends on).
 
 ### Changed
 
-- **Breaking:** the daemon liveness endpoint is now `GET /health`. The old
-  `GET /healthz` route has been removed; Docker, Compose, the installer and
-  the bundled web app now use the canonical path.
+- **Breaking:** the daemon operational probes are now `GET /health` and
+  `GET /ready`; Docker, Compose, the installer, TUI and bundled web app now
+  use the canonical paths, with no compatibility aliases.
 
 ## [0.3.0] — 2026-07-31
 

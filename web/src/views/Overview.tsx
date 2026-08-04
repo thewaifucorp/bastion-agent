@@ -11,7 +11,7 @@ export default function Overview({ go }: { go: (key: string) => void }) {
   const [snap, setSnap] = useState<StatusSnapshot | null>(null);
   const [healthState, setHealthState] = useState<{
     health: boolean;
-    readyz: boolean;
+    ready: boolean;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
 

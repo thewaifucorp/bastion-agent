@@ -2656,7 +2656,7 @@ async fn daemon_loop(
         None;
 
     // Loop 3-D: every configured channel above has finished its spawn
-    // attempt (success or logged failure) — `/readyz` can now report ready.
+    // attempt (success or logged failure) — `/ready` can now report ready.
     readiness.mark_channels_ready();
 
     println!("Bastion daemon started. Type a message or /help for commands.");

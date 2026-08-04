@@ -17,7 +17,7 @@ export default defineConfig({
       "/proposals": "http://127.0.0.1:8123",
       "/status": "http://127.0.0.1:8123",
       "/health": "http://127.0.0.1:8123",
-      "/readyz": "http://127.0.0.1:8123",
+      "/ready": "http://127.0.0.1:8123",
       "/agent-card": "http://127.0.0.1:8123",
     },
   },
