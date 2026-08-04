@@ -59,7 +59,7 @@ USER bastion:bastion
 ENV HOME=/home/bastion
 EXPOSE 8080 3000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=5 \
-    CMD curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null || exit 1
+    CMD curl --fail --silent http://127.0.0.1:8080/health >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/local/bin/bastion"]
 CMD ["daemon"]

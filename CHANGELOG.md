@@ -8,6 +8,12 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** the daemon liveness endpoint is now `GET /health`. The old
+  `GET /healthz` route has been removed; Docker, Compose, the installer and
+  the bundled web app now use the canonical path.
+
 ## [0.3.0] — 2026-07-31
 
 ### Added

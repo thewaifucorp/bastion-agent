@@ -368,7 +368,7 @@ async fn handle(
 
 /// GET /ui — the bundled observability dashboard (static shell, no data).
 ///
-/// Unauthenticated on purpose, like `/healthz`: the HTML embeds zero
+/// Unauthenticated on purpose, like `/health`: the HTML embeds zero
 /// secrets and zero data — everything it renders comes from `/events` and
 /// `/v1/*`, each authenticated per request with a token the operator types
 /// into the page. The CSP pins every connection to same-origin, so the page
@@ -1318,7 +1318,7 @@ pub async fn serve_with_mesh(
         // handlers (defined against their own narrower state types in
         // `operational.rs`) mount directly onto this `Router<AppState>`.
         .route(
-            "/healthz",
+            "/health",
             axum::routing::get(crate::channel::operational::liveness_handler),
         )
         .route(
@@ -1463,7 +1463,7 @@ mod tests {
     }
 
     /// Loop 3-D: builds a router with the SAME operational routes
-    /// `serve_with_mesh` mounts in production (`/healthz`, `/readyz`,
+    /// `serve_with_mesh` mounts in production (`/health`, `/readyz`,
     /// `/lifecycle/stop`, `/lifecycle/reload`), over caller-supplied
     /// readiness/lifecycle state — proves the `FromRef<AppState>` wiring
     /// actually works end to end, not just the handlers in isolation
@@ -1499,7 +1499,7 @@ mod tests {
         };
         Router::new()
             .route(
-                "/healthz",
+                "/health",
                 axum::routing::get(crate::channel::operational::liveness_handler),
             )
             .route(
@@ -1518,15 +1518,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mounted_healthz_always_200() {
+    async fn mounted_health_replaces_healthz() {
         let (readiness, lifecycle) = test_operational_state();
         let app = build_operational_router(readiness, lifecycle);
         let req = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let old_req = Request::builder()
             .uri("/healthz")
             .body(Body::empty())
             .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        let old_resp = app.oneshot(old_req).await.unwrap();
+        assert_eq!(old_resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

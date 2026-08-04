@@ -8,7 +8,7 @@
 //!
 //! # Liveness vs readiness
 //!
-//! `/healthz` (liveness) answers ONE question: is this process alive and
+//! `/health` (liveness) answers ONE question: is this process alive and
 //! able to handle an HTTP request at all? It never consults a dependency —
 //! a hung provider or a dead MCP connection must NOT make an orchestrator
 //! kill-and-restart a process that is otherwise fine (that would just repeat
@@ -120,7 +120,7 @@ impl ReadinessState {
 
 /// Daemon-access auth: gates `/lifecycle/*` and — when the operator mounts it
 /// — the extension-UI surface (`/ext-ui/*`, see [`require_daemon_access`]).
-/// Never `/healthz`/`/readyz`: orchestrator probes must not need a credential
+/// Never `/health`/`/readyz`: orchestrator probes must not need a credential
 /// to ask "are you up". `None` = not configured, fails closed (every gated
 /// request refused).
 #[derive(Clone, Default)]
@@ -371,9 +371,9 @@ mod tests {
 
     #[tokio::test]
     async fn liveness_handler_always_200() {
-        let app = Router::new().route("/healthz", get(liveness_handler));
+        let app = Router::new().route("/health", get(liveness_handler));
         let req = Request::builder()
-            .uri("/healthz")
+            .uri("/health")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
