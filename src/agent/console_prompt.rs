@@ -30,6 +30,7 @@ use std::path::PathBuf;
 use crate::agent::extension_command::{
     install_commit, parse_persona_selection, parse_revoke_confirmation, revoke_commit,
 };
+use crate::extension::persistence::SqliteExtensionStore;
 use crate::extension::ExtensionHost;
 
 /// One console command's mid-flight question, alive between two REPL loop
@@ -56,6 +57,7 @@ pub async fn resolve(
     prompt: PendingConsolePrompt,
     reply: &str,
     host: &mut ExtensionHost,
+    store: &SqliteExtensionStore,
     personas_dir: &str,
     bastion_toml_path: &str,
     owner: &str,
@@ -69,6 +71,7 @@ pub async fn resolve(
             let result = parse_persona_selection(reply, &optional);
             let mut report = install_commit(
                 host,
+                store,
                 personas_dir,
                 bastion_toml_path,
                 owner,
@@ -87,7 +90,7 @@ pub async fn resolve(
         }
         PendingConsolePrompt::ExtensionRevokeConfirmation { id } => {
             if parse_revoke_confirmation(reply) {
-                revoke_commit(host, &id).await
+                revoke_commit(host, store, &id).await
             } else {
                 format!("revoke {id} cancelled — not confirmed.")
             }
@@ -99,6 +102,16 @@ pub async fn resolve(
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// A fresh, isolated `SqliteExtensionStore` per test — persistence
+    /// itself is covered by `extension::persistence`'s own tests; here it
+    /// only needs to exist so `resolve` has somewhere to write.
+    async fn test_store() -> (tempfile::NamedTempFile, SqliteExtensionStore) {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        let s = SqliteExtensionStore::new(f.path().to_str().unwrap());
+        s.init_schema().await.unwrap();
+        (f, s)
+    }
 
     fn write_pack(root: &std::path::Path) {
         std::fs::write(
@@ -138,10 +151,12 @@ mod tests {
         };
 
         let mut host = ExtensionHost::new();
+        let (_f, store) = test_store().await;
         let report = resolve(
             prompt,
             "burry",
             &mut host,
+            &store,
             personas_dest.path().to_str().unwrap(),
             "/nonexistent/bastion.toml",
             "alice",
@@ -171,10 +186,12 @@ mod tests {
         };
 
         let mut host = ExtensionHost::new();
+        let (_f, store) = test_store().await;
         let report = resolve(
             prompt,
             "burry, dalio",
             &mut host,
+            &store,
             personas_dest.path().to_str().unwrap(),
             "/nonexistent/bastion.toml",
             "alice",
@@ -235,10 +252,12 @@ mod tests {
         let prompt = PendingConsolePrompt::ExtensionRevokeConfirmation {
             id: "acme/noop-mcp".to_string(),
         };
+        let (_f, store) = test_store().await;
         let report = resolve(
             prompt,
             "yes",
             &mut host,
+            &store,
             ".",
             "/nonexistent/bastion.toml",
             "alice",
@@ -256,10 +275,12 @@ mod tests {
         let prompt = PendingConsolePrompt::ExtensionRevokeConfirmation {
             id: "acme/noop-mcp".to_string(),
         };
+        let (_f, store) = test_store().await;
         let report = resolve(
             prompt,
             "not really",
             &mut host,
+            &store,
             ".",
             "/nonexistent/bastion.toml",
             "alice",

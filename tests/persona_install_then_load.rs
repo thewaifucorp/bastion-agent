@@ -8,7 +8,7 @@
 //! loads it afterward -- this test closes that gap for good.
 
 use bastion::agent::extension_command::{handle, HandleOutcome};
-use bastion::extension::ExtensionHost;
+use bastion::extension::{ExtensionHost, SqliteExtensionStore};
 use bastion_personas::persona::PersonaRegistry;
 
 #[tokio::test]
@@ -44,8 +44,12 @@ async fn a_persona_installed_via_extension_install_is_findable_by_persona_regist
     .unwrap();
 
     let mut host = ExtensionHost::new();
+    let store_file = tempfile::NamedTempFile::new().unwrap();
+    let store = SqliteExtensionStore::new(store_file.path().to_str().unwrap());
+    store.init_schema().await.unwrap();
     let outcome = handle(
         &mut host,
+        &store,
         personas_dir.to_str().unwrap(), // <-- this is personas_install_dir()'s shape: personas_dir()/personas
         "/nonexistent/bastion.toml",
         Some(&format!("install {}", pack_root.path().to_str().unwrap())),

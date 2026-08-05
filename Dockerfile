@@ -34,12 +34,24 @@ RUN cargo build --jobs "${CARGO_BUILD_JOBS}" --locked --release --no-default-fea
 
 FROM debian:bookworm-slim AS runtime
 
+# Debian bookworm's apt-installable nodejs is v18, too old for the acpx/opencode
+# harness (needs Array.prototype.toSorted, Node 20+) — pull Node 22 from
+# NodeSource instead of the stock apt package.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl libssl3 nodejs npm \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg libssl3 \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 bastion \
     && useradd --uid 1000 --gid bastion --create-home --shell /bin/bash bastion \
-    && npm install --global acpx @anthropic-ai/claude-code @openai/codex opencode-ai
+    # bastion-agent-runtime's AcpxAgentRuntime/CodexAppServerRuntime pin narrow
+    # supported version ranges (acpx >=0.12.0,<0.13.0; codex >=0.144.0,<0.145.0)
+    # and fail closed (never registered) outside them — pin here to match so an
+    # unrelated npm publish doesn't silently drop the runtime from /backend.
+    && npm install --global acpx@0.12.1 @anthropic-ai/claude-code @openai/codex@0.144.6 opencode-ai
 
 COPY --from=builder /build/target/release/bastion /usr/local/bin/bastion
 
@@ -47,7 +59,7 @@ USER bastion:bastion
 ENV HOME=/home/bastion
 EXPOSE 8080 3000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=5 \
-    CMD curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null || exit 1
+    CMD curl --fail --silent http://127.0.0.1:8080/health >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/local/bin/bastion"]
 CMD ["daemon"]

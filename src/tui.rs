@@ -149,7 +149,7 @@ fn token_session(token: &str, owner: &str) -> Session {
 
 async fn runtime_ready(client: &Client, base_url: &str) -> bool {
     client
-        .get(format!("{}/readyz", base_url.trim_end_matches('/')))
+        .get(format!("{}/ready", base_url.trim_end_matches('/')))
         .timeout(Duration::from_secs(2))
         .send()
         .await
@@ -1037,7 +1037,7 @@ pub async fn companion_care(action: &str) -> Result<String> {
 }
 
 /// Same local-daemon detection the interactive chat client uses to
-/// auto-connect (`ensure_runtime`'s `runtime_ready` probe over `/readyz`,
+/// auto-connect (`ensure_runtime`'s `runtime_ready` probe over `/ready`,
 /// gated to loopback URLs by `is_local_url`) — reused here so the
 /// standalone CLI and `bastion` (chat) agree on whether a daemon is "the"
 /// writer right now. Never a remote `BASTION_URL`: that's neither assumed
@@ -2389,7 +2389,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let app = axum::Router::new().route(
-            "/readyz",
+            "/ready",
             axum::routing::get(|| async { axum::http::StatusCode::OK }),
         );
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -2408,7 +2408,7 @@ mod tests {
         let _guard = ENV_LOCK.lock().await;
         let saved = std::env::var("BASTION_URL").ok();
         // Port 1 is reserved (never a listening Bastion daemon in any test
-        // environment) — the readyz probe fails fast with connection
+        // environment) — the readiness probe fails fast with connection
         // refused, well inside its own 2s timeout.
         std::env::set_var("BASTION_URL", "http://127.0.0.1:1");
         let result = local_daemon_client().await;

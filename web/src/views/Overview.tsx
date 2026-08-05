@@ -9,16 +9,17 @@ import { Dot, Row, Section } from "../ui";
 
 export default function Overview({ go }: { go: (key: string) => void }) {
   const [snap, setSnap] = useState<StatusSnapshot | null>(null);
-  const [hz, setHz] = useState<{ healthz: boolean; readyz: boolean } | null>(
-    null,
-  );
+  const [healthState, setHealthState] = useState<{
+    health: boolean;
+    ready: boolean;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
       try {
         setSnap(await status());
-        setHz(await health());
+        setHealthState(await health());
         setError(null);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -55,8 +56,8 @@ export default function Overview({ go }: { go: (key: string) => void }) {
             <div className="k">daemon</div>
             <div className="v">
               <Dot
-                state={hz?.healthz ? "ok" : "bad"}
-                label={hz?.healthz ? "alive" : "unreachable"}
+                state={healthState?.health ? "ok" : "bad"}
+                label={healthState?.health ? "alive" : "unreachable"}
               />
             </div>
           </div>

@@ -5,9 +5,10 @@
 //! what your agent is assembled from and what each piece may do. This route
 //! answers with the composition snapshot taken at boot — personas loaded
 //! from `./personas/`, tools in the shared `CapabilityRegistry`, coding
-//! runtimes, enabled channels, configured MCP servers, and installed
-//! extension packs (honest empty until the `ExtensionHost` is wired into
-//! the daemon: mechanism exists, product wiring is backlog).
+//! runtimes, enabled channels, configured MCP servers, installed extension
+//! packs (`ExtensionHost`'s state right after `reload_persisted` restores
+//! whatever survived the last restart), and skills
+//! (`SkillsLoader::load_all`, also read once at boot).
 //!
 //! Owner-token authenticated (same `resolve_owner_or_401` as `/webhook`):
 //! the composition fingerprints an installation — it is for its operator,
@@ -57,10 +58,21 @@ pub struct LoadoutSnapshot {
     pub runtimes: Vec<RuntimePiece>,
     pub channels: Vec<ChannelPiece>,
     pub mcp_servers: Vec<String>,
-    /// Always empty today: the sandboxed `ExtensionHost` mechanism exists
-    /// (`src/extension/`) but nothing installs packs into the running
-    /// daemon yet — reported honestly rather than omitted.
+    /// Every extension `ExtensionHost` has active, reflecting
+    /// `reload_persisted`'s result when something survived a restart, empty
+    /// when nothing did. NOT captured at the same instant as this struct's
+    /// other fields — `ExtensionHost` is constructed later than this
+    /// snapshot in `daemon_loop`'s boot sequence, so `loadout_handler`
+    /// overlays this field from a live handle at request time instead
+    /// (`LoadoutState::extensions_live`). Always reflects boot-time state
+    /// by the time a real request can reach the handler, same as every
+    /// other field here — just not stored in the same `Arc`.
     pub extensions: Vec<String>,
+    /// Skill names `SkillsLoader::load_all` found under the configured
+    /// skills directory at boot. Empty is honest ("no skills directory, or
+    /// none found"), not an error — same discipline `extensions` above
+    /// already follows.
+    pub skills: Vec<String>,
     /// Nanoseconds since epoch when this snapshot was captured (boot time).
     pub captured_at: i64,
 }
@@ -101,6 +113,11 @@ struct LoadoutState {
     /// single writer of `companion.json` (see `tui::CompanionHandle`'s doc
     /// comment for the residual TUI-process race this does NOT close).
     companion: CompanionHandle,
+    /// Live extension ids, written once by `daemon_loop` right after
+    /// `reload_persisted` restores whatever survived the last restart — see
+    /// `router`'s doc comment for why this one field isn't captured in the
+    /// otherwise-frozen `snapshot` like everything else here.
+    extensions_live: Arc<std::sync::RwLock<Vec<String>>>,
 }
 
 fn auth(
@@ -118,7 +135,19 @@ async fn loadout_handler(
     if let Err(resp) = auth(&state, &headers, "loadout_unauthorized") {
         return *resp;
     }
-    Json(state.snapshot.as_ref().clone()).into_response()
+    let mut snapshot = state.snapshot.as_ref().clone();
+    // `ExtensionHost` is constructed (and `reload_persisted` run) later in
+    // `daemon_loop`'s boot sequence than this snapshot's other fields are
+    // captured — read the live handle at request time instead of the stale
+    // `Vec::new()` `snapshot.extensions` would otherwise always report. By
+    // the time any real request reaches this handler, boot has long
+    // finished and `reload_persisted` has already run, so this is
+    // effectively still "the state at boot", just not literally baked into
+    // the same `Arc` as the rest of the snapshot.
+    if let Ok(extensions) = state.extensions_live.read() {
+        snapshot.extensions = extensions.clone();
+    }
+    Json(snapshot).into_response()
 }
 
 async fn personas_list_handler(
@@ -734,6 +763,12 @@ async fn proposals_create_handler(
 /// Build the operator sub-router: `/loadout`, persona reads, and staged
 /// proposals. Merged into the webhook app after `.with_state` — same slot
 /// as `control_plane_routes`.
+///
+/// `extensions_live` is a handle `daemon_loop` keeps a clone of and writes
+/// to once, right after `reload_persisted` runs later in boot — see
+/// `LoadoutState::extensions_live`'s doc comment for why `/loadout`'s
+/// `extensions` field can't just be part of `snapshot` like everything else
+/// this function takes.
 #[allow(clippy::too_many_arguments)] // composition-root bag, same as serve_with_mesh
 pub fn router(
     snapshot: LoadoutSnapshot,
@@ -750,6 +785,7 @@ pub fn router(
     // `POST /companion/care` and hook-triggered session events serialize
     // through one in-process writer.
     companion: CompanionHandle,
+    extensions_live: Arc<std::sync::RwLock<Vec<String>>>,
 ) -> Router {
     Router::new()
         .route("/loadout", get(loadout_handler))
@@ -784,16 +820,25 @@ pub fn router(
             routing_toml: Arc::new(routing_toml),
             events_tx,
             companion,
+            extensions_live,
         })
 }
 
 /// Capture the composition from the pieces `daemon_loop` already holds.
+///
+/// No `extension_ids` parameter: `ExtensionHost` doesn't exist yet at the
+/// point in `daemon_loop`'s boot sequence where this gets called (it's
+/// constructed later, after `reload_persisted` runs) — `extensions` starts
+/// empty and `loadout_handler` always overlays the real, live list from
+/// `LoadoutState::extensions_live` before serving a response. See that
+/// field's doc comment.
 pub fn snapshot(
     persona_names: Vec<String>,
     tool_names: Vec<String>,
     runtime_ids: Vec<String>,
     channels: Vec<ChannelPiece>,
     mcp_servers: Vec<String>,
+    skill_names: Vec<String>,
 ) -> LoadoutSnapshot {
     LoadoutSnapshot {
         personas: persona_names,
@@ -805,6 +850,7 @@ pub fn snapshot(
         channels,
         mcp_servers,
         extensions: Vec::new(),
+        skills: skill_names,
         captured_at: now_nanos(),
     }
 }
@@ -824,6 +870,13 @@ mod tests {
     async fn sample_router(
         owner_map: OwnerMap,
     ) -> (tempfile::NamedTempFile, Router, PendingSecretValues) {
+        sample_router_with_extensions(owner_map, Vec::new()).await
+    }
+
+    async fn sample_router_with_extensions(
+        owner_map: OwnerMap,
+        live_extensions: Vec<String>,
+    ) -> (tempfile::NamedTempFile, Router, PendingSecretValues) {
         let snap = snapshot(
             vec!["ada".into()],
             vec!["create_task".into()],
@@ -833,6 +886,7 @@ mod tests {
                 enabled: true,
             }],
             vec!["memupalace".into()],
+            vec![],
         );
         let f = tempfile::NamedTempFile::new().unwrap();
         let store = Arc::new(SqliteProposalStore::new(
@@ -871,6 +925,7 @@ mod tests {
                 // `~/.config/bastion` — see the module doc for why a
                 // POST /companion/care round trip isn't exercised here.
                 CompanionHandle::load(false),
+                Arc::new(std::sync::RwLock::new(live_extensions)),
             ),
             pending,
         )
@@ -946,6 +1001,23 @@ mod tests {
         assert_eq!(v["personas"], serde_json::json!(["ada"]));
         assert_eq!(v["extensions"], serde_json::json!([]));
         assert!(v["captured_at"].as_i64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn loadout_overlays_extensions_restored_after_snapshot_capture() {
+        let owner_map = OwnerMap::from_pairs(&[("tok-alice", "alice")]);
+        let (_f, app, _pending) = sample_router_with_extensions(
+            owner_map,
+            vec!["acme/restored".into(), "bastion/git-capability".into()],
+        )
+        .await;
+
+        let (status, v) = get_json(app, "/loadout", Some("tok-alice")).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(
+            v["extensions"],
+            serde_json::json!(["acme/restored", "bastion/git-capability"])
+        );
     }
 
     // ---- A4 S2: /providers, /models, new proposal kinds -----------------

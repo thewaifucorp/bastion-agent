@@ -1,6 +1,6 @@
 [package]
 name        = "bastion"
-version     = "0.2.4"
+version     = "0.3.0"
 edition     = "2021"
 default-run = "bastion"
 
@@ -64,23 +64,23 @@ mcp-server     = [
 [dependencies]
 ## Pinned to a public Core commit so a standalone clone, CI and Docker all
 ## resolve the exact same substrate without requiring a sibling checkout.
-bastion-types = { git = "https://github.com/thewaifucorp/bastion-core", rev = "4d8eba00876b8e8359f3a25e929e8df1436340d5" }
-bastion-runtime = { git = "https://github.com/thewaifucorp/bastion-core", rev = "4d8eba00876b8e8359f3a25e929e8df1436340d5" }
-bastion-memory = { git = "https://github.com/thewaifucorp/bastion-core", rev = "4d8eba00876b8e8359f3a25e929e8df1436340d5" }
-bastion-providers = { git = "https://github.com/thewaifucorp/bastion-core", rev = "4d8eba00876b8e8359f3a25e929e8df1436340d5" }
-bastion-mcp = { git = "https://github.com/thewaifucorp/bastion-core", rev = "4d8eba00876b8e8359f3a25e929e8df1436340d5" }
-bastion-agent-runtime = { git = "https://github.com/thewaifucorp/bastion-core", rev = "4d8eba00876b8e8359f3a25e929e8df1436340d5" }
+bastion-types = { git = "https://github.com/thewaifucorp/bastion-core", rev = "aece48b55981a1c64b04eaf1f8c9eae3404f9503" }
+bastion-runtime = { git = "https://github.com/thewaifucorp/bastion-core", rev = "aece48b55981a1c64b04eaf1f8c9eae3404f9503" }
+bastion-memory = { git = "https://github.com/thewaifucorp/bastion-core", rev = "aece48b55981a1c64b04eaf1f8c9eae3404f9503" }
+bastion-providers = { git = "https://github.com/thewaifucorp/bastion-core", rev = "aece48b55981a1c64b04eaf1f8c9eae3404f9503" }
+bastion-mcp = { git = "https://github.com/thewaifucorp/bastion-core", rev = "aece48b55981a1c64b04eaf1f8c9eae3404f9503" }
+bastion-agent-runtime = { git = "https://github.com/thewaifucorp/bastion-core", rev = "aece48b55981a1c64b04eaf1f8c9eae3404f9503" }
 # Loop 3-C (docs/revamp/C3-extension-protocol-design.md): extension host +
 # package manager (src/extension/) — product code, not kernel, so it lives
 # here rather than in a substrate crate.
-bastion-extension-protocol = { git = "https://github.com/thewaifucorp/bastion-core", rev = "4d8eba00876b8e8359f3a25e929e8df1436340d5" }
+bastion-extension-protocol = { git = "https://github.com/thewaifucorp/bastion-core", rev = "aece48b55981a1c64b04eaf1f8c9eae3404f9503" }
 # Loop 3-C: the Wasm mechanism's sandbox (src/extension/wasm.rs wraps it into
 # an ExtensionInstance/Capability) — the wasm runtime (wasmi) dependency
 # itself is isolated in this crate, never touching the kernel/protocol crates.
-bastion-extension-wasm = { git = "https://github.com/thewaifucorp/bastion-core", rev = "4d8eba00876b8e8359f3a25e929e8df1436340d5" }
-bastion-cognition = { git = "https://github.com/thewaifucorp/bastion-core", rev = "4d8eba00876b8e8359f3a25e929e8df1436340d5" }
-bastion-personas = { git = "https://github.com/thewaifucorp/bastion-core", rev = "4d8eba00876b8e8359f3a25e929e8df1436340d5" }
-bastion-mesh = { git = "https://github.com/thewaifucorp/bastion-core", rev = "4d8eba00876b8e8359f3a25e929e8df1436340d5" }
+bastion-extension-wasm = { git = "https://github.com/thewaifucorp/bastion-core", rev = "aece48b55981a1c64b04eaf1f8c9eae3404f9503" }
+bastion-cognition = { git = "https://github.com/thewaifucorp/bastion-core", rev = "aece48b55981a1c64b04eaf1f8c9eae3404f9503" }
+bastion-personas = { git = "https://github.com/thewaifucorp/bastion-core", rev = "aece48b55981a1c64b04eaf1f8c9eae3404f9503" }
+bastion-mesh = { git = "https://github.com/thewaifucorp/bastion-core", rev = "aece48b55981a1c64b04eaf1f8c9eae3404f9503" }
 tokio              = { version = "1",    features = ["full"] }
 async-openai       = { version = "0.38", features = ["chat-completion"] }
 reqwest            = { version = "0.13", features = ["json", "stream"] }

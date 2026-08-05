@@ -29,7 +29,7 @@ Local development: `npm run dev` in `web/` proxies `/v1`, `/events` and
 
 Open `http://<daemon>/ui`. The page is served by the daemon itself
 (embedded in the binary — no external assets, works offline) and is an
-unauthenticated static shell, like `/healthz`: it contains no data. Every
+unauthenticated static shell, like `/health`: it contains no data. Every
 byte it renders is fetched with tokens you provide in the page and which
 never leave your browser (localStorage) except toward the daemon itself —
 the page's Content-Security-Policy pins all connections to same-origin.

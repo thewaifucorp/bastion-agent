@@ -297,7 +297,7 @@ ensure_updater() {
 wait_for_core_health() {
   local attempt
   for attempt in $(seq 1 30); do
-    if (cd "$INSTALL_DIR" && docker compose exec -T core curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null 2>&1); then
+    if (cd "$INSTALL_DIR" && docker compose exec -T core curl --fail --silent http://127.0.0.1:8080/health >/dev/null 2>&1); then
       return 0
     fi
     sleep 2
@@ -315,20 +315,18 @@ rollback_update() {
 
 install_cli() {
   local image container runtime_dir runtime_bin launcher tmp_launcher
-  image="$(
-    cd "$INSTALL_DIR"
-    docker compose config --format json | awk '
-      /^    "core": \{/ { in_core = 1; next }
-      in_core && /^    "[^"]+": \{/ { in_core = 0 }
-      in_core && /^      "image": "/ {
-        value = $0
-        sub(/^      "image": "/, "", value)
-        sub(/",?$/, "", value)
-        print value
-      }
-    '
-  )"
-  [[ -n "$image" ]] || die "could not resolve the Bastion core image from Compose configuration"
+  # `core`'s image is a plain literal in docker-compose.yml (no env var
+  # substitution), so read it straight from the YAML instead of round-tripping
+  # through `docker compose config --format json`: that command has been
+  # observed to transiently render single-line minified JSON right after
+  # `docker compose build` (buildx bake backend) — a formatting quirk this
+  # never had a reason to depend on for a value that isn't templated anyway.
+  image="$(awk '
+    /^  core:/ { in_core = 1; next }
+    in_core && /^  [^ ]/ { in_core = 0 }
+    in_core && /^    image: / { print $2; exit }
+  ' "$INSTALL_DIR/docker-compose.yml")"
+  [[ -n "$image" ]] || die "could not resolve the Bastion core image from docker-compose.yml"
   docker image inspect "$image" >/dev/null 2>&1 \
     || die "built Bastion core image is unavailable: $image"
 

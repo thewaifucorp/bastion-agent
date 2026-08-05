@@ -1053,6 +1053,13 @@ async fn main() -> anyhow::Result<()> {
         .register(Arc::new(bastion::adaptive::BrowserCapability::http(
             std::env::temp_dir().join("bastion-browser"),
         )))?;
+    // Gate 1 follow-up: pairs with `SkillCatalogProvider`
+    // (`agent::default_context_providers`) — the provider tells the agent
+    // which skills exist, this capability is what actually lets it read
+    // one's content.
+    agent.capability_registry.register(Arc::new(
+        bastion::agent::skills::SkillCapability::new_many(bastion::agent::skills::skill_dirs()),
+    ))?;
 
     // Build the
     // RuntimeRegistry from whatever AgentRuntime adapters are actually
@@ -1636,6 +1643,15 @@ async fn daemon_loop(
     #[cfg(feature = "channels-extra")]
     let email_owner_map = bastion::config::owner_map_for_email(&cfg.identity);
 
+    // GET /loadout's `extensions` field: `ExtensionHost` isn't constructed
+    // until well after the webhook router below (`reload_persisted` runs
+    // near the end of this function's boot sequence) — declared here, above
+    // the webhook block, so a clone can go into `loadout::router` now and
+    // the original still be around later to write the real list into once
+    // `reload_persisted` has run. See `loadout::LoadoutState::extensions_live`.
+    let extensions_live: std::sync::Arc<std::sync::RwLock<Vec<String>>> =
+        std::sync::Arc::new(std::sync::RwLock::new(Vec::new()));
+
     // A channel starts only when it is enabled in bastion.toml AND its required
     // secret/address is present in the environment.
     if cfg.channels.webhook.enabled {
@@ -1884,9 +1900,46 @@ async fn daemon_loop(
             let runtime_registry_for_webhook = runtime_registry_for_product.clone();
             let auth_for_webhook = cfg.auth.clone();
             let updates_for_webhook = updates.clone();
+            // See the `extensions_live` declaration above `if
+            // cfg.channels.webhook.enabled` — the ORIGINAL is written to
+            // later, after `reload_persisted` runs.
+            let extensions_live_for_webhook = extensions_live.clone();
+            // Boot-time skills scan (M4.2): `SkillsLoader::load_all` existed
+            // but nothing called it from `main()` — a pre-existing gap
+            // `extension_command.rs`'s own module doc used to call out.
+            // Scan both the operator-managed `SKILLS_DIR` and the optional
+            // core-writable `EXTENSION_SKILLS_DIR`; native installs collapse
+            // them to one root by default. SkillReloadObserver still handles
+            // skill-writer's single-file signals from the primary root.
+            // `spawn_blocking`: `load_all` does synchronous directory/file
+            // I/O (one read per skill's SKILL.md) — never run inline on the
+            // async boot path's worker thread.
+            let skills_dirs = bastion::agent::skills::skill_dirs();
+            let loaded_skill_names: Vec<String> = match tokio::task::spawn_blocking(move || {
+                bastion::agent::skills::SkillsLoader::load_all_from(&skills_dirs)
+            })
+            .await
+            {
+                Ok(Ok(skills)) => skills.into_iter().map(|s| s.id).collect(),
+                Ok(Err(e)) => {
+                    tracing::warn!(event = "skills_load_failed", error = %e);
+                    Vec::new()
+                }
+                Err(e) => {
+                    tracing::warn!(event = "skills_load_join_failed", error = %e);
+                    Vec::new()
+                }
+            };
             // Observability A2 (Loadout): boot-time composition snapshot —
             // personas, tools, runtimes, channels, MCP servers — served at
             // GET /loadout for the web app's assembled-pieces view.
+            // `extensions` isn't part of this snapshot at all anymore
+            // (`loadout::snapshot` no longer even takes it as a param):
+            // `ExtensionHost` is constructed later in `daemon_loop`'s boot
+            // sequence, so `extensions_live` (declared above the webhook
+            // block) carries it instead — `loadout_handler` overlays that
+            // live value onto this otherwise-frozen snapshot at request
+            // time. See `loadout::LoadoutState::extensions_live`.
             let loadout_routes = Some(bastion::loadout::router(
                 bastion::loadout::snapshot(
                     registry_for_product
@@ -1936,6 +1989,7 @@ async fn daemon_loop(
                         },
                     ],
                     cfg.mcp.servers.keys().cloned().collect(),
+                    loaded_skill_names,
                 ),
                 owner_map.clone(),
                 jwt_secret.clone(),
@@ -1960,6 +2014,7 @@ async fn daemon_loop(
                 // `POST /companion/event`, and the hook-bridge capability
                 // all share one in-process writer.
                 companion_handle,
+                extensions_live_for_webhook,
             ));
             // Extension UI: the mechanism (`extension::ui::router`) shipped
             // with its isolation contract already tested, but was never
@@ -2284,11 +2339,39 @@ async fn daemon_loop(
 
     // Extension pack cockpit (`/extension install|list|revoke`): in-memory
     // `ExtensionHost` (install/upgrade/rollback/revoke, atomic, zero-orphan —
-    // `src/extension/host.rs`), console-only like `/credential`. v1 has no
-    // sqlite-backed loadout — a daemon restart loses the installed set, same
-    // disclosed limitation as `bastion-extensions`' own README documents;
-    // persistence is a follow-up, not this cut's scope.
+    // `src/extension/host.rs`), console-only like `/credential`.
+    // `SqliteExtensionStore` (`src/extension/persistence.rs`) is what makes
+    // this survive a restart: `/extension install`/`revoke` write through it
+    // at the same call site the in-memory operation already succeeds at
+    // (`extension_command.rs`), and boot reloads every persisted row back
+    // into a fresh `ExtensionHost` via `reload_persisted` — reusing the
+    // EXACT same `Arc<dyn ExtensionInstance>` construction a live install
+    // uses, never a second activation path.
     let mut extension_host = bastion::extension::ExtensionHost::new();
+    let extension_store =
+        bastion::extension::SqliteExtensionStore::new(cfg.session.db_path.clone());
+    if let Err(e) = extension_store.init_schema().await {
+        tracing::error!(event = "extension_store_init_failed", error = %e);
+    }
+    for line in
+        bastion::agent::extension_command::reload_persisted(&mut extension_host, &extension_store)
+            .await
+    {
+        tracing::info!(event = "extension_reload", line = %line);
+    }
+    // Fill in what `GET /loadout`'s snapshot couldn't capture directly (see
+    // `extensions_live`'s declaration above the webhook block): now that
+    // `reload_persisted` has run, the real post-restart extension list is
+    // known — write it once so `loadout_handler` stops reporting an
+    // always-empty `extensions` field.
+    if let Ok(mut extensions) = extensions_live.write() {
+        *extensions = extension_host
+            .loadout()
+            .extensions
+            .into_iter()
+            .map(|(id, _version)| id)
+            .collect();
+    }
 
     // Bastion Agent — oferecer login e gestão de assinaturas (BAAUTH-03): one
     // `SubscriptionAuthService` instance, shared via `Arc` with the CLI
@@ -2573,7 +2656,7 @@ async fn daemon_loop(
         None;
 
     // Loop 3-D: every configured channel above has finished its spawn
-    // attempt (success or logged failure) — `/readyz` can now report ready.
+    // attempt (success or logged failure) — `/ready` can now report ready.
     readiness.mark_channels_ready();
 
     println!("Bastion daemon started. Type a message or /help for commands.");
@@ -2629,6 +2712,7 @@ async fn daemon_loop(
                                 prompt,
                                 "none",
                                 &mut extension_host,
+                                &extension_store,
                                 &personas_dir,
                                 &bastion_toml_path,
                                 bastion_runtime::agent::loop_::DEFAULT_OWNER,
@@ -2644,6 +2728,7 @@ async fn daemon_loop(
                                 prompt,
                                 &s,
                                 &mut extension_host,
+                                &extension_store,
                                 &personas_dir,
                                 &bastion_toml_path,
                                 bastion_runtime::agent::loop_::DEFAULT_OWNER,
@@ -2722,6 +2807,7 @@ async fn daemon_loop(
                                 .unwrap_or_else(|_| "bastion.toml".to_owned());
                             match bastion::agent::extension_command::handle(
                                 &mut extension_host,
+                                &extension_store,
                                 &personas_dir,
                                 &bastion_toml_path,
                                 ext_arg,

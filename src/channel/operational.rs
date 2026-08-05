@@ -8,14 +8,14 @@
 //!
 //! # Liveness vs readiness
 //!
-//! `/healthz` (liveness) answers ONE question: is this process alive and
+//! `/health` (liveness) answers ONE question: is this process alive and
 //! able to handle an HTTP request at all? It never consults a dependency —
 //! a hung provider or a dead MCP connection must NOT make an orchestrator
 //! kill-and-restart a process that is otherwise fine (that would just repeat
 //! the same failure in a crash loop). Always `200` once the router is
 //! serving.
 //!
-//! `/readyz` (readiness) answers: has THIS instance finished the startup
+//! `/ready` (readiness) answers: has THIS instance finished the startup
 //! sequence that makes it safe to route real traffic to? Backed by
 //! [`ReadinessState`] — session store, memory store, and provider are
 //! marked ready the moment `daemon_loop` starts (they are guaranteed
@@ -57,7 +57,7 @@ use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// Named boot-sequence dependencies `/readyz` reports on. Each is set at
+/// Named boot-sequence dependencies `/ready` reports on. Each is set at
 /// most once, monotonically false→true (never flipped back) — this is a
 /// "has this instance finished booting" gate, not a live per-request health
 /// check of each dependency (see module docs).
@@ -97,7 +97,7 @@ impl ReadinessState {
     }
 
     /// Fase 2.9: `/status`'s `ready` field reuses this exact boolean (not a
-    /// second gate) — just the AND of the four components `/readyz` already
+    /// second gate) — just the AND of the four components `/ready` already
     /// reports, without exposing the per-component breakdown a second time.
     pub fn is_ready(&self) -> bool {
         self.snapshot().ready
@@ -120,7 +120,7 @@ impl ReadinessState {
 
 /// Daemon-access auth: gates `/lifecycle/*` and — when the operator mounts it
 /// — the extension-UI surface (`/ext-ui/*`, see [`require_daemon_access`]).
-/// Never `/healthz`/`/readyz`: orchestrator probes must not need a credential
+/// Never `/health`/`/ready`: orchestrator probes must not need a credential
 /// to ask "are you up". `None` = not configured, fails closed (every gated
 /// request refused).
 #[derive(Clone, Default)]
@@ -276,7 +276,7 @@ pub struct StatusSnapshot {
 /// "logged in", see that module's doc); `logged_in` is a live
 /// `auth_profile_registry::probe_host_cli` against the mapped
 /// `[auth.<profile>]` entry. `ready` is `session && memory && provider &&
-/// channels` from the SAME `ReadinessState` `/readyz` already reports (not a
+/// channels` from the SAME `ReadinessState` `/ready` already reports (not a
 /// new gate) — this route just adds runtime/login detail alongside it.
 pub async fn status_handler(State(state): State<StatusState>) -> impl IntoResponse {
     let mut runtimes = Vec::new();
@@ -371,9 +371,9 @@ mod tests {
 
     #[tokio::test]
     async fn liveness_handler_always_200() {
-        let app = Router::new().route("/healthz", get(liveness_handler));
+        let app = Router::new().route("/health", get(liveness_handler));
         let req = Request::builder()
-            .uri("/healthz")
+            .uri("/health")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -384,10 +384,10 @@ mod tests {
     async fn readiness_handler_503_until_all_dependencies_ready() {
         let readiness = ReadinessState::new();
         let app = Router::new()
-            .route("/readyz", get(readiness_handler))
+            .route("/ready", get(readiness_handler))
             .with_state(readiness.clone());
         let req = Request::builder()
-            .uri("/readyz")
+            .uri("/ready")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -402,10 +402,10 @@ mod tests {
         readiness.mark_provider_ready();
         readiness.mark_channels_ready();
         let app = Router::new()
-            .route("/readyz", get(readiness_handler))
+            .route("/ready", get(readiness_handler))
             .with_state(readiness.clone());
         let req = Request::builder()
-            .uri("/readyz")
+            .uri("/ready")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();

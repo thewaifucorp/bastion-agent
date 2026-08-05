@@ -27,12 +27,18 @@
 //! - [`ui`] — extension UI isolation (Loop 3-D, CLD-08): sandboxed asset
 //!   serving + the one mediated `CapabilityRegistry` bridge a served UI may
 //!   use, gated by that extension's own declared `PermissionSet`.
+//! - [`persistence`] — `SqliteExtensionStore`, the record of what's
+//!   installed that survives a daemon restart. `ExtensionHost` itself stays
+//!   pure in-memory; `main.rs`'s boot sequence reads this store and
+//!   re-`install()`s each row through `ExtensionHost`'s own path
+//!   (`extension_command.rs::reload_persisted`).
 
 pub mod cli_capability;
 pub mod declarative;
 pub mod facade;
 pub mod host;
 pub mod mcp_reconciler;
+pub mod persistence;
 pub mod review;
 pub mod subprocess;
 pub mod ui;
@@ -42,3 +48,4 @@ pub use cli_capability::CliCapability;
 pub use facade::{ExtensionInstance, HostFacade};
 pub use host::{ExtensionHost, Loadout};
 pub use mcp_reconciler::{parse_mcp_dependencies, reconcile_mcp_dependencies, McpDependency};
+pub use persistence::{PersistedExtension, ReconstructKind, SqliteExtensionStore};

@@ -118,19 +118,19 @@ async fn boot_and_verify(profile: BootProfile, mode: &str) {
     readiness.mark_channels_ready();
     let app = axum::Router::new()
         .route(
-            "/readyz",
+            "/ready",
             axum::routing::get(bastion::channel::operational::readiness_handler),
         )
         .with_state(readiness);
     let req = http::Request::builder()
-        .uri("/readyz")
+        .uri("/ready")
         .body(axum::body::Body::empty())
         .unwrap();
     let resp = tower::ServiceExt::oneshot(app, req).await.unwrap();
     assert_eq!(
         resp.status(),
         http::StatusCode::OK,
-        "[{mode}] /readyz did not report ready after boot"
+        "[{mode}] /ready did not report ready after boot"
     );
 
     // Clean up this profile's env before the next one runs.

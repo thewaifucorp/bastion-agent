@@ -19,7 +19,7 @@ services:
       - -c
       - |
         mkdir -p /bastion-home/.config /bastion-home/.local/share/opencode /bastion-home/.claude /bastion-home/.codex /bastion-home/.acpx &&
-        chown -R ${BASTION_UID:-1000}:${BASTION_GID:-1000} /bastion-data /bastion-home /claude-home /codex-home /acpx-home /opencode-home &&
+        chown -R ${BASTION_UID:-1000}:${BASTION_GID:-1000} /bastion-data /bastion-home /claude-home /codex-home /acpx-home /opencode-home /extension-skills &&
         chown -R 1001:1001 /memupalace-data /skill-writer-data /self-improving-data &&
         echo "volume ownership initialized (core=${BASTION_UID:-1000}:${BASTION_GID:-1000}, python=1001:1001)"
     volumes:
@@ -29,6 +29,7 @@ services:
       - codex-home:/codex-home
       - acpx-home:/acpx-home
       - opencode-home:/opencode-home
+      - extension-skills:/extension-skills
       - memupalace-data:/memupalace-data
       - skill-writer-data:/skill-writer-data
       - self-improving-data:/self-improving-data
@@ -65,6 +66,7 @@ services:
       - opencode-home:/home/bastion/.local/share/opencode # OpenCode login
       - ./personas:/personas:ro                   # SOUL.md files (D-02: bind-mount, no copy)
       - ./skills:/skills:ro                       # SKILL.md files (read-only)
+      - extension-skills:/extension-skills        # rw: skills installed from extension packs
       - ./bastion.toml:/bastion.toml:ro           # non-secret config (D-09)
       # Host-only updater uses this narrow Unix-socket bridge. The core gets
       # neither Docker's socket nor a writable source checkout.
@@ -73,6 +75,7 @@ services:
       - BASTION_CONFIG=/bastion.toml
       - BASTION__SESSION__DB_PATH=/bastion-data/sessions.db
       - BASTION__LOGGING__LOG_PATH=/bastion-data/bastion.log
+      - EXTENSION_SKILLS_DIR=/extension-skills
       - BASTION__MCP__SERVERS__MEMUPALACE__URL=http://memupalace:8001/mcp
       - BASTION__MCP__SERVERS__SKILL_WRITER__URL=http://skill-writer:8002/mcp
       - BASTION__MCP__SERVERS__SELF_IMPROVING__URL=http://self-improving:8003/mcp
@@ -110,7 +113,7 @@ services:
       voice:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/healthz"]
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health"]
       interval: 15s
       timeout: 5s
       start_period: 15s
@@ -266,6 +269,7 @@ volumes:
   codex-home:            # Codex login and settings
   acpx-home:             # ACP runtime sessions
   opencode-home:         # OpenCode login
+  extension-skills:      # core: writable skills installed from extension packs
   memupalace-data:       # memupalace: KG + embeddings
   skill-writer-data:     # skill-writer: internal state
   self-improving-data:   # self-improving: analysis data
