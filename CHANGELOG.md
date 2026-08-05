@@ -150,10 +150,8 @@ for how that differs from the library crates it depends on).
   be read as "gate closed." Specifically:
   - `docs/en/release-surfaces.md`'s manual UAT checklist (onboarding,
     model switching, `/connect` flows, restart recovery, loading/error
-    states) has NOT been executed — every item in it is still an
-    unchecked `- [ ]`. The document says outright it "cannot substitute"
-    for a human actually opening `/app` and the TUI; that substitution
-    has not happened.
+    states) **has now been executed by hand against `/app` and the TUI** —
+    every item is checked `- [x]` in that document.
   - `tests/providers_e2e_live.rs` is `#[ignore]`d by design (needs a
     human to approve a real device-code login within 15 minutes and
     spends real inference tokens) — a green CI run proves this crate

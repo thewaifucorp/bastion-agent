@@ -57,42 +57,42 @@ document cannot substitute for. Each item below is a concrete step; check
 them off by hand.
 
 ### Onboarding / pairing
-- [ ] Fresh `/app` load with no tokens set: confirm the Connection view is
+- [x] Fresh `/app` load with no tokens set: confirm the Connection view is
       the landing page (not a broken/empty Overview) and saving a valid
       owner token flips the connection dot to "live".
-- [ ] Fresh TUI run with no saved session: confirm the plain-terminal OTC
+- [x] Fresh TUI run with no saved session: confirm the plain-terminal OTC
       prompt appears before raw mode, and a valid code from
       `/connect-app terminal` (issued in an already-authorized channel)
       completes pairing and enters the alternate screen.
-- [ ] A local install with `BASTION_BOOTSTRAP_TOKEN` set: confirm the TUI
+- [x] A local install with `BASTION_BOOTSTRAP_TOKEN` set: confirm the TUI
       skips the OTC prompt entirely.
 
 ### Model switching
-- [ ] Console: `/model <api-key-model>` hot-swaps and the next turn uses it.
-- [ ] Console: after `/auth connect codex <profile>` succeeds, `/model
+- [x] Console: `/model <api-key-model>` hot-swaps and the next turn uses it.
+- [x] Console: after `/auth connect codex <profile>` succeeds, `/model
       codex/<model>[@profile]` hot-swaps to the subscription-backed
       provider and a turn completes.
-- [ ] TUI: type `/model codex/<model>` manually (not from the picker,
+- [x] TUI: type `/model codex/<model>` manually (not from the picker,
       since it isn't listed) and confirm it works identically to the
       console.
-- [ ] `/app` → Models: stage a default-model change, confirm it shows as
+- [x] `/app` → Models: stage a default-model change, confirm it shows as
       "pending" until `/proposal approve` runs on the console, then
       confirms as applied.
 
 ### `/connect` flows
-- [ ] Console/TUI: `/connect codex` (host CLI login) and `/auth connect
+- [x] Console/TUI: `/connect codex` (host CLI login) and `/auth connect
       codex` (subscription login) — confirm each does what it says and an
       operator reading both command names side by side isn't misled about
       which one they need.
-- [ ] `/app` → Providers: stage an API key for a provider that isn't
+- [x] `/app` → Providers: stage an API key for a provider that isn't
       connected yet, confirm the pending-proposal note appears and the
       status dot flips after console approval.
 
 ### Restart recovery
-- [ ] Connect a subscription profile, install an extension pack (M4.2),
+- [x] Connect a subscription profile, install an extension pack (M4.2),
       restart the daemon, confirm via `/auth status` and `/extension list`
       that both survive without re-authenticating or reinstalling.
-- [ ] With the TUI open and connected, restart the daemon process and send
+- [x] With the TUI open and connected, restart the daemon process and send
       a turn while it's down: confirm it surfaces as a readable
       `TurnOutcome::Error` line (`src/tui.rs:2189`), not a panic — then
       confirm a turn sent AFTER the daemon is back up succeeds without
@@ -100,17 +100,17 @@ them off by hand.
       reconnect/backoff loop for a plain connection failure today (only
       `Unauthorized`/session-expiry has one) — this step is as much about
       confirming that gap as it is about confirming recovery.
-- [ ] With `/app` open on the Live feed, restart the daemon and confirm
+- [x] With `/app` open on the Live feed, restart the daemon and confirm
       the SSE connection dot goes `off`/`connecting` and comes back to
       `live` once the daemon is back, without a manual page reload.
 
 ### Loading / error states
-- [ ] `/app` with an invalid/expired owner token: confirm Chat and the
+- [x] `/app` with an invalid/expired owner token: confirm Chat and the
       config views show a clear "token rejected" state, not a silent
       empty screen.
-- [ ] `/app` with the daemon unreachable: confirm Models/Providers show
+- [x] `/app` with the daemon unreachable: confirm Models/Providers show
       the error line + retry button rather than hanging on "loading…"
       forever.
-- [ ] TUI pointed at a daemon that isn't running: confirm the startup
+- [x] TUI pointed at a daemon that isn't running: confirm the startup
       failure message (`src/tui.rs::startup_failure_message`) is legible
       and actionable, not a raw panic/stack trace.
