@@ -8,13 +8,13 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-06
+
 ### Changed
 
 - **Breaking:** the daemon operational probes are now `GET /health` and
   `GET /ready`; Docker, Compose, the installer, TUI and bundled web app now
   use the canonical paths, with no compatibility aliases.
-
-## [0.3.0] — 2026-07-31
 
 ### Added
 
