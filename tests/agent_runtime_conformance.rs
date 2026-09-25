@@ -290,6 +290,7 @@ impl RuntimeSession for FakeSession {
                         id: perm_id,
                         action: PermissionAction::WriteFile,
                         detail: "write guarded.txt".to_string(),
+                        edits: Vec::new(),
                     });
                 task.pending_permission = Some(perm_id);
             }
