@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 
-use crate::control_plane::scope::{require_scope, Scope, ScopeSet};
+use crate::control_plane::scope::{require_scope, MissingScope, Scope, ScopeSet};
 use axum::Router;
 use bastion_cognition::goal::GoalEngine;
 use bastion_memory::{PrivacyTier, SharedMemory};
@@ -100,10 +100,12 @@ fn required_control_plane_scope(name: &str) -> Option<Scope> {
 
 /// Pure scope gate for a Control Plane tool call: `Ok(())` for every
 /// non-control-plane tool name (unaffected) or a control-plane tool the
-/// caller's `scopes` cover; `Err` (a ready-to-return `CallToolResult`,
-/// mirroring the `read_only` check's existing soft-error shape — this is a
-/// 403-equivalent, never the hard `McpError` `authenticate_token` uses for
-/// actual authentication failures) otherwise.
+/// caller's `scopes` cover; `Err(MissingScope)` otherwise. `call_tool` turns
+/// that into a soft-error `CallToolResult`, mirroring the `read_only` check's
+/// existing shape — this is a 403-equivalent, never the hard `McpError`
+/// `authenticate_token` uses for actual authentication failures. The error is
+/// the scope, not the `CallToolResult`, because that type is large enough to
+/// trip `clippy::result_large_err`.
 ///
 /// This function alone does NOT know whether `name` actually resolves to
 /// `control_plane_registry` at dispatch time — it re-derives "is this a
@@ -113,13 +115,11 @@ fn required_control_plane_scope(name: &str) -> Option<Scope> {
 /// list_names()`, the actual dispatch decision) is true, so the two checks
 /// stay symmetric even if a future shared-registry capability name were to
 /// collide with one of these 5 tool names.
-fn check_control_plane_scope(name: &str, scopes: &ScopeSet) -> Result<(), CallToolResult> {
+fn check_control_plane_scope(name: &str, scopes: &ScopeSet) -> Result<(), MissingScope> {
     let Some(required) = required_control_plane_scope(name) else {
         return Ok(());
     };
-    require_scope(scopes, required).map_err(|missing| {
-        CallToolResult::error(vec![Content::text(format!("forbidden: {missing}"))])
-    })
+    require_scope(scopes, required)
 }
 
 /// 09-REVIEW.md CR-01/CR-02: shared fail-closed token check used by `list_tools`,
@@ -360,8 +360,11 @@ impl ServerHandler for BastionMcpServer {
             // `required_control_plane_scope`'s static table even though
             // `target` resolved to the shared registry for it.
             if dispatches_to_control_plane {
-                if let Err(result) = check_control_plane_scope(&name, &perms.control_plane_scopes) {
-                    return Ok(result);
+                if let Err(missing) = check_control_plane_scope(&name, &perms.control_plane_scopes)
+                {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "forbidden: {missing}"
+                    ))]));
                 }
 
                 // Project tag is server-resolved from the authenticated token,

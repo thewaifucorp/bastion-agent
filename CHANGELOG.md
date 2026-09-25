@@ -8,6 +8,22 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+### Changed
+
+- Pins `bastion-core` at `v0.4.0` (`ea2ece1`): the direct ACP adapter
+  (`AcpAgentRuntime`, bastion-agent-runtime 0.2.0), proposed diffs on
+  `RuntimeEvent::PermissionRequest`, and STABLE/VOLATILE system-prompt caching
+  (bastion-types 0.3.0, bastion-runtime 0.2.6). No behavior change for an
+  existing deployment; test fixtures that build `PermissionRequest` now set
+  `edits`.
+
+### Fixed
+
+- `src/mcp/server.rs`: `check_control_plane_scope` returns `MissingScope`
+  instead of a ready-made `CallToolResult`, which trips
+  `clippy::result_large_err` on Rust 1.97. `call_tool` builds the same
+  `forbidden: <scope>` soft error as before.
+
 ## [0.3.0] — 2026-08-06
 
 ### Changed

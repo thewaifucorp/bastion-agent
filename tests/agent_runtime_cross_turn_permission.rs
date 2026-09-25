@@ -157,6 +157,7 @@ impl RuntimeSession for FakeSession {
             id: perm_id,
             action: PermissionAction::RunCommand,
             detail: "run: echo fake-tool".to_string(),
+            edits: Vec::new(),
         });
         Ok(task)
     }
