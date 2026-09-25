@@ -104,6 +104,42 @@ pub struct BastionConfig {
     /// every deployment predating this field.
     #[serde(default)]
     pub extension_ui: ExtensionUiConfig,
+    /// Optional `[subscriptions.*]` tables — per-connector login options.
+    /// Absent entirely = `#[serde(default)]`, which keeps the device-code
+    /// login every deployment had before this field.
+    #[serde(default)]
+    pub subscriptions: SubscriptionsConfig,
+}
+
+/// The `[subscriptions]` table: one sub-table per subscription connector.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct SubscriptionsConfig {
+    #[serde(default)]
+    pub codex: CodexSubscriptionConfig,
+}
+
+/// `[subscriptions.codex]`.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct CodexSubscriptionConfig {
+    /// How `/auth connect codex` logs in. Default `device`.
+    #[serde(default)]
+    pub login: CodexLoginMode,
+}
+
+/// The two ways to log in to a ChatGPT subscription.
+#[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CodexLoginMode {
+    /// Show a code to approve on any device. Needs no browser on the
+    /// daemon's host, so it is the only one that works on a VPS or in a
+    /// container.
+    #[default]
+    Device,
+    /// Open a URL in a browser on the same machine; the daemon receives the
+    /// redirect on `127.0.0.1:1455` (or `1457` when that is taken). Only for
+    /// a daemon running on the operator's own desktop, or with that port
+    /// forwarded to it.
+    Browser,
 }
 
 /// The `[control_plane]` table.
@@ -850,6 +886,18 @@ pub fn load_config(path: &str) -> anyhow::Result<BastionConfig> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_login_defaults_to_device_and_accepts_browser() {
+        let absent: super::SubscriptionsConfig = toml::from_str("").expect("empty");
+        assert_eq!(absent.codex.login, super::CodexLoginMode::Device);
+        let browser: super::SubscriptionsConfig =
+            toml::from_str("[codex]\nlogin = \"browser\"\n").expect("browser");
+        assert_eq!(browser.codex.login, super::CodexLoginMode::Browser);
+        assert!(
+            toml::from_str::<super::SubscriptionsConfig>("[codex]\nlogin = \"pkce\"\n").is_err()
+        );
+    }
+
     use super::*;
 
     /// `BASTION_DATA_DIR`/`BASTION_PERSONAS_DIR`/etc are process-global —

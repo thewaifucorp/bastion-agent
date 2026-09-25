@@ -63,6 +63,36 @@ returns to `agent.default_model` in `bastion.toml`.
 Keys remain outside chat and TOML: configure them in `.env` or the deployment
 secret store before selecting that provider.
 
+### ChatGPT subscription (Codex)
+
+A ChatGPT Plus/Pro subscription can serve inference while Bastion keeps its own
+loop, memory, tools and approvals. On the daemon console:
+
+1. `/auth connect codex [profile]` — log in; `profile` is an optional label
+   (`work`, `personal`) for keeping more than one account.
+2. `/model codex/<model>@<profile>` — use it for the next turns.
+3. `/model status` — which account and model serve the turn, and what usage is
+   actually known.
+
+`/auth status` and `/auth disconnect <profile>` manage the connection. This is
+not the TUI's `/connect codex`, which logs the Codex CLI in inside the
+container for the `codex_app_server` backend.
+
+How `/auth connect codex` logs in is set in `bastion.toml`:
+
+```toml
+[subscriptions.codex]
+login = "device"   # default: shows a code to approve on any device
+# login = "browser" # opens a URL on this machine; callback on 127.0.0.1:1455
+```
+
+Use `device` on a VPS or in a container. `browser` only works when the browser
+runs on the same machine as the daemon (or port 1455 is forwarded to it); if
+1455 is taken it falls back to 1457, and fails if both are.
+
+The connector is `Experimental`: it works end to end, but it signs in as the
+Codex CLI's public OAuth client against an endpoint OpenAI does not document.
+
 ## Core settings
 
 | Area | Setting | Purpose |

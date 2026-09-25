@@ -2410,10 +2410,13 @@ async fn daemon_loop(
     // real operator override (client_id/issuer/api_base) instead of the
     // default; a single instance makes that impossible by construction.
     let codex_config = bastion_providers::codex::CodexConfig::default();
-    let codex_connector = Arc::new(bastion::codex_connector::CodexConnector::new(
-        codex_config.clone(),
-        codex_token_store.clone() as Arc<dyn bastion_providers::codex::CodexTokenStore>,
-    ));
+    let codex_connector = Arc::new(
+        bastion::codex_connector::CodexConnector::new(
+            codex_config.clone(),
+            codex_token_store.clone() as Arc<dyn bastion_providers::codex::CodexTokenStore>,
+        )
+        .with_login_mode(cfg.subscriptions.codex.login),
+    );
     let codex_refresher = Arc::new(bastion_providers::codex::CodexRefresher::new(
         codex_config,
         codex_token_store as Arc<dyn bastion_providers::codex::CodexTokenStore>,

@@ -8,6 +8,22 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+### Added
+
+- **Codex subscription login in the browser.** `[subscriptions.codex] login =
+  "browser"` makes `/auth connect codex` print an authorize URL and receive the
+  redirect on `127.0.0.1:1455` (falling back to `1457`, the only two ports
+  OpenAI accepts), instead of showing a device code. The listener binds
+  loopback only, before the URL is shown; a callback is checked against the
+  login's state before anything else, stray requests and foreign states are
+  answered without ending the login, and a refusal at OpenAI ends it as
+  `ReauthRequired` with nothing exchanged. The browser tab shows the real
+  outcome, after the exchange. Default stays `device`, which is the only mode
+  that works on a VPS or in a container: upgrading changes nothing.
+- `docs/{en/configuration.md,pt-br/configuracao.md}` document the subscription
+  flow end to end (`/auth connect`, `/model codex/<model>@<profile>`,
+  `/model status`) and how it differs from the TUI's `/connect codex`.
+
 ### Changed
 
 - Pins `bastion-core` at `v0.4.0` (`ea2ece1`): the direct ACP adapter
