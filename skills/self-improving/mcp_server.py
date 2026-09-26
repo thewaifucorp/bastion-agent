@@ -33,6 +33,16 @@ SUGGESTIONS_FILE = Path(os.getenv("SELF_SUGGESTIONS_FILE", "/data/suggestions.js
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
+def _http_client(socket_env: str) -> httpx.AsyncClient:
+    """HTTP client for a peer: over the Unix socket named by `socket_env` when
+    set (native install, where sidecars have no network), plain TCP otherwise.
+    The URL's host is ignored on a socket; its path still routes the request."""
+    socket_path = os.getenv(socket_env)
+    if socket_path:
+        return httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=socket_path))
+    return httpx.AsyncClient()
+
+
 def _validate_str(name: str, value: object) -> str:
     if not isinstance(value, str) or not str(value).strip():
         raise ValueError(f"Parameter '{name}' must be a non-empty, non-whitespace string.")
@@ -75,7 +85,7 @@ def _get_adapter() -> FileSystemAdapter:
 async def _add_to_memupalace(content: str, wing: str = "skill-usage") -> None:
     """Forward usage event to memupalace (SELF-02 feedback loop)."""
     try:
-        async with httpx.AsyncClient() as client:
+        async with _http_client("MEMUPALACE_SOCKET") as client:
             await client.post(
                 f"{MEMUPALACE_URL}/call-tool",
                 json={
@@ -210,6 +220,17 @@ async def observe_usage(
     return {"observed": True, "skill_name": skill_name, "persona_slug": persona_slug}
 
 
+def _serve(mcp, port: int) -> None:
+    """Run the server: on the Unix socket in MCP_UNIX_SOCKET when set (native
+    install — no TCP port, the sidecar runs with no network at all), else on
+    streamable-http TCP as in the container."""
+    socket_path = os.getenv("MCP_UNIX_SOCKET")
+    if socket_path:
+        mcp.run(transport="streamable-http", uvicorn_config={"uds": socket_path})
+    else:
+        mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
+
+
 if __name__ == "__main__":
     port = int(os.getenv("SELF_IMPROVING_PORT", "8003"))
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
+    _serve(mcp, port)

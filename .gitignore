@@ -292,3 +292,7 @@ opencode.json
 
 # Vite dev-server dependency pre-bundle cache (regenerated on npm run dev)
 web/.vite/
+
+# Native install (installer.sh --native)
+/bastion.native.toml
+/data/

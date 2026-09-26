@@ -104,6 +104,99 @@ pub struct BastionConfig {
     /// every deployment predating this field.
     #[serde(default)]
     pub extension_ui: ExtensionUiConfig,
+    /// Optional `[subscriptions.*]` tables — per-connector login options.
+    /// Absent entirely = `#[serde(default)]`, which keeps the device-code
+    /// login every deployment had before this field.
+    #[serde(default)]
+    pub subscriptions: SubscriptionsConfig,
+    /// Optional `[workspace]` table. See [`workspace_root`].
+    #[serde(default)]
+    pub workspace: WorkspaceConfig,
+    /// Optional `[sandbox]` table: OS confinement of tools and harnesses.
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
+    /// Optional `[sidecars]` table: Python MCP sidecars the daemon runs
+    /// itself (native install). See `crate::sidecars`.
+    #[serde(default)]
+    pub sidecars: SidecarsConfig,
+}
+
+/// `[sidecars]`. Empty `enabled` (the default): the daemon starts none —
+/// in a container deployment Compose runs them.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct SidecarsConfig {
+    /// Which to run: any of `memupalace`, `skill-writer`, `self-improving`,
+    /// `voice`.
+    #[serde(default)]
+    pub enabled: Vec<String>,
+    /// Root of the installed sidecar tree (`src/`, `venv/`, `models/`).
+    /// Absent: `<data dir>/sidecars`, where the native installer puts it.
+    #[serde(default)]
+    pub root: Option<std::path::PathBuf>,
+}
+
+/// `[sandbox]`.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct SandboxConfig {
+    #[serde(default)]
+    pub mode: SandboxMode,
+}
+
+/// Whether the daemon confines the programs it runs (subprocess extensions,
+/// the git pack, agent harnesses) with `bastion-sandbox`.
+#[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SandboxMode {
+    /// Confine when this host has a backend; otherwise log it and run tools
+    /// unconfined (subprocess extensions are still refused).
+    #[default]
+    Auto,
+    /// Refuse to start without a backend. For a native desktop install,
+    /// where the container is not there to fall back on.
+    Required,
+    /// Never confine.
+    Off,
+}
+
+/// `[workspace]`: the one directory Bastion's own tools (the git pack,
+/// subprocess extensions) and external agent runtimes may work in.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct WorkspaceConfig {
+    /// Absent: `BASTION_WORKSPACE_DIR`, then `$BASTION_DATA_DIR/workspace`,
+    /// then the platform data directory (see [`workspace_root`]).
+    #[serde(default)]
+    pub root: Option<std::path::PathBuf>,
+}
+
+/// The `[subscriptions]` table: one sub-table per subscription connector.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct SubscriptionsConfig {
+    #[serde(default)]
+    pub codex: CodexSubscriptionConfig,
+}
+
+/// `[subscriptions.codex]`.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct CodexSubscriptionConfig {
+    /// How `/auth connect codex` logs in. Default `device`.
+    #[serde(default)]
+    pub login: CodexLoginMode,
+}
+
+/// The two ways to log in to a ChatGPT subscription.
+#[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CodexLoginMode {
+    /// Show a code to approve on any device. Needs no browser on the
+    /// daemon's host, so it is the only one that works on a VPS or in a
+    /// container.
+    #[default]
+    Device,
+    /// Open a URL in a browser on the same machine; the daemon receives the
+    /// redirect on `127.0.0.1:1455` (or `1457` when that is taken). Only for
+    /// a daemon running on the operator's own desktop, or with that port
+    /// forwarded to it.
+    Browser,
 }
 
 /// The `[control_plane]` table.
@@ -802,6 +895,70 @@ pub fn apply_data_dir_defaults() {
     );
 }
 
+/// Publishes the resolved workspace as `BASTION_WORKSPACE_DIR` (unless it
+/// was set explicitly) and creates it, so every later [`workspace_root`] call
+/// — from code that never sees the config — agrees. Call once, after
+/// `load_config`.
+pub fn apply_workspace_default(cfg: &WorkspaceConfig) -> std::io::Result<std::path::PathBuf> {
+    if let Some(root) = &cfg.root {
+        set_env_default("BASTION_WORKSPACE_DIR", &root.to_string_lossy());
+    }
+    let root = workspace_root();
+    std::fs::create_dir_all(&root)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(root)
+}
+
+/// The workspace root, in order: `BASTION_WORKSPACE_DIR` (set from
+/// `[workspace] root` by [`apply_workspace_default`]), `$BASTION_DATA_DIR/
+/// workspace`, then the platform data directory — `$XDG_DATA_HOME/bastion/
+/// workspace` or `~/.local/share/bastion/workspace` on Linux, `~/Library/
+/// Application Support/Bastion/workspace` on macOS. Never the daemon's
+/// current directory: natively that is wherever it was launched from, often
+/// `$HOME`, which would hand the whole home directory to every tool that
+/// works "in the workspace".
+pub fn workspace_root() -> std::path::PathBuf {
+    resolve_workspace_root(|key| std::env::var_os(key))
+}
+
+fn resolve_workspace_root(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> std::path::PathBuf {
+    let explicit = env("BASTION_WORKSPACE_DIR")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from);
+    explicit.unwrap_or_else(|| resolve_data_root(env).join("workspace"))
+}
+
+/// Where the daemon keeps its state when nothing more specific is set:
+/// `BASTION_DATA_DIR`, else `$XDG_DATA_HOME/bastion` or
+/// `~/.local/share/bastion` on Linux, `~/Library/Application Support/Bastion`
+/// on macOS.
+pub fn data_root() -> std::path::PathBuf {
+    resolve_data_root(|key| std::env::var_os(key))
+}
+
+fn resolve_data_root(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> std::path::PathBuf {
+    use std::path::PathBuf;
+    let non_empty = |key: &str| env(key).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if let Some(data_dir) = non_empty("BASTION_DATA_DIR") {
+        return data_dir;
+    }
+    let home = non_empty("HOME");
+    if cfg!(target_os = "macos") {
+        if let Some(home) = home {
+            return home.join("Library/Application Support/Bastion");
+        }
+    } else if let Some(xdg) = non_empty("XDG_DATA_HOME") {
+        return xdg.join("bastion");
+    } else if let Some(home) = home {
+        return home.join(".local/share/bastion");
+    }
+    std::env::temp_dir().join("bastion")
+}
+
 fn set_env_default(key: &str, value: &str) {
     if std::env::var_os(key).is_none() {
         std::env::set_var(key, value);
@@ -838,8 +995,14 @@ pub fn personas_install_dir() -> String {
 ///   BASTION__AGENT__DEFAULT_MODEL=claude-opus-4-7
 ///   BASTION__SESSION__DB_PATH=/data/sessions.db
 pub fn load_config(path: &str) -> anyhow::Result<BastionConfig> {
-    let cfg = config::Config::builder()
-        .add_source(config::File::with_name(path))
+    let mut builder = config::Config::builder().add_source(config::File::with_name(path));
+    // `BASTION_CONFIG_OVERLAY`: a second TOML file merged over the first —
+    // how the native installer adds `[sandbox]` and `[sidecars]` without
+    // editing the tracked bastion.toml. Named explicitly, so it must exist.
+    if let Some(overlay) = std::env::var_os("BASTION_CONFIG_OVERLAY").filter(|v| !v.is_empty()) {
+        builder = builder.add_source(config::File::from(std::path::PathBuf::from(overlay)));
+    }
+    let cfg = builder
         .add_source(config::Environment::with_prefix("BASTION").separator("__"))
         .build()?;
     let cfg: BastionConfig = cfg.try_deserialize()?;
@@ -850,6 +1013,73 @@ pub fn load_config(path: &str) -> anyhow::Result<BastionConfig> {
 
 #[cfg(test)]
 mod tests {
+    fn env_of<'a>(
+        pairs: &'a [(&'a str, &'a str)],
+    ) -> impl Fn(&str) -> Option<std::ffi::OsString> + 'a {
+        move |key| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| std::ffi::OsString::from(v))
+        }
+    }
+
+    #[test]
+    fn workspace_root_prefers_explicit_then_data_dir_then_platform_never_cwd() {
+        use std::path::PathBuf;
+        let all = [
+            ("BASTION_WORKSPACE_DIR", "/w"),
+            ("BASTION_DATA_DIR", "/d"),
+            ("HOME", "/home/op"),
+        ];
+        assert_eq!(
+            super::resolve_workspace_root(env_of(&all)),
+            PathBuf::from("/w")
+        );
+        assert_eq!(
+            super::resolve_workspace_root(env_of(&all[1..])),
+            PathBuf::from("/d/workspace")
+        );
+        let platform = super::resolve_workspace_root(env_of(&all[2..]));
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                platform,
+                PathBuf::from("/home/op/Library/Application Support/Bastion/workspace")
+            );
+        } else {
+            assert_eq!(
+                platform,
+                PathBuf::from("/home/op/.local/share/bastion/workspace")
+            );
+            assert_eq!(
+                super::resolve_workspace_root(env_of(&[("XDG_DATA_HOME", "/x"), ("HOME", "/h")])),
+                PathBuf::from("/x/bastion/workspace")
+            );
+        }
+        // Empty values count as unset.
+        assert_eq!(
+            super::resolve_workspace_root(env_of(&[
+                ("BASTION_WORKSPACE_DIR", ""),
+                ("BASTION_DATA_DIR", "/d")
+            ])),
+            PathBuf::from("/d/workspace")
+        );
+        let cwd = std::env::current_dir().unwrap();
+        assert_ne!(super::resolve_workspace_root(env_of(&[])), cwd);
+    }
+
+    #[test]
+    fn codex_login_defaults_to_device_and_accepts_browser() {
+        let absent: super::SubscriptionsConfig = toml::from_str("").expect("empty");
+        assert_eq!(absent.codex.login, super::CodexLoginMode::Device);
+        let browser: super::SubscriptionsConfig =
+            toml::from_str("[codex]\nlogin = \"browser\"\n").expect("browser");
+        assert_eq!(browser.codex.login, super::CodexLoginMode::Browser);
+        assert!(
+            toml::from_str::<super::SubscriptionsConfig>("[codex]\nlogin = \"pkce\"\n").is_err()
+        );
+    }
+
     use super::*;
 
     /// `BASTION_DATA_DIR`/`BASTION_PERSONAS_DIR`/etc are process-global —

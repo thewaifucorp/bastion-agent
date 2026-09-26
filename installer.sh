@@ -11,6 +11,8 @@ PREPARE_ONLY=0
 NO_START=0
 UPDATE=0
 RELEASE_TAG=""
+NATIVE=0
+WITH_VOICE=0
 
 info() { printf '\033[1;36m◈\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
@@ -28,6 +30,14 @@ Usage: ./installer.sh [options]
   --no-start          Validate and build, but do not start services
   --update            Update an existing checkout to the latest release tag
   --release TAG       Release tag to install with --update (for the host helper)
+  --native            Run Bastion directly on this machine instead of Docker:
+                      builds the binary (needs cargo), installs the Python
+                      sidecars in their own virtualenvs (needs uv) with their
+                      models, and registers a user service (systemd on Linux,
+                      launchd on macOS). Everything Bastion runs is confined by
+                      the OS sandbox; the sidecars have no network at all.
+  --with-voice        With --native, also install the voice sidecar (local
+                      speech models, ~1 GB)
   -h, --help          Show this help
 
 The installer preserves an existing .env and generates missing internal secrets.
@@ -42,6 +52,8 @@ while (($#)); do
     --no-start) NO_START=1; shift ;;
     --update) UPDATE=1; shift ;;
     --release) [[ $# -ge 2 ]] || die "--release requires a tag"; RELEASE_TAG="$2"; shift 2 ;;
+    --native) NATIVE=1; shift ;;
+    --with-voice) WITH_VOICE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
@@ -344,6 +356,12 @@ install_cli() {
   chmod 755 "$runtime_bin.tmp"
   mv "$runtime_bin.tmp" "$runtime_bin"
 
+  write_launcher "$runtime_bin"
+}
+
+write_launcher() {
+  local runtime_bin="$1" launcher tmp_launcher
+  mkdir -p "$DEFAULT_BIN_DIR"
   launcher="$DEFAULT_BIN_DIR/bastion"
   tmp_launcher="$launcher.tmp"
   printf '#!/usr/bin/env bash\nset -Eeuo pipefail\ncd %q\nexec %q "$@"\n' \
@@ -380,11 +398,233 @@ install_completions() {
   info "For fish: $launcher completions fish > ~/.config/fish/completions/bastion.fish"
 }
 
+# ---------------------------------------------------------------------------
+# --native: Bastion directly on this machine. Same checkout and .env as the
+# container install; state under $INSTALL_DIR/data; the tracked bastion.toml
+# is left alone and bastion.native.toml is merged over it.
+# ---------------------------------------------------------------------------
+
+readonly SIDECARS_BASE=(memupalace skill-writer self-improving)
+
+native_sidecars() {
+  local list=("${SIDECARS_BASE[@]}")
+  ((WITH_VOICE)) && list+=(voice)
+  printf '%s\n' "${list[@]}"
+}
+
+native_data_dir() { printf '%s' "$(env_get BASTION_DATA_DIR)"; }
+
+native_prepare() {
+  [[ -n "$(env_get BASTION_DATA_DIR)" ]] || env_set BASTION_DATA_DIR "$INSTALL_DIR/data"
+  env_set BASTION_NATIVE 1
+  env_set BASTION_CONFIG_OVERLAY "$INSTALL_DIR/bastion.native.toml"
+  [[ -n "$(env_get SKILLS_DIR)" ]] || env_set SKILLS_DIR "$(native_data_dir)/skills"
+  # The web app and pairing flow listen here; loopback only.
+  [[ -n "$(env_get BASTION_WEBHOOK_ADDR)" ]] || env_set BASTION_WEBHOOK_ADDR 127.0.0.1:8080
+  local data enabled="" name
+  data="$(native_data_dir)"
+  mkdir -p "$data"
+  chmod 700 "$data"
+  while read -r name; do enabled+="\"$name\", "; done < <(native_sidecars)
+  umask 077
+  cat > "$INSTALL_DIR/bastion.native.toml" <<TOML
+# Written by installer.sh --native; reinstalling rewrites it.
+# Merged over bastion.toml (BASTION_CONFIG_OVERLAY in .env).
+
+[sandbox]
+# Without the container, the OS sandbox is the boundary: refuse to start
+# without it rather than run tools and agents with the whole home in view.
+mode = "required"
+
+[sidecars]
+enabled = [${enabled%, }]
+TOML
+  info "Native configuration written (bastion.native.toml, data in $data)"
+}
+
+native_build() {
+  need cargo
+  info "Building Bastion (cargo build --release)"
+  (cd "$INSTALL_DIR" && cargo build --release --locked --bin bastion)
+  local runtime_dir="$INSTALL_DIR/.bastion/bin"
+  mkdir -p "$runtime_dir"
+  install -m 755 "${CARGO_TARGET_DIR:-$INSTALL_DIR/target}/release/bastion" "$runtime_dir/bastion.tmp"
+  mv "$runtime_dir/bastion.tmp" "$runtime_dir/bastion"
+  write_launcher "$runtime_dir/bastion"
+}
+
+# Skills the daemon serves live in the data dir, apart from the checkout: the
+# skill-writer sidecar writes there, and must never be able to touch code.
+native_skills() {
+  local skills dir
+  skills="$(env_get SKILLS_DIR)"
+  mkdir -p "$skills"
+  local name
+  for dir in "$INSTALL_DIR"/skills/*/; do
+    [[ -f "$dir/SKILL.md" ]] || continue
+    name="$(basename "$dir")"
+    [[ -e "$skills/$name" ]] && continue
+    if [[ -f "$dir/requirements.txt" ]]; then
+      # A sidecar's directory: only its SKILL.md is a skill; its code runs
+      # from the sidecar tree and stays out of the writable skills dir.
+      mkdir -p "$skills/$name"
+      cp "$dir/SKILL.md" "$skills/$name/"
+    else
+      cp -a "$dir" "$skills/"
+    fi
+  done
+}
+
+native_sidecar_models() {
+  local name="$1" python="$2" models="$3"
+  case "$name" in
+    memupalace)
+      [[ -f "$models/model_optimized.onnx" ]] && return 0
+      info "Downloading the memupalace embedding model"
+      "$python" -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='Qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q', local_dir='$models', ignore_patterns=['*.msgpack','*.h5','*.bin'])"
+      ;;
+    voice)
+      [[ -f "$models/kokoro/voices-v1.0.bin" ]] && return 0
+      info "Downloading the voice models (whisper small, kokoro)"
+      "$python" -c "from pywhispercpp.utils import download_model; download_model('small', download_dir='$models/whisper')"
+      "$python" -c "import os, urllib.request; os.makedirs('$models/kokoro', exist_ok=True); [urllib.request.urlretrieve(u, os.path.join('$models/kokoro', u.rsplit('/', 1)[1])) for u in ('https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx', 'https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin')]"
+      ;;
+  esac
+}
+
+native_sidecars_install() {
+  command -v uv >/dev/null 2>&1 \
+    || die "uv is required for the native sidecars: https://docs.astral.sh/uv/getting-started/installation/"
+  local root name code venv
+  root="$(native_data_dir)/sidecars"
+  mkdir -p "$root/src/skills" "$root/venv" "$root/models" "$root/data" "$root/logs"
+  chmod 700 "$root"
+  while read -r name; do
+    info "Installing sidecar: $name"
+    code="$root/src/skills/$name"
+    venv="$root/venv/$name"
+    # Fresh copy of the code on every install; the running copy is read-only
+    # to every sidecar, so what runs is always what was installed.
+    rm -rf "$code"
+    mkdir -p "$code"
+    tar -C "$INSTALL_DIR/skills/$name" --exclude=tests --exclude=.venv --exclude=__pycache__ \
+      -cf - . | tar -C "$code" -xf -
+    [[ -x "$venv/bin/python" ]] || uv venv -q --python 3.12 "$venv"
+    uv pip install -q --python "$venv/bin/python" -r "$code/requirements.txt"
+    mkdir -p "$root/models/$name"
+    native_sidecar_models "$name" "$venv/bin/python" "$root/models/$name"
+  done < <(native_sidecars)
+}
+
+native_service() {
+  local runtime_bin="$INSTALL_DIR/.bastion/bin/bastion" data
+  data="$(native_data_dir)"
+  case "$(uname -s)" in
+    Linux)
+      command -v systemctl >/dev/null 2>&1 || { warn "no systemd: start Bastion with 'bastion daemon'"; return 0; }
+      local user_bus=1
+      systemctl --user show-environment >/dev/null 2>&1 || user_bus=0
+      local unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+      mkdir -p "$unit_dir"
+      cat > "$unit_dir/bastion.service" <<UNIT
+[Unit]
+Description=Bastion agent daemon
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$runtime_bin daemon
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=default.target
+UNIT
+      if ((! user_bus)); then
+        warn "no systemd user session here (SSH without lingering?): unit written to $unit_dir/bastion.service;"
+        warn "enable it from a login session with: systemctl --user enable --now bastion"
+        return 0
+      fi
+      systemctl --user daemon-reload
+      if ((NO_START)); then
+        info "Service installed (not started): systemctl --user enable --now bastion"
+      else
+        systemctl --user enable --now bastion
+        systemctl --user restart bastion
+        info "Bastion is running as a user service: systemctl --user status bastion"
+      fi
+      ;;
+    Darwin)
+      local agents="$HOME/Library/LaunchAgents" plist label="ai.thewaifucorp.bastion"
+      plist="$agents/$label.plist"
+      mkdir -p "$agents" "$data/logs"
+      cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$label</string>
+  <key>ProgramArguments</key><array><string>$runtime_bin</string><string>daemon</string></array>
+  <key>WorkingDirectory</key><string>$INSTALL_DIR</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>Umask</key><integer>63</integer>
+  <key>StandardOutPath</key><string>$data/logs/daemon.log</string>
+  <key>StandardErrorPath</key><string>$data/logs/daemon.log</string>
+</dict>
+</plist>
+PLIST
+      if ((NO_START)); then
+        info "Launch agent installed (not loaded): launchctl bootstrap gui/$(id -u) $plist"
+      else
+        launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+        launchctl bootstrap "gui/$(id -u)" "$plist"
+        info "Bastion is running as a launch agent ($label); logs in $data/logs/daemon.log"
+      fi
+      ;;
+    *) warn "no service manager support for $(uname -s): start Bastion with 'bastion daemon'" ;;
+  esac
+}
+
+native_health() {
+  local addr attempt
+  addr="$(env_get BASTION_WEBHOOK_ADDR)"
+  command -v curl >/dev/null 2>&1 || return 0
+  for attempt in $(seq 1 30); do
+    curl --fail --silent "http://${addr:-127.0.0.1:8080}/health" >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  return 1
+}
+
+run_native() {
+  native_build
+  native_skills
+  native_sidecars_install
+  native_service
+}
+
 main() {
   install_or_update_repo
   prepare_environment
+  ((NATIVE)) && native_prepare
   if ((PREPARE_ONLY)); then
     info "Preparation complete: $INSTALL_DIR"
+  elif ((NATIVE)); then
+    run_native
+    if ((UPDATE)) && ! ((NO_START)) && ! native_health; then
+      warn "Updated release did not become healthy; rolling back"
+      [[ -n "${UPDATE_PREVIOUS_REF:-}" ]] || die "update failed and there is no previous release to return to"
+      git -C "$INSTALL_DIR" checkout --detach "$UPDATE_PREVIOUS_REF"
+      run_native
+      native_health || die "rollback also failed its health check"
+      die "update to ${UPDATE_TARGET:-requested release} failed health checks and was rolled back"
+    fi
   else
     run_compose
     if ((UPDATE)) && ! wait_for_core_health; then

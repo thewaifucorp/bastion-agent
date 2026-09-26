@@ -344,6 +344,32 @@ fn connect_subscription(
         "--setup-token only applies to `bastion connect claude`"
     );
 
+    // Native install: the CLIs and their logins are the operator's own, on
+    // this host — log in directly, no container in between.
+    if std::env::var("BASTION_NATIVE").as_deref() == Ok("1") {
+        anyhow::ensure!(
+            !import_host,
+            "--import-host copies host logins into the container; a native install already \
+             uses them"
+        );
+        let login_args = connect_login_args(provider, setup_token)?;
+        let status = ProcessCommand::new(provider).args(login_args).status()?;
+        anyhow::ensure!(status.success(), "{provider} login exited with {status}");
+        let (verify_program, verify_args) =
+            bastion::auth_profile_registry::host_cli_status_args(provider)
+                .expect("provider already validated as claude|codex|opencode above");
+        let verified = ProcessCommand::new(verify_program)
+            .args(verify_args)
+            .status()
+            .is_ok_and(|s| s.success());
+        anyhow::ensure!(
+            verified,
+            "{provider} login finished but its status check failed"
+        );
+        println!("✔ {provider} autenticado.");
+        return Ok(());
+    }
+
     let project_dir = bastion::compose::locate_project_dir().ok_or_else(|| {
         anyhow::anyhow!(
             "could not locate the Bastion docker-compose project; run from the install dir or set BASTION_COMPOSE_DIR"
@@ -441,6 +467,8 @@ async fn self_update(apply: bool, yes: bool) -> anyhow::Result<()> {
         .arg("--release")
         .arg(tag)
         .arg("--non-interactive")
+        // A native install updates natively (rebuild, sidecars, service).
+        .args((std::env::var("BASTION_NATIVE").as_deref() == Ok("1")).then_some("--native"))
         .status()
         .context("running the Bastion installer")?;
     anyhow::ensure!(status.success(), "Bastion update exited with {status}");
@@ -528,8 +556,21 @@ fn import_host_credentials(project_dir: &std::path::Path, yes: bool) -> anyhow::
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // First, before the async runtime or any env/config read: this binary is
+    // also the sandbox helper every confined tool and harness starts through.
+    bastion::sandbox::forward_helper_invocation();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(async_main());
+    // Bounded: a blocking stdin read (a terminal, a socket) would otherwise
+    // keep the runtime — and the process — alive after SIGTERM forever.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(5));
+    result
+}
+
+async fn async_main() -> anyhow::Result<()> {
     // Load .env (if present) before any std::env::var read. Real shell env wins.
     dotenvy::dotenv().ok();
     // BASTION_DATA_DIR: fills in BASTION__SESSION__DB_PATH/BASTION__LOGGING__LOG_PATH/
@@ -596,6 +637,8 @@ async fn main() -> anyhow::Result<()> {
     // Load bastion.toml config (non-secret config only; secrets stay in .env)
     let config_path = std::env::var("BASTION_CONFIG").unwrap_or_else(|_| "bastion.toml".to_owned());
     let cfg = bastion::config::load_config(&config_path)?;
+    let workspace_root = bastion::config::apply_workspace_default(&cfg.workspace)
+        .map_err(|e| anyhow::anyhow!("cannot create the workspace directory: {e}"))?;
 
     // Init structured JSON logging
     std::fs::create_dir_all(
@@ -613,6 +656,8 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(log_file)
         .init();
+    // After logging, so the detected backend (or why none) is recorded.
+    bastion::sandbox::init(cfg.sandbox.mode)?;
 
     // Init SessionManager
     let db_path = cfg.session.db_path.clone();
@@ -748,7 +793,20 @@ async fn main() -> anyhow::Result<()> {
     // failed servers gracefully: logs tracing::warn per failed server and continues.
     // (Previously this used the legacy .bastion/mcp-servers.json path, which isn't mounted
     // in the FROM-scratch container — so memupalace/skill-writer tools were silently absent.)
-    let mut mcp_client = McpClient::connect_from_config(&cfg.mcp.servers).await?;
+    // Native install: start the sidecars (confined, no network, on Unix
+    // sockets) first, and connect to them alongside the configured servers.
+    let mut mcp_servers = cfg.mcp.servers.clone();
+    if !cfg.sidecars.enabled.is_empty() {
+        // Natively the known sidecars are served here or not at all: drop
+        // bastion.toml's container/loopback entries for them.
+        mcp_servers.retain(|name, _| {
+            !bastion::sidecars::KNOWN
+                .iter()
+                .any(|known| bastion::sidecars::mcp_server_key(known) == *name)
+        });
+    }
+    mcp_servers.extend(bastion::sidecars::start(&cfg.sidecars).await);
+    let mut mcp_client = McpClient::connect_from_config(&mcp_servers).await?;
 
     // SEC-03: Composio OAuth is opt-in — only constructed when COMPOSIO_API_KEY is
     // actually set. ComposioOAuth::new() itself panics on a missing/empty key (a
@@ -1069,7 +1127,8 @@ async fn main() -> anyhow::Result<()> {
     // turn start, never a silent fallback to Model). Cheap to build even
     // when `[backend]` is entirely absent from bastion.toml: `health()` here
     // is a handful of `--version` subprocess spawns, not a live session.
-    let runtime_registry = bastion::agent_runtime_registry::build_runtime_registry().await;
+    let runtime_registry =
+        bastion::agent_runtime_registry::build_runtime_registry(&workspace_root).await;
 
     let mut backend_profile = bastion::config::backend_profile_from_config(&cfg.backend);
     // Fase 2.2: an interactive `/backend use <id>` choice persisted by a
@@ -1186,6 +1245,7 @@ async fn main() -> anyhow::Result<()> {
     agent = agent
         .with_backend_profile(backend_profile)
         .with_runtime_registry(runtime_registry)
+        .with_runtime_workspace_base(workspace_root.clone())
         .with_auth_resolver(std::sync::Arc::new(auth_resolver))
         // Owner-scoped, persisted cross-turn permission queue — the same
         // db_path SqliteApprovalGate above already opens. Without this call
@@ -2308,19 +2368,59 @@ async fn daemon_loop(
                 );
             }
             let infer_router = bastion::api::infer::router(agent.provider.clone(), infer_token);
-            tokio::spawn(async move {
-                match tokio::net::TcpListener::bind(&infer_addr).await {
-                    Ok(listener) => {
-                        tracing::info!(event = "infer_gateway_started", addr = %infer_addr);
-                        if let Err(e) = axum::serve(listener, infer_router).await {
-                            tracing::error!(event = "infer_gateway_error", error = %e);
+            // Native sidecars reach /api/infer over a Unix socket (they have
+            // no network); explicit BASTION_INFER_SOCKET wins.
+            let infer_socket = std::env::var_os("BASTION_INFER_SOCKET")
+                .map(std::path::PathBuf::from)
+                .or_else(|| {
+                    (!cfg.sidecars.enabled.is_empty()).then(bastion::sidecars::infer_socket_path)
+                });
+            // With the socket in use, TCP only when asked for explicitly: a
+            // loopback port is reachable by every local process.
+            let serve_tcp =
+                infer_socket.is_none() || std::env::var_os("BASTION_INFER_ADDR").is_some();
+            if let Some(socket) = infer_socket {
+                let router = infer_router.clone();
+                tokio::spawn(async move {
+                    let _ = std::fs::remove_file(&socket);
+                    match tokio::net::UnixListener::bind(&socket) {
+                        Ok(listener) => {
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::PermissionsExt;
+                                let _ = std::fs::set_permissions(
+                                    &socket,
+                                    std::fs::Permissions::from_mode(0o600),
+                                );
+                            }
+                            tracing::info!(event = "infer_gateway_started", socket = %socket.display());
+                            if let Err(e) = axum::serve(listener, router).await {
+                                tracing::error!(event = "infer_gateway_error", error = %e);
+                            }
+                        }
+                        Err(e) => tracing::error!(
+                            event = "infer_gateway_bind_failed",
+                            socket = %socket.display(),
+                            error = %e
+                        ),
+                    }
+                });
+            }
+            if serve_tcp {
+                tokio::spawn(async move {
+                    match tokio::net::TcpListener::bind(&infer_addr).await {
+                        Ok(listener) => {
+                            tracing::info!(event = "infer_gateway_started", addr = %infer_addr);
+                            if let Err(e) = axum::serve(listener, infer_router).await {
+                                tracing::error!(event = "infer_gateway_error", error = %e);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(event = "infer_gateway_bind_failed", addr = %infer_addr, error = %e);
                         }
                     }
-                    Err(e) => {
-                        tracing::error!(event = "infer_gateway_bind_failed", addr = %infer_addr, error = %e);
-                    }
-                }
-            });
+                });
+            }
         }
     }
 
@@ -2410,10 +2510,13 @@ async fn daemon_loop(
     // real operator override (client_id/issuer/api_base) instead of the
     // default; a single instance makes that impossible by construction.
     let codex_config = bastion_providers::codex::CodexConfig::default();
-    let codex_connector = Arc::new(bastion::codex_connector::CodexConnector::new(
-        codex_config.clone(),
-        codex_token_store.clone() as Arc<dyn bastion_providers::codex::CodexTokenStore>,
-    ));
+    let codex_connector = Arc::new(
+        bastion::codex_connector::CodexConnector::new(
+            codex_config.clone(),
+            codex_token_store.clone() as Arc<dyn bastion_providers::codex::CodexTokenStore>,
+        )
+        .with_login_mode(cfg.subscriptions.codex.login),
+    );
     let codex_refresher = Arc::new(bastion_providers::codex::CodexRefresher::new(
         codex_config,
         codex_token_store as Arc<dyn bastion_providers::codex::CodexTokenStore>,

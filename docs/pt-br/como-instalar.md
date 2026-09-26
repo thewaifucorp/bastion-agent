@@ -54,13 +54,48 @@ canal confiável/mapeado ou na TUI, `/update` mostra o estado e `/update apply`
 pede o mesmo fluxo local. O container nunca recebe o socket Docker nem escrita
 no checkout; é uma ação explícita do dono, jamais atualização automática.
 
-## Rust nativo
+## Instalação nativa (desktop, sem Docker)
+
+Roda o Bastion direto na sua máquina (Linux ou macOS). Os logins de assinatura
+funcionam do jeito normal — o navegador abre na mesma máquina, e `claude`,
+`codex` e `opencode` usam o login que você já tem — porque não há nada entre o
+Bastion e o seu host.
+
+Requisitos: Git, toolchain Rust (`cargo`) e [uv](https://docs.astral.sh/uv/)
+para os sidecars Python. No Linux, kernel com Landlock (5.13+, 6.7+ para as
+regras de rede completas) ou namespaces sem privilégio funcionando para o
+bubblewrap; no macOS, o `sandbox-exec` que já vem no sistema.
 
 ```bash
-./installer.sh --prepare-only
-cargo build --locked
-cargo run
+./installer.sh --native              # --with-voice inclui a voz local (~1 GB de modelos)
 ```
 
-O `bastion.toml` versionado usa caminhos locais e URLs MCP em loopback. O Compose
-sobrescreve esses valores para sua rede e volumes. Veja [Configuração](configuracao.md).
+O que ele faz:
+
+- compila o `bastion` e instala o launcher em `~/.local/bin`;
+- guarda o estado em `<diretório de instalação>/data` (`BASTION_DATA_DIR`) e
+  escreve `bastion.native.toml` (mesclado sobre o `bastion.toml` versionado)
+  com `[sandbox] mode = "required"` e os sidecars a rodar;
+- instala cada sidecar (memupalace, skill-writer, self-improving e, se pedido,
+  voice) no próprio virtualenv e baixa os modelos — em execução os sidecars
+  **não têm rede nenhuma**: falam com o Bastion e entre si por Unix sockets em
+  um diretório privado (`$XDG_RUNTIME_DIR/bastion`, senão
+  `$TMPDIR/bastion-<uid>`, 0700; `BASTION_RUN_DIR` sobrescreve), nunca por TCP;
+- registra um serviço de usuário: `systemctl --user status bastion` no Linux,
+  o launch agent `ai.thewaifucorp.bastion` no macOS (logs em `data/logs/`).
+
+Tudo o que o Bastion executa — harnesses de agente, pack de git, extensões,
+sidecars — roda confinado pelo sandbox do sistema (veja
+[Configuração](configuracao.md#sandbox)). O daemon não inicia se o host não
+tiver backend de sandbox.
+
+Faça login numa assinatura com `bastion connect claude|codex|opencode` (roda o
+login do próprio CLI na sua máquina) ou, para a assinatura do ChatGPT no loop do
+próprio Bastion, `/auth connect codex` com `[subscriptions.codex] login = "browser"`.
+
+`bastion update --apply --yes` atualiza a instalação nativa no lugar
+(recompila, sidecars, reinicia o serviço) e volta a versão anterior se a nova
+falhar no health check.
+
+Para desenvolver sem o serviço: `./installer.sh --native --no-start` e depois
+`bastion daemon` no diretório de instalação.

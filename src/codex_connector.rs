@@ -29,9 +29,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bastion_providers::codex::{
-    exchange_authorization_code, poll_device_authorization, start_device_authorization,
-    CodexConfig, CodexProvider, CodexTokenRecord, CodexTokenStore, DeviceAuthorization,
-    DevicePollOutcome,
+    exchange_authorization_code, exchange_browser_authorization_code, poll_device_authorization,
+    start_browser_authorization, start_device_authorization, BrowserAuthorization, CodexConfig,
+    CodexProvider, CodexTokenRecord, CodexTokenStore, DeviceAuthorization, DevicePollOutcome,
+    BROWSER_CALLBACK_FALLBACK_PORT, BROWSER_CALLBACK_PATH, BROWSER_CALLBACK_PORT,
 };
 use bastion_providers::Provider;
 use bastion_types::provider_auth::{
@@ -39,9 +40,12 @@ use bastion_types::provider_auth::{
 };
 use bastion_types::SecretValue;
 use rusqlite::{Connection, OptionalExtension};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
 
+use crate::config::CodexLoginMode;
 use crate::subscription_auth::{LoginPrompt, SubscriptionLoginFlow, SubscriptionModelProvider};
 
 /// OAuth device codes expire — RFC 8628's own convention (and the range
@@ -184,7 +188,19 @@ impl CodexTokenStore for SqliteCodexTokenStore {
     }
 }
 
-/// The Codex/ChatGPT connector: device-code login
+/// One login between `start()` and `wait_for_approval()`.
+enum PendingLogin {
+    Device(DeviceAuthorization),
+    /// The listener is bound in `start()`, before the URL is shown, so the
+    /// redirect can never arrive at a port nobody holds yet. Dropping the
+    /// entry (sweep or `wait_for_approval` returning) releases the port.
+    Browser {
+        authorization: BrowserAuthorization,
+        listener: TcpListener,
+    },
+}
+
+/// The Codex/ChatGPT connector: device-code or browser login
 /// ([`SubscriptionLoginFlow`]) plus [`Provider`] construction
 /// ([`SubscriptionModelProvider`]), both thin wrappers over
 /// `bastion-providers::codex`'s already-tested primitives.
@@ -192,7 +208,8 @@ pub struct CodexConnector {
     http: reqwest::Client,
     config: CodexConfig,
     tokens: Arc<dyn CodexTokenStore>,
-    /// Device-authorization state between `start()` and
+    login_mode: CodexLoginMode,
+    /// Login state between `start()` and
     /// `wait_for_approval()` — both are called back to back by
     /// `SubscriptionAuthService::connect` within the same request, so an
     /// in-memory map (never persisted) is sufficient; a daemon restart
@@ -203,10 +220,11 @@ pub struct CodexConnector {
     /// than `DEVICE_POLL_TIMEOUT` (the same deadline `wait_for_approval`
     /// itself enforces) before inserting, so this stays bounded without a
     /// background task.
-    in_flight: Mutex<HashMap<ProviderAuthRef, (DeviceAuthorization, tokio::time::Instant)>>,
+    in_flight: Mutex<HashMap<ProviderAuthRef, (PendingLogin, tokio::time::Instant)>>,
 }
 
 impl CodexConnector {
+    /// Device-code login, the default. See [`Self::with_login_mode`].
     pub fn new(config: CodexConfig, tokens: Arc<dyn CodexTokenStore>) -> Self {
         Self {
             http: reqwest::Client::builder()
@@ -215,50 +233,26 @@ impl CodexConnector {
                 .expect("reqwest client"),
             config,
             tokens,
+            login_mode: CodexLoginMode::Device,
             in_flight: Mutex::new(HashMap::new()),
         }
     }
-}
 
-/// `start_device_authorization` returns a plain `anyhow::Result` (unlike
-/// `poll_device_authorization`/`exchange_authorization_code`, which already
-/// map onto `ProviderAuthError` inside `bastion-providers::codex`) — so this
-/// connector has to do its own transient-vs-terminal classification here
-/// instead of collapsing every failure into `UnsupportedProtocol`, which
-/// would make a plain HTTP 503 or a timeout indistinguishable from a real
-/// protocol change and drive the wrong retry behavior upstream (BAAUTH's
-/// own `/auth connect` UX depends on `Throttled` meaning "try again",
-/// `UnsupportedProtocol` meaning "this needs a human/engineer, not a retry").
-fn classify_start_error(err: &anyhow::Error) -> ProviderAuthError {
-    // Connection-level failures (timeout, refused, DNS) say nothing about
-    // the protocol — always worth retrying.
-    if let Some(reqwest_err) = err.chain().find_map(|c| c.downcast_ref::<reqwest::Error>()) {
-        if reqwest_err.is_timeout() || reqwest_err.is_connect() {
-            return ProviderAuthError::Throttled;
-        }
+    /// `[subscriptions.codex] login` from the operator's config.
+    pub fn with_login_mode(mut self, login_mode: CodexLoginMode) -> Self {
+        self.login_mode = login_mode;
+        self
     }
-    // `start_device_authorization`'s own non-2xx branch bails with a
-    // message ending in "HTTP {status}" — the only signal available here
-    // without changing that function's return type. 429/5xx are transient
-    // (rate limit or a vendor-side outage); any other status is a real
-    // protocol mismatch.
-    let is_server_or_rate_limited = err
-        .to_string()
-        .rsplit("HTTP ")
-        .next()
-        .and_then(|tail| tail.split_whitespace().next())
-        .and_then(|code| code.parse::<u16>().ok())
-        .is_some_and(|code| code == 429 || (500..600).contains(&code));
-    if is_server_or_rate_limited {
-        ProviderAuthError::Throttled
-    } else {
-        ProviderAuthError::UnsupportedProtocol
-    }
-}
 
-#[async_trait]
-impl SubscriptionLoginFlow for CodexConnector {
-    async fn start(&self, reference: &ProviderAuthRef) -> Result<LoginPrompt, ProviderAuthError> {
+    async fn remember(&self, reference: &ProviderAuthRef, pending: PendingLogin) {
+        let mut in_flight = self.in_flight.lock().await;
+        let now = tokio::time::Instant::now();
+        in_flight
+            .retain(|_, (_, inserted_at)| now.duration_since(*inserted_at) < DEVICE_POLL_TIMEOUT);
+        in_flight.insert(reference.clone(), (pending, now));
+    }
+
+    async fn start_device(&self) -> Result<(PendingLogin, LoginPrompt), ProviderAuthError> {
         let device_auth = start_device_authorization(&self.http, &self.config)
             .await
             .map_err(|e| {
@@ -278,27 +272,39 @@ impl SubscriptionLoginFlow for CodexConnector {
             "Visit {} and enter this code: {}",
             device_auth.verification_uri, device_auth.user_code
         );
-        {
-            let mut in_flight = self.in_flight.lock().await;
-            let now = tokio::time::Instant::now();
-            in_flight.retain(|_, (_, inserted_at)| {
-                now.duration_since(*inserted_at) < DEVICE_POLL_TIMEOUT
-            });
-            in_flight.insert(reference.clone(), (device_auth, now));
-        }
-        Ok(LoginPrompt { instructions })
+        Ok((
+            PendingLogin::Device(device_auth),
+            LoginPrompt { instructions },
+        ))
     }
 
-    async fn wait_for_approval(
+    async fn start_browser(&self) -> Result<(PendingLogin, LoginPrompt), ProviderAuthError> {
+        let (listener, port) = bind_callback_listener().await?;
+        let authorization = start_browser_authorization(&self.config, port).map_err(|e| {
+            tracing::error!(event = "codex_browser_start_failed", error = %e);
+            ProviderAuthError::UnsupportedProtocol
+        })?;
+        // The URL carries the PKCE challenge and the state, neither of which
+        // completes a login without the verifier this process keeps — the
+        // Codex CLI prints the same URL.
+        let instructions = format!(
+            "Open this URL in a browser on this machine and sign in: {}",
+            authorization.authorize_url
+        );
+        Ok((
+            PendingLogin::Browser {
+                authorization,
+                listener,
+            },
+            LoginPrompt { instructions },
+        ))
+    }
+
+    async fn wait_for_device(
         &self,
         reference: &ProviderAuthRef,
+        device_auth: DeviceAuthorization,
     ) -> Result<(), ProviderAuthError> {
-        let (device_auth, _inserted_at) = self
-            .in_flight
-            .lock()
-            .await
-            .remove(reference)
-            .ok_or(ProviderAuthError::Missing)?;
         let deadline = tokio::time::Instant::now() + DEVICE_POLL_TIMEOUT;
         let interval = Duration::from_secs(device_auth.interval_secs.max(1));
 
@@ -346,6 +352,76 @@ impl SubscriptionLoginFlow for CodexConnector {
             &code_verifier,
         )
         .await?;
+        self.store_record(reference, record).await
+    }
+
+    async fn wait_for_browser(
+        &self,
+        reference: &ProviderAuthRef,
+        authorization: BrowserAuthorization,
+        listener: TcpListener,
+    ) -> Result<(), ProviderAuthError> {
+        let deadline = tokio::time::Instant::now() + DEVICE_POLL_TIMEOUT;
+        loop {
+            let (mut stream, _) = tokio::time::timeout_at(deadline, listener.accept())
+                .await
+                .map_err(|_| ProviderAuthError::ReauthRequired)?
+                .map_err(|e| {
+                    tracing::warn!(event = "codex_browser_accept_failed", error = %e);
+                    ProviderAuthError::Throttled
+                })?;
+            let callback = match read_callback(&mut stream).await {
+                Some(callback) => callback,
+                None => {
+                    respond(&mut stream, "404 Not Found", NOT_FOUND_PAGE).await;
+                    continue;
+                }
+            };
+            // Before `code` or `error` is looked at, as `codex-rs` does: a
+            // request whose state is not ours says nothing about our login.
+            if !callback
+                .state
+                .as_deref()
+                .is_some_and(|s| authorization.state_matches(s))
+            {
+                tracing::warn!(event = "codex_browser_state_mismatch");
+                respond(&mut stream, "400 Bad Request", STATE_MISMATCH_PAGE).await;
+                continue;
+            }
+            let Some(code) = callback.code else {
+                tracing::warn!(
+                    event = "codex_browser_login_refused",
+                    error = callback.error.as_deref().unwrap_or("no code"),
+                );
+                respond(&mut stream, "400 Bad Request", REFUSED_PAGE).await;
+                return Err(ProviderAuthError::ReauthRequired);
+            };
+            let outcome = match exchange_browser_authorization_code(
+                &self.http,
+                &self.config,
+                &authorization,
+                &code,
+            )
+            .await
+            {
+                Ok(record) => self.store_record(reference, record).await,
+                Err(e) => Err(e),
+            };
+            let (status, page) = if outcome.is_ok() {
+                ("200 OK", SUCCESS_PAGE)
+            } else {
+                ("500 Internal Server Error", FAILED_PAGE)
+            };
+            respond(&mut stream, status, page).await;
+            return outcome;
+        }
+    }
+
+    async fn store_record(
+        &self,
+        reference: &ProviderAuthRef,
+        record: CodexTokenRecord,
+    ) -> Result<(), ProviderAuthError> {
         self.tokens.store(reference, record).await.map_err(|e| {
             // A storage failure here is a LOCAL problem (disk full, the
             // sqlite file locked, a permissions error) — never a statement
@@ -362,8 +438,169 @@ impl SubscriptionLoginFlow for CodexConnector {
                 "failed to persist the exchanged Codex token",
             );
             ProviderAuthError::Throttled
-        })?;
-        Ok(())
+        })
+    }
+}
+
+/// Bind the loopback callback: 1455, then 1457 — the only two ports the
+/// authorize endpoint accepts in `redirect_uri`, so any other free port
+/// would only fail later, at OpenAI. Loopback only: nothing off this machine
+/// may deliver a code to this process.
+async fn bind_callback_listener() -> Result<(TcpListener, u16), ProviderAuthError> {
+    for port in [BROWSER_CALLBACK_PORT, BROWSER_CALLBACK_FALLBACK_PORT] {
+        match TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await {
+            Ok(listener) => return Ok((listener, port)),
+            Err(e) => tracing::warn!(event = "codex_browser_port_busy", port, error = %e),
+        }
+    }
+    tracing::error!(
+        event = "codex_browser_ports_unavailable",
+        "127.0.0.1:1455 and 127.0.0.1:1457 are both in use — stop the other login \
+         (e.g. `codex login`) or use `[subscriptions.codex] login = \"device\"`",
+    );
+    Err(ProviderAuthError::Throttled)
+}
+
+/// The query of one request to [`BROWSER_CALLBACK_PATH`].
+struct Callback {
+    state: Option<String>,
+    code: Option<String>,
+    error: Option<String>,
+}
+
+/// Read one HTTP request line and return its callback parameters, or `None`
+/// for anything that is not `GET` on the callback path (a favicon request,
+/// a port probe). Headers and body are not needed; the read is capped.
+async fn read_callback(stream: &mut TcpStream) -> Option<Callback> {
+    let mut buf = vec![0u8; 8 * 1024];
+    let mut len = 0;
+    while !buf[..len].windows(2).any(|w| w == b"\r\n") && len < buf.len() {
+        let n = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buf[len..]))
+            .await
+            .ok()?
+            .ok()?;
+        if n == 0 {
+            break;
+        }
+        len += n;
+    }
+    let head = std::str::from_utf8(&buf[..len]).ok()?;
+    let request_line = head.lines().next()?;
+    let mut parts = request_line.split_whitespace();
+    if parts.next()? != "GET" {
+        return None;
+    }
+    let target = url::Url::parse(&format!("http://127.0.0.1{}", parts.next()?)).ok()?;
+    if target.path() != BROWSER_CALLBACK_PATH {
+        return None;
+    }
+    let mut callback = Callback {
+        state: None,
+        code: None,
+        error: None,
+    };
+    for (key, value) in target.query_pairs() {
+        match key.as_ref() {
+            "state" => callback.state = Some(value.into_owned()),
+            "code" => callback.code = Some(value.into_owned()),
+            "error" => callback.error = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+    Some(callback)
+}
+
+async fn respond(stream: &mut TcpStream, status: &str, body: &str) {
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n\
+         Content-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n{body}",
+        body.len()
+    );
+    // The browser tab is a courtesy; the login outcome is already decided
+    // and returned to the caller whether or not this write lands.
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.shutdown().await;
+}
+
+const SUCCESS_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Bastion</title>\
+<p>Signed in. Bastion now has your ChatGPT subscription; you can close this tab.</p>";
+const FAILED_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Bastion</title>\
+<p>Sign-in reached Bastion but the token exchange failed. Check the Bastion logs and run \
+<code>/auth connect codex</code> again.</p>";
+const REFUSED_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Bastion</title>\
+<p>Sign-in was cancelled or refused. Run <code>/auth connect codex</code> to try again.</p>";
+const STATE_MISMATCH_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Bastion</title>\
+<p>State mismatch: this callback does not belong to the login Bastion started.</p>";
+const NOT_FOUND_PAGE: &str =
+    "<!doctype html><meta charset=utf-8><title>Bastion</title><p>Not found.</p>";
+
+/// `start_device_authorization` returns a plain `anyhow::Result` (unlike
+/// `poll_device_authorization`/`exchange_authorization_code`, which already
+/// map onto `ProviderAuthError` inside `bastion-providers::codex`) — so this
+/// connector has to do its own transient-vs-terminal classification here
+/// instead of collapsing every failure into `UnsupportedProtocol`, which
+/// would make a plain HTTP 503 or a timeout indistinguishable from a real
+/// protocol change and drive the wrong retry behavior upstream (BAAUTH's
+/// own `/auth connect` UX depends on `Throttled` meaning "try again",
+/// `UnsupportedProtocol` meaning "this needs a human/engineer, not a retry").
+fn classify_start_error(err: &anyhow::Error) -> ProviderAuthError {
+    // Connection-level failures (timeout, refused, DNS) say nothing about
+    // the protocol — always worth retrying.
+    if let Some(reqwest_err) = err.chain().find_map(|c| c.downcast_ref::<reqwest::Error>()) {
+        if reqwest_err.is_timeout() || reqwest_err.is_connect() {
+            return ProviderAuthError::Throttled;
+        }
+    }
+    // `start_device_authorization`'s own non-2xx branch bails with a
+    // message ending in "HTTP {status}" — the only signal available here
+    // without changing that function's return type. 429/5xx are transient
+    // (rate limit or a vendor-side outage); any other status is a real
+    // protocol mismatch.
+    let is_server_or_rate_limited = err
+        .to_string()
+        .rsplit("HTTP ")
+        .next()
+        .and_then(|tail| tail.split_whitespace().next())
+        .and_then(|code| code.parse::<u16>().ok())
+        .is_some_and(|code| code == 429 || (500..600).contains(&code));
+    if is_server_or_rate_limited {
+        ProviderAuthError::Throttled
+    } else {
+        ProviderAuthError::UnsupportedProtocol
+    }
+}
+
+#[async_trait]
+impl SubscriptionLoginFlow for CodexConnector {
+    async fn start(&self, reference: &ProviderAuthRef) -> Result<LoginPrompt, ProviderAuthError> {
+        let (pending, prompt) = match self.login_mode {
+            CodexLoginMode::Device => self.start_device().await?,
+            CodexLoginMode::Browser => self.start_browser().await?,
+        };
+        self.remember(reference, pending).await;
+        Ok(prompt)
+    }
+
+    async fn wait_for_approval(
+        &self,
+        reference: &ProviderAuthRef,
+    ) -> Result<(), ProviderAuthError> {
+        let (pending, _inserted_at) = self
+            .in_flight
+            .lock()
+            .await
+            .remove(reference)
+            .ok_or(ProviderAuthError::Missing)?;
+        match pending {
+            PendingLogin::Device(device_auth) => self.wait_for_device(reference, device_auth).await,
+            PendingLogin::Browser {
+                authorization,
+                listener,
+            } => {
+                self.wait_for_browser(reference, authorization, listener)
+                    .await
+            }
+        }
     }
 }
 
@@ -721,11 +958,10 @@ mod tests {
             interval_secs: 5,
         };
         let stale_at = tokio::time::Instant::now() - DEVICE_POLL_TIMEOUT - Duration::from_secs(1);
-        connector
-            .in_flight
-            .lock()
-            .await
-            .insert(abandoned.clone(), (stale_auth, stale_at));
+        connector.in_flight.lock().await.insert(
+            abandoned.clone(),
+            (PendingLogin::Device(stale_auth), stale_at),
+        );
         assert_eq!(connector.in_flight.lock().await.len(), 1);
 
         // A real `start()` call hits the network (start_device_authorization),
@@ -743,5 +979,173 @@ mod tests {
             connector.in_flight.lock().await.is_empty(),
             "an entry older than DEVICE_POLL_TIMEOUT must be swept"
         );
+    }
+
+    // -- browser login ------------------------------------------------------
+
+    /// A one-shot `/oauth/token` stand-in: answers the first request with a
+    /// token body and hands back the form it received.
+    async fn fake_token_endpoint() -> (String, tokio::task::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let issuer = format!("http://{}", listener.local_addr().expect("addr"));
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut buf = vec![0u8; 16 * 1024];
+            let mut len = 0;
+            let request = loop {
+                let n = stream.read(&mut buf[len..]).await.expect("read");
+                len += n;
+                let text = String::from_utf8_lossy(&buf[..len]).into_owned();
+                if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                    let content_length = head
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                        })
+                        .unwrap_or(0);
+                    if body.len() >= content_length || n == 0 {
+                        break body.to_owned();
+                    }
+                }
+            };
+            let body = r#"{"access_token":"at","refresh_token":"rt-browser"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.expect("write");
+            request
+        });
+        (issuer, handle)
+    }
+
+    /// Send one GET to the loopback callback and return the status line.
+    async fn get(redirect_uri: &str, path_and_query: &str) -> String {
+        let url = url::Url::parse(redirect_uri).expect("redirect uri");
+        let mut stream = TcpStream::connect(("127.0.0.1", url.port().expect("port")))
+            .await
+            .expect("connect");
+        stream
+            .write_all(
+                format!("GET {path_and_query} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").as_bytes(),
+            )
+            .await
+            .expect("write");
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.expect("read");
+        response.lines().next().unwrap_or_default().to_owned()
+    }
+
+    /// The authorize URL the prompt shows, and the two values the callback
+    /// has to echo back.
+    fn authorize_params(instructions: &str) -> (String, String) {
+        let url = instructions
+            .split_whitespace()
+            .find(|w| w.starts_with("http"))
+            .expect("prompt carries the authorize url");
+        let url = url::Url::parse(url).expect("authorize url");
+        let param = |key: &str| {
+            url.query_pairs()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.into_owned())
+                .expect(key)
+        };
+        (param("redirect_uri"), param("state"))
+    }
+
+    /// Both browser-login outcomes, run back to back in one test because
+    /// each binds the same fixed loopback port (1455, or 1457 when taken).
+    #[tokio::test]
+    async fn browser_login_checks_state_first_then_exchanges_or_fails_closed() {
+        let (issuer, token_request) = fake_token_endpoint().await;
+        let (_f, store) = make_store().await;
+        let store = Arc::new(store);
+        let connector = Arc::new(
+            CodexConnector::new(
+                CodexConfig {
+                    issuer,
+                    ..CodexConfig::default()
+                },
+                store.clone() as Arc<dyn CodexTokenStore>,
+            )
+            .with_login_mode(CodexLoginMode::Browser),
+        );
+
+        // Signed in: stray requests and a foreign state are answered but do
+        // not end the login; the matching callback does.
+        let alice = reference("alice", "work");
+        let prompt = connector.start(&alice).await.expect("start");
+        let (redirect_uri, state) = authorize_params(&prompt.instructions);
+        assert!(redirect_uri.starts_with("http://127.0.0.1:"));
+        let waiting = tokio::spawn({
+            let connector = connector.clone();
+            let alice = alice.clone();
+            async move { connector.wait_for_approval(&alice).await }
+        });
+        assert!(get(&redirect_uri, "/favicon.ico").await.contains("404"));
+        assert!(get(&redirect_uri, "/auth/callback?state=forged&code=c")
+            .await
+            .contains("400"));
+        assert!(get(
+            &redirect_uri,
+            "/auth/callback?state=forged&error=access_denied"
+        )
+        .await
+        .contains("400"));
+        let ok = get(
+            &redirect_uri,
+            &format!("/auth/callback?state={state}&code=the-code"),
+        )
+        .await;
+        assert!(ok.contains("200"), "{ok}");
+        waiting.await.expect("join").expect("login succeeds");
+
+        let form = token_request.await.expect("token request");
+        assert!(form.contains("grant_type=authorization_code"));
+        assert!(form.contains("code=the-code"));
+        assert!(form.contains("code_verifier="));
+        assert!(form.contains(&format!(
+            "redirect_uri={}",
+            url::form_urlencoded::byte_serialize(redirect_uri.as_bytes()).collect::<String>()
+        )));
+        let record = store.load(&alice).await.expect("load").expect("stored");
+        assert_eq!(record.refresh_token.expose_secret(), "rt-browser");
+
+        // Refused at OpenAI: the matching state with an `error` ends the
+        // login as ReauthRequired and exchanges nothing.
+        let bob = reference("bob", "work");
+        let prompt = connector
+            .start(&bob)
+            .await
+            .expect("start again: port was released");
+        let (redirect_uri, state) = authorize_params(&prompt.instructions);
+        let waiting = tokio::spawn({
+            let connector = connector.clone();
+            let bob = bob.clone();
+            async move { connector.wait_for_approval(&bob).await }
+        });
+        assert!(get(
+            &redirect_uri,
+            &format!("/auth/callback?state={state}&error=access_denied")
+        )
+        .await
+        .contains("400"));
+        assert_eq!(
+            waiting.await.expect("join").unwrap_err(),
+            ProviderAuthError::ReauthRequired
+        );
+        assert!(store.load(&bob).await.expect("load").is_none());
+    }
+
+    #[tokio::test]
+    async fn device_login_stays_the_default() {
+        let (_f, store) = make_store().await;
+        let connector = CodexConnector::new(
+            CodexConfig::default(),
+            Arc::new(store) as Arc<dyn CodexTokenStore>,
+        );
+        assert_eq!(connector.login_mode, CodexLoginMode::Device);
     }
 }

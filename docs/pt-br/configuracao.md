@@ -22,6 +22,86 @@ restaura `agent.default_model` do `bastion.toml`.
 As chaves continuam fora da conversa e do TOML: configure-as no `.env` ou no
 cofre de segredos do deploy antes de selecionar aquele provider.
 
+### Assinatura do ChatGPT (Codex)
+
+Uma assinatura ChatGPT Plus/Pro pode servir a inferência enquanto o Bastion
+mantém o próprio loop, memória, ferramentas e aprovações. No console do daemon:
+
+1. `/auth connect codex [perfil]` — faz o login; `perfil` é um rótulo opcional
+   (`trabalho`, `pessoal`) para manter mais de uma conta.
+2. `/model codex/<modelo>@<perfil>` — usa a assinatura nos próximos turnos.
+3. `/model status` — mostra qual conta e modelo servem o turno e o consumo que
+   de fato se conhece.
+
+`/auth status` e `/auth disconnect <perfil>` gerenciam a conexão. Não é o
+`/connect codex` da TUI, que faz login do Codex CLI dentro do container para o
+backend `codex_app_server`.
+
+O jeito de fazer login é definido no `bastion.toml`:
+
+```toml
+[subscriptions.codex]
+login = "device"   # padrão: mostra um código para aprovar em qualquer aparelho
+# login = "browser" # abre uma URL nesta máquina; callback em 127.0.0.1:1455
+```
+
+Use `device` em VPS ou container. `browser` só funciona com o navegador na
+mesma máquina do daemon (ou com a porta 1455 redirecionada para ele); se a 1455
+estiver ocupada ele usa a 1457, e falha se as duas estiverem.
+
+O conector é `Experimental`: funciona de ponta a ponta, mas faz login como o
+client OAuth público do Codex CLI, contra um endpoint que a OpenAI não
+documenta.
+
+### Workspace
+
+O único diretório onde as ferramentas do Bastion (pack de git, extensões por
+subprocesso) e os runtimes externos (Claude Code, Codex, OpenCode) trabalham.
+Cada owner ganha `<raiz>/<owner>` para sessões de runtime.
+
+```toml
+[workspace]
+root = "/home/eu/projetos/bastion-work"
+```
+
+Sem essa chave: `BASTION_WORKSPACE_DIR`, depois `$BASTION_DATA_DIR/workspace`,
+depois `~/.local/share/bastion/workspace` (`$XDG_DATA_HOME` quando definido) no
+Linux ou `~/Library/Application Support/Bastion/workspace` no macOS. O Compose
+usa `/bastion-data/workspace`, que persiste. Nunca é o diretório de onde o
+daemon foi iniciado.
+
+Ferramentas que executam programas não veem o ambiente do daemon. Servidor MCP
+por stdio recebe `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_ALL` mais o que a tabela
+dele nomear (`env = { KEY = "v" }`, `env_passthrough = ["GITHUB_TOKEN"]`,
+`cwd`). O pack de git roda com ambiente próprio, sem a sua config global de git
+e com hooks do repositório desligados; `git` lê sem aprovação, `git_write`
+(init, add, commit, branch) pede aprovação a cada chamada.
+
+### Sandbox
+
+Os programas que o daemon executa — extensões por subprocesso, o pack de git e
+os harnesses de agente (Claude Code, Codex, OpenCode) — rodam confinados pelo
+sistema operacional: enxergam os diretórios do sistema, o workspace e os
+diretórios de estado do próprio CLI (`~/.claude`, `~/.codex`, ...), nunca o
+resto do seu home, e só as variáveis de ambiente que receberam.
+
+```toml
+[sandbox]
+mode = "auto"      # padrão: confina quando o host suporta
+# mode = "required" # não inicia sem sandbox (recomendado na instalação desktop)
+# mode = "off"
+```
+
+O backend é escolhido no boot e aparece no log (`sandbox_ready`): bubblewrap no
+Linux quando namespaces sem privilégio funcionam, senão Landlock + seccomp (o
+Ubuntu 24.04+ restringe namespaces), Seatbelt no macOS. Harnesses mantêm a rede
+(precisam falar com o fornecedor); ferramentas não. Extensões por subprocesso
+sempre exigem backend e são recusadas sem ele; a saída explícita
+`BASTION_ALLOW_UNSANDBOXED_SUBPROCESS=true` é proibida em modo managed. Um
+caminho concedido aparece no local real (`BASTION_GRANTED_PATH_<n>` guarda o
+caminho) e uma extensão com escopo de workspace roda com o workspace como
+diretório.
+
 ## Ajustes principais
 
 | Área | Chave | Finalidade |

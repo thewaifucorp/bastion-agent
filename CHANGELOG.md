@@ -10,12 +10,99 @@ for how that differs from the library crates it depends on).
 
 ### Changed
 
+- Pins `bastion-core` at `v0.5.0` (`b8073c9`): `bastion-sandbox`, confined
+  harnesses (`HarnessConfinement`), MCP over Unix sockets, runtime workspace
+  base — what the sandbox, sidecar and native-install entries below build on.
+
 - Pins `bastion-core` at `v0.4.0` (`ea2ece1`): the direct ACP adapter
   (`AcpAgentRuntime`, bastion-agent-runtime 0.2.0), proposed diffs on
   `RuntimeEvent::PermissionRequest`, and STABLE/VOLATILE system-prompt caching
   (bastion-types 0.3.0, bastion-runtime 0.2.6). No behavior change for an
   existing deployment; test fixtures that build `PermissionRequest` now set
   `edits`.
+
+### Added
+
+- **Native desktop install — `installer.sh --native`** (Linux, macOS). Builds
+  `bastion`, keeps state in `<install>/data`, writes `bastion.native.toml`
+  (merged over `bastion.toml` through the new `BASTION_CONFIG_OVERLAY`) with
+  `[sandbox] mode = "required"`, installs the sidecars and registers a user
+  service (systemd `--user` unit with `NoNewPrivileges`, or a launchd agent).
+  `--with-voice` adds the voice sidecar. `bastion connect` logs in with the
+  host's own CLI (`BASTION_NATIVE=1`), and `bastion update --apply` updates a
+  native install natively, rolling back on a failed health check.
+- **Native sidecars on Unix sockets, confined with no network**
+  (`[sidecars] enabled`, `src/sidecars.rs`). The daemon supervises memupalace,
+  skill-writer, self-improving and voice (restart with backoff, stderr to
+  `data/sidecars/logs/`), each under the OS sandbox with the network blocked:
+  code and virtualenv read-only, its own data dir writable (skill-writer also
+  the skills dir, self-improving reads it), models downloaded at install time.
+  Each listens on `<run dir>/<name>.sock` (`MCP_UNIX_SOCKET`; the run dir is
+  `BASTION_RUN_DIR`, else `$XDG_RUNTIME_DIR/bastion`, else
+  `$TMPDIR/bastion-<uid>` — short, because socket paths are capped at ~104
+  bytes; longer paths are refused with a clear error) and reaches
+  memupalace and the daemon's `/api/infer` through their sockets
+  (`MEMUPALACE_SOCKET`, `CORE_GATEWAY_SOCKET`); the daemon connects with
+  `url = "unix:<socket>"`. `/api/infer` listens on `<run dir>/infer.sock` and
+  opens TCP only when `BASTION_INFER_ADDR` is set explicitly. Without a
+  sandbox no sidecar starts. In a container nothing changes: without those
+  variables the sidecars listen on TCP as before.
+
+- **Codex subscription login in the browser.** `[subscriptions.codex] login =
+  "browser"` makes `/auth connect codex` print an authorize URL and receive the
+  redirect on `127.0.0.1:1455` (falling back to `1457`, the only two ports
+  OpenAI accepts), instead of showing a device code. The listener binds
+  loopback only, before the URL is shown; a callback is checked against the
+  login's state before anything else, stray requests and foreign states are
+  answered without ending the login, and a refusal at OpenAI ends it as
+  `ReauthRequired` with nothing exchanged. The browser tab shows the real
+  outcome, after the exchange. Default stays `device`, which is the only mode
+  that works on a VPS or in a container: upgrading changes nothing.
+- `docs/{en/configuration.md,pt-br/configuracao.md}` document the subscription
+  flow end to end (`/auth connect`, `/model codex/<model>@<profile>`,
+  `/model status`) and how it differs from the TUI's `/connect codex`.
+
+### Security
+
+- **OS sandbox for everything the daemon runs** (`bastion-sandbox`, new
+  `[sandbox] mode = "auto" | "required" | "off"`, default `auto`). The backend
+  is detected once at startup (bubblewrap; Landlock + seccomp where Ubuntu
+  24.04+ blocks unprivileged namespaces; Seatbelt on macOS) and the `bastion`
+  binary is its own helper (`__bastion-sandbox`, forwarded first thing in
+  `main`, which now builds the tokio runtime itself).
+  - Agent harnesses (`codex_app_server`, `acpx_claude`, `acpx_opencode`) run
+    confined to `<workspace>/<owner>` plus their CLI's own state dirs
+    (`~/.codex`; `~/.claude`, `~/.claude.json`, `~/.acpx`, `~/.npm`; the
+    OpenCode dirs) and only the session's `env.allow`; they keep the network.
+    `/backend` reports their sandbox coverage as `Partial`.
+  - The git pack runs confined: the workspace is the only writable path, no
+    network.
+  - Subprocess extensions use the shared sandbox instead of their own
+    bubblewrap + seccomp builder, so they now work where bubblewrap cannot
+    create namespaces and on macOS. **Breaking for extension authors:**
+    `FsScope::WorkspaceRo/Rw` no longer mounts the workspace at `/workspace`
+    (the child's cwd is the real workspace), and `FsScope::Paths` grants are
+    at their real paths (`BASTION_GRANTED_PATH_<n>` now holds the real path,
+    not `/grants/<n>`).
+- **Workspace is explicit, never the daemon's current directory.** New
+  `[workspace] root` (or `BASTION_WORKSPACE_DIR`), defaulting to
+  `$BASTION_DATA_DIR/workspace` or the platform data directory, created `0700`.
+  The git pack, `FsScope::Workspace*` subprocess extensions and external agent
+  runtimes (via `AgentLoop::with_runtime_workspace_base`) all use it. Before,
+  "workspace" was wherever the daemon was launched — `/` in Docker, often
+  `$HOME` natively. Compose sets `/bastion-data/workspace`.
+- **The git pack no longer inherits the daemon's environment or runs
+  repository code.** `CliCapability` clears the child environment (only
+  `PATH`/`LANG`/`LC_ALL` plus what the preset declares). The git presets turn
+  off system and global git config, point `HOME` at the workspace, fix the
+  commit identity, and force `core.hooksPath=/dev/null`, `core.fsmonitor=false`
+  and no external diff or pager on every call — a hook committed into a
+  repository no longer runs.
+- **Breaking: git writes need approval.** `git` keeps `status`/`diff`/`log`
+  without approval; the new `git_write` does `init`/`add`/`commit`/`branch`,
+  approved per call. `git-capability` 1.1.0 (software-sdlc pack) declares
+  both; an install of 1.0.0 keeps working read-only (logged as
+  `git_write_not_declared`) until the pack is reinstalled.
 
 ### Fixed
 

@@ -75,6 +75,7 @@ services:
       - BASTION_CONFIG=/bastion.toml
       - BASTION__SESSION__DB_PATH=/bastion-data/sessions.db
       - BASTION__LOGGING__LOG_PATH=/bastion-data/bastion.log
+      - BASTION_WORKSPACE_DIR=/bastion-data/workspace
       - EXTENSION_SKILLS_DIR=/extension-skills
       - BASTION__MCP__SERVERS__MEMUPALACE__URL=http://memupalace:8001/mcp
       - BASTION__MCP__SERVERS__SKILL_WRITER__URL=http://skill-writer:8002/mcp

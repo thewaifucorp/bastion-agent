@@ -527,11 +527,10 @@ async fn reconcile_one_extension_mcp_deps(
     }
 }
 
-/// `CliCapability::git`, wrapped as the ONE `ExtensionInstance` this install
-/// flow builds for `native_crate` today. Workspace defaults to the daemon's
-/// current working directory — there is no separate "project workspace"
-/// config concept yet; document this plainly rather than pretending it's
-/// configurable.
+/// `CliCapability::git` + `CliCapability::git_write`, wrapped as the ONE
+/// `ExtensionInstance` this install flow builds for `native_crate` today.
+/// Both work in the configured workspace (`crate::config::workspace_root`).
+/// Reads run freely; writes wait for the operator's approval.
 struct GitCliExtension {
     manifest: ExtensionManifest,
     workspace: std::path::PathBuf,
@@ -545,11 +544,27 @@ impl ExtensionInstance for GitCliExtension {
 
     async fn activate(&self, facade: &mut HostFacade<'_>) -> Result<(), ExtensionError> {
         facade.register_capability(Arc::new(CliCapability::git(self.workspace.clone())))?;
+        // `git-capability` 1.0.0 declared only `git`; registering an
+        // undeclared name would fail the whole activation. Such an install
+        // keeps working read-only until the pack is reinstalled at 1.1.0.
+        if facade.manifest().permissions.allows_capability("git_write") {
+            facade
+                .register_capability(Arc::new(CliCapability::git_write(self.workspace.clone())))?;
+        } else {
+            tracing::warn!(
+                event = "git_write_not_declared",
+                extension = %self.manifest.id,
+                version = %self.manifest.version,
+                "this git-capability install predates git_write: git is read-only until the \
+                 software-sdlc pack is reinstalled",
+            );
+        }
         Ok(())
     }
 
     async fn deactivate(&self, facade: &mut HostFacade<'_>) -> Result<(), ExtensionError> {
         facade.deregister_capability("git");
+        facade.deregister_capability("git_write");
         Ok(())
     }
 }
@@ -566,7 +581,7 @@ async fn install_git_capability(
         workspace: workspace.clone(),
     });
     let ceiling = PermissionSet {
-        capabilities: vec!["git".to_string()],
+        capabilities: vec!["git".to_string(), "git_write".to_string()],
         ..PermissionSet::none()
     };
     match host.install(instance, owner, &ceiling).await {
@@ -594,7 +609,7 @@ async fn install_git_capability(
 /// Shared by `install_git_capability` (live `/extension install`) and
 /// `reload_persisted` (boot-time reactivation) so both resolve the same way.
 fn git_capability_workspace() -> std::path::PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    crate::config::workspace_root()
 }
 
 /// Preview phase: an unknown/empty id fails immediately (nothing to confirm).
@@ -785,7 +800,7 @@ fn reload_ceiling_for(kind: &ReconstructKind) -> PermissionSet {
     match kind {
         ReconstructKind::Declarative => PermissionSet::none(),
         ReconstructKind::GitCapability => PermissionSet {
-            capabilities: vec!["git".to_string()],
+            capabilities: vec!["git".to_string(), "git_write".to_string()],
             ..PermissionSet::none()
         },
     }
@@ -1912,7 +1927,7 @@ mod tests {
         assert_eq!(
             reload_ceiling_for(&ReconstructKind::GitCapability),
             PermissionSet {
-                capabilities: vec!["git".to_string()],
+                capabilities: vec!["git".to_string(), "git_write".to_string()],
                 ..PermissionSet::none()
             }
         );
