@@ -596,6 +596,8 @@ async fn main() -> anyhow::Result<()> {
     // Load bastion.toml config (non-secret config only; secrets stay in .env)
     let config_path = std::env::var("BASTION_CONFIG").unwrap_or_else(|_| "bastion.toml".to_owned());
     let cfg = bastion::config::load_config(&config_path)?;
+    let workspace_root = bastion::config::apply_workspace_default(&cfg.workspace)
+        .map_err(|e| anyhow::anyhow!("cannot create the workspace directory: {e}"))?;
 
     // Init structured JSON logging
     std::fs::create_dir_all(
@@ -1186,6 +1188,7 @@ async fn main() -> anyhow::Result<()> {
     agent = agent
         .with_backend_profile(backend_profile)
         .with_runtime_registry(runtime_registry)
+        .with_runtime_workspace_base(workspace_root.clone())
         .with_auth_resolver(std::sync::Arc::new(auth_resolver))
         // Owner-scoped, persisted cross-turn permission queue — the same
         // db_path SqliteApprovalGate above already opens. Without this call

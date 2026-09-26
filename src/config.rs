@@ -109,6 +109,19 @@ pub struct BastionConfig {
     /// login every deployment had before this field.
     #[serde(default)]
     pub subscriptions: SubscriptionsConfig,
+    /// Optional `[workspace]` table. See [`workspace_root`].
+    #[serde(default)]
+    pub workspace: WorkspaceConfig,
+}
+
+/// `[workspace]`: the one directory Bastion's own tools (the git pack,
+/// subprocess extensions) and external agent runtimes may work in.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct WorkspaceConfig {
+    /// Absent: `BASTION_WORKSPACE_DIR`, then `$BASTION_DATA_DIR/workspace`,
+    /// then the platform data directory (see [`workspace_root`]).
+    #[serde(default)]
+    pub root: Option<std::path::PathBuf>,
 }
 
 /// The `[subscriptions]` table: one sub-table per subscription connector.
@@ -838,6 +851,58 @@ pub fn apply_data_dir_defaults() {
     );
 }
 
+/// Publishes the resolved workspace as `BASTION_WORKSPACE_DIR` (unless it
+/// was set explicitly) and creates it, so every later [`workspace_root`] call
+/// — from code that never sees the config — agrees. Call once, after
+/// `load_config`.
+pub fn apply_workspace_default(cfg: &WorkspaceConfig) -> std::io::Result<std::path::PathBuf> {
+    if let Some(root) = &cfg.root {
+        set_env_default("BASTION_WORKSPACE_DIR", &root.to_string_lossy());
+    }
+    let root = workspace_root();
+    std::fs::create_dir_all(&root)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(root)
+}
+
+/// The workspace root, in order: `BASTION_WORKSPACE_DIR` (set from
+/// `[workspace] root` by [`apply_workspace_default`]), `$BASTION_DATA_DIR/
+/// workspace`, then the platform data directory — `$XDG_DATA_HOME/bastion/
+/// workspace` or `~/.local/share/bastion/workspace` on Linux, `~/Library/
+/// Application Support/Bastion/workspace` on macOS. Never the daemon's
+/// current directory: natively that is wherever it was launched from, often
+/// `$HOME`, which would hand the whole home directory to every tool that
+/// works "in the workspace".
+pub fn workspace_root() -> std::path::PathBuf {
+    resolve_workspace_root(|key| std::env::var_os(key))
+}
+
+fn resolve_workspace_root(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> std::path::PathBuf {
+    use std::path::PathBuf;
+    let non_empty = |key: &str| env(key).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if let Some(explicit) = non_empty("BASTION_WORKSPACE_DIR") {
+        return explicit;
+    }
+    if let Some(data_dir) = non_empty("BASTION_DATA_DIR") {
+        return data_dir.join("workspace");
+    }
+    let home = non_empty("HOME");
+    if cfg!(target_os = "macos") {
+        if let Some(home) = home {
+            return home.join("Library/Application Support/Bastion/workspace");
+        }
+    } else if let Some(xdg) = non_empty("XDG_DATA_HOME") {
+        return xdg.join("bastion/workspace");
+    } else if let Some(home) = home {
+        return home.join(".local/share/bastion/workspace");
+    }
+    std::env::temp_dir().join("bastion-workspace")
+}
+
 fn set_env_default(key: &str, value: &str) {
     if std::env::var_os(key).is_none() {
         std::env::set_var(key, value);
@@ -886,6 +951,61 @@ pub fn load_config(path: &str) -> anyhow::Result<BastionConfig> {
 
 #[cfg(test)]
 mod tests {
+    fn env_of<'a>(
+        pairs: &'a [(&'a str, &'a str)],
+    ) -> impl Fn(&str) -> Option<std::ffi::OsString> + 'a {
+        move |key| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| std::ffi::OsString::from(v))
+        }
+    }
+
+    #[test]
+    fn workspace_root_prefers_explicit_then_data_dir_then_platform_never_cwd() {
+        use std::path::PathBuf;
+        let all = [
+            ("BASTION_WORKSPACE_DIR", "/w"),
+            ("BASTION_DATA_DIR", "/d"),
+            ("HOME", "/home/op"),
+        ];
+        assert_eq!(
+            super::resolve_workspace_root(env_of(&all)),
+            PathBuf::from("/w")
+        );
+        assert_eq!(
+            super::resolve_workspace_root(env_of(&all[1..])),
+            PathBuf::from("/d/workspace")
+        );
+        let platform = super::resolve_workspace_root(env_of(&all[2..]));
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                platform,
+                PathBuf::from("/home/op/Library/Application Support/Bastion/workspace")
+            );
+        } else {
+            assert_eq!(
+                platform,
+                PathBuf::from("/home/op/.local/share/bastion/workspace")
+            );
+            assert_eq!(
+                super::resolve_workspace_root(env_of(&[("XDG_DATA_HOME", "/x"), ("HOME", "/h")])),
+                PathBuf::from("/x/bastion/workspace")
+            );
+        }
+        // Empty values count as unset.
+        assert_eq!(
+            super::resolve_workspace_root(env_of(&[
+                ("BASTION_WORKSPACE_DIR", ""),
+                ("BASTION_DATA_DIR", "/d")
+            ])),
+            PathBuf::from("/d/workspace")
+        );
+        let cwd = std::env::current_dir().unwrap();
+        assert_ne!(super::resolve_workspace_root(env_of(&[])), cwd);
+    }
+
     #[test]
     fn codex_login_defaults_to_device_and_accepts_browser() {
         let absent: super::SubscriptionsConfig = toml::from_str("").expect("empty");

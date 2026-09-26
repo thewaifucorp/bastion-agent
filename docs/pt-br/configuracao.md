@@ -53,6 +53,30 @@ O conector é `Experimental`: funciona de ponta a ponta, mas faz login como o
 client OAuth público do Codex CLI, contra um endpoint que a OpenAI não
 documenta.
 
+### Workspace
+
+O único diretório onde as ferramentas do Bastion (pack de git, extensões por
+subprocesso) e os runtimes externos (Claude Code, Codex, OpenCode) trabalham.
+Cada owner ganha `<raiz>/<owner>` para sessões de runtime.
+
+```toml
+[workspace]
+root = "/home/eu/projetos/bastion-work"
+```
+
+Sem essa chave: `BASTION_WORKSPACE_DIR`, depois `$BASTION_DATA_DIR/workspace`,
+depois `~/.local/share/bastion/workspace` (`$XDG_DATA_HOME` quando definido) no
+Linux ou `~/Library/Application Support/Bastion/workspace` no macOS. O Compose
+usa `/bastion-data/workspace`, que persiste. Nunca é o diretório de onde o
+daemon foi iniciado.
+
+Ferramentas que executam programas não veem o ambiente do daemon. Servidor MCP
+por stdio recebe `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_ALL` mais o que a tabela
+dele nomear (`env = { KEY = "v" }`, `env_passthrough = ["GITHUB_TOKEN"]`,
+`cwd`). O pack de git roda com ambiente próprio, sem a sua config global de git
+e com hooks do repositório desligados; `git` lê sem aprovação, `git_write`
+(init, add, commit, branch) pede aprovação a cada chamada.
+
 ## Ajustes principais
 
 | Área | Chave | Finalidade |

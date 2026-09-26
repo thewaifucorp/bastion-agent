@@ -93,6 +93,30 @@ runs on the same machine as the daemon (or port 1455 is forwarded to it); if
 The connector is `Experimental`: it works end to end, but it signs in as the
 Codex CLI's public OAuth client against an endpoint OpenAI does not document.
 
+### Workspace
+
+The one directory Bastion's tools (the git pack, subprocess extensions) and
+external agent runtimes (Claude Code, Codex, OpenCode) work in. Each owner gets
+`<root>/<owner>` for runtime sessions.
+
+```toml
+[workspace]
+root = "/home/me/projects/bastion-work"
+```
+
+Absent, it is `BASTION_WORKSPACE_DIR`, then `$BASTION_DATA_DIR/workspace`, then
+`~/.local/share/bastion/workspace` (`$XDG_DATA_HOME` when set) on Linux or
+`~/Library/Application Support/Bastion/workspace` on macOS. Compose sets
+`/bastion-data/workspace`, so it persists. It is never the directory the daemon
+was started from.
+
+Tools that run a program do not see the daemon's environment. A stdio MCP
+server gets `PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_ALL` plus what its table
+names (`env = { KEY = "v" }`, `env_passthrough = ["GITHUB_TOKEN"]`, `cwd`). The
+git pack gets its own environment with your global git config off and
+repository hooks disabled; `git` reads without approval, `git_write` (init,
+add, commit, branch) asks for approval on every call.
+
 ## Core settings
 
 | Area | Setting | Purpose |

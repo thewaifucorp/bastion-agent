@@ -48,8 +48,19 @@ pub struct CliCapability {
     /// Confinement root — every invocation runs with this as `current_dir`,
     /// regardless of anything the caller passes in `args`.
     workspace: PathBuf,
+    /// The child's ENTIRE environment, on top of `PATH` and a locale. The
+    /// daemon's own environment (provider keys, cloud credentials, the
+    /// operator's shell variables) never reaches a wrapped CLI.
+    env: Vec<(String, String)>,
+    /// Arguments placed before the subcommand, for options the caller must
+    /// not be able to turn off (e.g. git's `-c core.hooksPath=/dev/null`).
+    pre_args: Vec<String>,
     schema: Value,
 }
+
+/// Inherited from the daemon so the binary and its dynamic libraries resolve
+/// and messages are readable. Nothing else is.
+const INHERITED_ENV: &[&str] = &["PATH", "LANG", "LC_ALL"];
 
 impl CliCapability {
     pub fn new(
@@ -87,8 +98,22 @@ impl CliCapability {
             allowed_flags,
             needs_approval,
             workspace: workspace.into(),
+            env: Vec::new(),
+            pre_args: Vec::new(),
             schema,
         }
+    }
+
+    /// Set the child's environment (beyond [`INHERITED_ENV`]).
+    pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
+        self.env = env;
+        self
+    }
+
+    /// Arguments forced before every subcommand.
+    pub fn with_pre_args(mut self, pre_args: Vec<String>) -> Self {
+        self.pre_args = pre_args;
+        self
     }
 
     fn flag_is_allowed(&self, subcommand: &str, flag: &str) -> bool {
@@ -98,35 +123,100 @@ impl CliCapability {
     }
 
     /// Preset for `bastion-extensions`' `software-sdlc` pack's
-    /// `git-capability`: workspace-confined local Git, read/write but never
-    /// reaching a remote (no push/remote/fetch/clone — deliberately absent
-    /// from the allowlist, not merely undocumented). `-m`/`--message` on
-    /// `commit` is the ONLY flag this preset allows anywhere — every other
-    /// flag (including genuinely dangerous ones like `log --output=<path>`)
-    /// is rejected.
+    /// `git-capability`, read side: `status`/`diff`/`log` in the workspace,
+    /// no approval. Writes live in [`Self::git_write`], behind approval.
+    /// Every flag is rejected (e.g. `log --output=<path>`, which writes
+    /// anywhere).
     pub fn git(workspace: impl Into<PathBuf>) -> Self {
+        let workspace = workspace.into();
         Self::new(
             "git",
-            "Workspace-confined local Git: init/status/diff/add/commit/branch/log only. \
-             No push/remote/fetch/clone — reaching a remote is out of scope for this capability.",
+            "Workspace-confined local Git, read-only: status/diff/log. Changes go through \
+             git_write, which needs approval.",
+            "git",
+            vec!["status".to_string(), "diff".to_string(), "log".to_string()],
+            Vec::new(),
+            false,
+            workspace.clone(),
+        )
+        .with_env(git_env(&workspace))
+        .with_pre_args(git_pre_args())
+    }
+
+    /// The write side of the git preset: `init`/`add`/`commit`/`branch`,
+    /// each one approved by the operator. `-m`/`--message` on `commit` is the
+    /// only flag allowed. Never reaches a remote: `push`/`fetch`/`clone`/
+    /// `remote` are absent from both presets, not merely undocumented.
+    pub fn git_write(workspace: impl Into<PathBuf>) -> Self {
+        let workspace = workspace.into();
+        Self::new(
+            "git_write",
+            "Workspace-confined local Git changes: init/add/commit/branch. Each call needs \
+             approval. No push/remote/fetch/clone.",
             "git",
             vec![
                 "init".to_string(),
-                "status".to_string(),
-                "diff".to_string(),
                 "add".to_string(),
                 "commit".to_string(),
                 "branch".to_string(),
-                "log".to_string(),
             ],
             vec![
                 ("commit".to_string(), "-m".to_string()),
                 ("commit".to_string(), "--message".to_string()),
             ],
-            false,
-            workspace,
+            true,
+            workspace.clone(),
         )
+        .with_env(git_env(&workspace))
+        .with_pre_args(git_pre_args())
     }
+}
+
+/// Git reads config from the system, from `$HOME`/`$XDG_CONFIG_HOME`, and
+/// from the repository. The first two are the operator's, not the
+/// workspace's (a credential helper, an `sshCommand`, an alias) and are
+/// switched off; `HOME` points at the workspace so nothing resolves to the
+/// real home. The author is fixed because the global config that would have
+/// supplied it is gone.
+fn git_env(workspace: &std::path::Path) -> Vec<(String, String)> {
+    let home = workspace.to_string_lossy().into_owned();
+    [
+        ("HOME", home.as_str()),
+        ("GIT_CONFIG_NOSYSTEM", "1"),
+        ("GIT_CONFIG_GLOBAL", "/dev/null"),
+        ("GIT_TERMINAL_PROMPT", "0"),
+        ("GIT_PAGER", "cat"),
+        ("GIT_AUTHOR_NAME", "Bastion"),
+        ("GIT_AUTHOR_EMAIL", "bastion@localhost"),
+        ("GIT_COMMITTER_NAME", "Bastion"),
+        ("GIT_COMMITTER_EMAIL", "bastion@localhost"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect()
+}
+
+/// Repository-controlled code execution git would otherwise perform on the
+/// subcommands above: hooks (on `commit`), the fsmonitor daemon (on
+/// `status`/`add`), external diff and textconv drivers (on `diff`/`log`).
+/// `-c` on the command line outranks the repository's own `.git/config`.
+/// Clean/smudge filters configured in `.git/config` still run on `add`; the
+/// OS sandbox, not argv, is what contains those.
+fn git_pre_args() -> Vec<String> {
+    [
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "diff.external=",
+        "-c",
+        "core.pager=cat",
+        "--no-pager",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 #[async_trait]
@@ -197,10 +287,19 @@ impl Capability for CliCapability {
             }
         }
 
-        let mut argv = vec![subcommand.to_string()];
+        let mut argv = self.pre_args.clone();
+        argv.push(subcommand.to_string());
         argv.extend(extra_args);
 
-        let output = Command::new(&self.binary)
+        let mut command = Command::new(&self.binary);
+        command.env_clear();
+        for key in INHERITED_ENV {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+        let output = command
+            .envs(self.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .current_dir(&self.workspace)
             .args(&argv)
             .stdin(Stdio::null())
@@ -236,18 +335,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn git_preset_init_and_status_round_trip_in_workspace() {
+    async fn git_write_init_then_git_status_round_trip_in_workspace() {
         let workspace = TempDir::new().unwrap();
-        let cap = CliCapability::git(workspace.path());
-
-        let init = cap
+        let init = CliCapability::git_write(workspace.path())
             .invoke(json!({"subcommand": "init"}), &ctx())
             .await
             .unwrap();
         assert_eq!(init["exit_code"], 0, "{init}");
         assert!(workspace.path().join(".git").is_dir());
 
-        let status = cap
+        let status = CliCapability::git(workspace.path())
             .invoke(json!({"subcommand": "status"}), &ctx())
             .await
             .unwrap();
@@ -257,25 +354,40 @@ mod tests {
     #[tokio::test]
     async fn rejects_subcommand_outside_the_allowlist() {
         let workspace = TempDir::new().unwrap();
-        let cap = CliCapability::git(workspace.path());
-        let result = cap.invoke(json!({"subcommand": "push"}), &ctx()).await;
-        let err = result.expect_err("push must be rejected").to_string();
+        for cap in [
+            CliCapability::git(workspace.path()),
+            CliCapability::git_write(workspace.path()),
+        ] {
+            let err = cap
+                .invoke(json!({"subcommand": "push"}), &ctx())
+                .await
+                .expect_err("push must be rejected")
+                .to_string();
+            assert!(err.contains("not allowed"), "{err}");
+        }
+        // The read side cannot write.
+        let err = CliCapability::git(workspace.path())
+            .invoke(json!({"subcommand": "commit"}), &ctx())
+            .await
+            .expect_err("commit is not a read")
+            .to_string();
         assert!(err.contains("not allowed"), "{err}");
     }
 
     #[tokio::test]
     async fn rejects_unlisted_flag_even_on_an_allowed_subcommand() {
         let workspace = TempDir::new().unwrap();
-        let cap = CliCapability::git(workspace.path());
-        cap.invoke(json!({"subcommand": "init"}), &ctx())
+        CliCapability::git_write(workspace.path())
+            .invoke(json!({"subcommand": "init"}), &ctx())
             .await
             .unwrap();
 
         // `git log --output=<path>` writes to an arbitrary filesystem path —
         // exactly the argv flag-smuggling vector the allowlist exists to close.
-        let result = cap
+        let target = workspace.path().join("should-not-be-written");
+        let result = CliCapability::git(workspace.path())
             .invoke(
-                json!({"subcommand": "log", "args": ["--output=/tmp/should-not-be-written"]}),
+                json!({"subcommand": "log", "args": [format!("--output={}", target.display())]}),
                 &ctx(),
             )
             .await;
@@ -283,45 +395,98 @@ mod tests {
             .expect_err("unlisted flag must be rejected")
             .to_string();
         assert!(err.contains("not allowed"), "{err}");
-        assert!(!std::path::Path::new("/tmp/should-not-be-written").exists());
+        assert!(!target.exists());
     }
 
+    /// Commits without any identity configured anywhere: the preset supplies
+    /// it, since the operator's global config is deliberately out of reach.
     #[tokio::test]
-    async fn allows_the_one_allowlisted_commit_message_flag() {
+    async fn git_write_commits_with_the_one_allowlisted_message_flag() {
         let workspace = TempDir::new().unwrap();
-        let cap = CliCapability::git(workspace.path());
-        cap.invoke(json!({"subcommand": "init"}), &ctx())
-            .await
-            .unwrap();
-        // Commit identity isn't something this capability's allowlist covers
-        // (no `-c`/`config` subcommand) — CI runners don't have one set
-        // globally, so this test configures it directly, outside the
-        // capability under test, exactly like a real deployment's operator
-        // would before ever installing git-capability.
-        Command::new("git")
-            .current_dir(workspace.path())
-            .args(["config", "user.email", "test@example.com"])
-            .output()
-            .await
-            .unwrap();
-        Command::new("git")
-            .current_dir(workspace.path())
-            .args(["config", "user.name", "Test"])
-            .output()
+        let write = CliCapability::git_write(workspace.path());
+        write
+            .invoke(json!({"subcommand": "init"}), &ctx())
             .await
             .unwrap();
         std::fs::write(workspace.path().join("f.txt"), "x").unwrap();
-        cap.invoke(json!({"subcommand": "add", "args": ["f.txt"]}), &ctx())
+        write
+            .invoke(json!({"subcommand": "add", "args": ["f.txt"]}), &ctx())
             .await
             .unwrap();
-
-        let result = cap
+        let commit = write
             .invoke(
                 json!({"subcommand": "commit", "args": ["-m", "test commit"]}),
                 &ctx(),
             )
-            .await;
-        assert!(result.is_ok(), "{result:?}");
+            .await
+            .unwrap();
+        assert_eq!(commit["exit_code"], 0, "{commit}");
+
+        let log = CliCapability::git(workspace.path())
+            .invoke(json!({"subcommand": "log"}), &ctx())
+            .await
+            .unwrap();
+        assert!(
+            log["stdout"]
+                .as_str()
+                .unwrap()
+                .contains("Bastion <bastion@localhost>"),
+            "{log}"
+        );
+    }
+
+    /// A hook committed into the repository must not run: repository content
+    /// is data the agent handles, not code it executes.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn repository_hooks_do_not_run() {
+        use std::os::unix::fs::PermissionsExt;
+        let workspace = TempDir::new().unwrap();
+        let write = CliCapability::git_write(workspace.path());
+        write
+            .invoke(json!({"subcommand": "init"}), &ctx())
+            .await
+            .unwrap();
+        let marker = workspace.path().join("hook-ran");
+        let hook = workspace.path().join(".git/hooks/pre-commit");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(workspace.path().join("f.txt"), "x").unwrap();
+        write
+            .invoke(json!({"subcommand": "add", "args": ["f.txt"]}), &ctx())
+            .await
+            .unwrap();
+        let commit = write
+            .invoke(json!({"subcommand": "commit", "args": ["-m", "m"]}), &ctx())
+            .await
+            .unwrap();
+        assert_eq!(commit["exit_code"], 0, "{commit}");
+        assert!(!marker.exists(), "the repository's pre-commit hook ran");
+    }
+
+    /// The daemon's environment does not reach the wrapped CLI.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_child_environment_is_the_declared_one_only() {
+        let workspace = TempDir::new().unwrap();
+        std::env::set_var("BASTION_TEST_CANARY_SECRET", "must-not-leak");
+        let env_dump = CliCapability::new(
+            "env-dump",
+            "d",
+            "env",
+            vec!["-0".to_string()],
+            vec![],
+            false,
+            workspace.path(),
+        )
+        .with_env(vec![("DECLARED".to_string(), "yes".to_string())])
+        .invoke(json!({"subcommand": "-0"}), &ctx())
+        .await
+        .unwrap();
+        std::env::remove_var("BASTION_TEST_CANARY_SECRET");
+        let dumped = env_dump["stdout"].as_str().unwrap();
+        assert!(dumped.contains("DECLARED=yes"), "{dumped}");
+        assert!(!dumped.contains("must-not-leak"), "{dumped}");
     }
 
     #[tokio::test]
@@ -332,28 +497,16 @@ mod tests {
     }
 
     #[test]
-    fn git_preset_is_local_and_needs_no_approval() {
-        let cap = CliCapability::git(".");
-        assert!(cap.is_local());
-        assert!(!cap.needs_approval());
-        assert!(cap.is_trusted());
-        assert_eq!(cap.name(), "git");
-    }
+    fn git_reads_need_no_approval_and_writes_do() {
+        let read = CliCapability::git(".");
+        assert!(read.is_local());
+        assert!(!read.needs_approval());
+        assert!(read.is_trusted());
+        assert_eq!(read.name(), "git");
 
-    #[test]
-    fn a_hypothetical_write_preset_can_require_approval() {
-        // Demonstrates the mechanism is genuinely generic — a future CLI
-        // instance (not this pack's) can flip `needs_approval` independent
-        // of `git()`'s own false.
-        let cap = CliCapability::new(
-            "some-write-tool",
-            "d",
-            "some-tool",
-            vec!["mutate".to_string()],
-            vec![],
-            true,
-            ".",
-        );
-        assert!(cap.needs_approval());
+        let write = CliCapability::git_write(".");
+        assert!(write.is_local());
+        assert!(write.needs_approval());
+        assert_eq!(write.name(), "git_write");
     }
 }

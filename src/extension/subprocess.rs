@@ -236,7 +236,7 @@ impl SubprocessCapability {
                 match &self.manifest.permissions.filesystem {
                     FsScope::None => {}
                     FsScope::WorkspaceRo | FsScope::WorkspaceRw => {
-                        let workspace = std::env::current_dir()?;
+                        let workspace = crate::config::workspace_root();
                         let bind =
                             if matches!(self.manifest.permissions.filesystem, FsScope::WorkspaceRw)
                             {

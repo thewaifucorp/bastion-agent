@@ -8,6 +8,28 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+### Security
+
+- **Workspace is explicit, never the daemon's current directory.** New
+  `[workspace] root` (or `BASTION_WORKSPACE_DIR`), defaulting to
+  `$BASTION_DATA_DIR/workspace` or the platform data directory, created `0700`.
+  The git pack, `FsScope::Workspace*` subprocess extensions and external agent
+  runtimes (via `AgentLoop::with_runtime_workspace_base`) all use it. Before,
+  "workspace" was wherever the daemon was launched — `/` in Docker, often
+  `$HOME` natively. Compose sets `/bastion-data/workspace`.
+- **The git pack no longer inherits the daemon's environment or runs
+  repository code.** `CliCapability` clears the child environment (only
+  `PATH`/`LANG`/`LC_ALL` plus what the preset declares). The git presets turn
+  off system and global git config, point `HOME` at the workspace, fix the
+  commit identity, and force `core.hooksPath=/dev/null`, `core.fsmonitor=false`
+  and no external diff or pager on every call — a hook committed into a
+  repository no longer runs.
+- **Breaking: git writes need approval.** `git` keeps `status`/`diff`/`log`
+  without approval; the new `git_write` does `init`/`add`/`commit`/`branch`,
+  approved per call. `git-capability` 1.1.0 (software-sdlc pack) declares
+  both; an install of 1.0.0 keeps working read-only (logged as
+  `git_write_not_declared`) until the pack is reinstalled.
+
 ### Added
 
 - **Codex subscription login in the browser.** `[subscriptions.codex] login =
