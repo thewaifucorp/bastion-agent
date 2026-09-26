@@ -760,7 +760,11 @@ async fn async_main() -> anyhow::Result<()> {
     // failed servers gracefully: logs tracing::warn per failed server and continues.
     // (Previously this used the legacy .bastion/mcp-servers.json path, which isn't mounted
     // in the FROM-scratch container — so memupalace/skill-writer tools were silently absent.)
-    let mut mcp_client = McpClient::connect_from_config(&cfg.mcp.servers).await?;
+    // Native install: start the sidecars (confined, no network, on Unix
+    // sockets) first, and connect to them alongside the configured servers.
+    let mut mcp_servers = cfg.mcp.servers.clone();
+    mcp_servers.extend(bastion::sidecars::start(&cfg.sidecars).await);
+    let mut mcp_client = McpClient::connect_from_config(&mcp_servers).await?;
 
     // SEC-03: Composio OAuth is opt-in — only constructed when COMPOSIO_API_KEY is
     // actually set. ComposioOAuth::new() itself panics on a missing/empty key (a
@@ -2322,19 +2326,59 @@ async fn daemon_loop(
                 );
             }
             let infer_router = bastion::api::infer::router(agent.provider.clone(), infer_token);
-            tokio::spawn(async move {
-                match tokio::net::TcpListener::bind(&infer_addr).await {
-                    Ok(listener) => {
-                        tracing::info!(event = "infer_gateway_started", addr = %infer_addr);
-                        if let Err(e) = axum::serve(listener, infer_router).await {
-                            tracing::error!(event = "infer_gateway_error", error = %e);
+            // Native sidecars reach /api/infer over a Unix socket (they have
+            // no network); explicit BASTION_INFER_SOCKET wins.
+            let infer_socket = std::env::var_os("BASTION_INFER_SOCKET")
+                .map(std::path::PathBuf::from)
+                .or_else(|| {
+                    (!cfg.sidecars.enabled.is_empty()).then(bastion::sidecars::infer_socket_path)
+                });
+            // With the socket in use, TCP only when asked for explicitly: a
+            // loopback port is reachable by every local process.
+            let serve_tcp =
+                infer_socket.is_none() || std::env::var_os("BASTION_INFER_ADDR").is_some();
+            if let Some(socket) = infer_socket {
+                let router = infer_router.clone();
+                tokio::spawn(async move {
+                    let _ = std::fs::remove_file(&socket);
+                    match tokio::net::UnixListener::bind(&socket) {
+                        Ok(listener) => {
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::PermissionsExt;
+                                let _ = std::fs::set_permissions(
+                                    &socket,
+                                    std::fs::Permissions::from_mode(0o600),
+                                );
+                            }
+                            tracing::info!(event = "infer_gateway_started", socket = %socket.display());
+                            if let Err(e) = axum::serve(listener, router).await {
+                                tracing::error!(event = "infer_gateway_error", error = %e);
+                            }
+                        }
+                        Err(e) => tracing::error!(
+                            event = "infer_gateway_bind_failed",
+                            socket = %socket.display(),
+                            error = %e
+                        ),
+                    }
+                });
+            }
+            if serve_tcp {
+                tokio::spawn(async move {
+                    match tokio::net::TcpListener::bind(&infer_addr).await {
+                        Ok(listener) => {
+                            tracing::info!(event = "infer_gateway_started", addr = %infer_addr);
+                            if let Err(e) = axum::serve(listener, infer_router).await {
+                                tracing::error!(event = "infer_gateway_error", error = %e);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(event = "infer_gateway_bind_failed", addr = %infer_addr, error = %e);
                         }
                     }
-                    Err(e) => {
-                        tracing::error!(event = "infer_gateway_bind_failed", addr = %infer_addr, error = %e);
-                    }
-                }
-            });
+                });
+            }
         }
     }
 

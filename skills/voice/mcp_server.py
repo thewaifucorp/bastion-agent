@@ -164,6 +164,18 @@ def voice_speak(text: str, voice: str = "pf_dora") -> dict:
 # Entrypoint
 # ---------------------------------------------------------------------------
 
+
+def _serve(mcp, port: int) -> None:
+    """Run the server: on the Unix socket in MCP_UNIX_SOCKET when set (native
+    install — no TCP port, the sidecar runs with no network at all), else on
+    streamable-http TCP as in the container."""
+    socket_path = os.getenv("MCP_UNIX_SOCKET")
+    if socket_path:
+        mcp.run(transport="streamable-http", uvicorn_config={"uds": socket_path})
+    else:
+        mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
+
+
 if __name__ == "__main__":
     port = int(os.getenv("VOICE_PORT", "8004"))
-    mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
+    _serve(mcp, port)

@@ -115,6 +115,24 @@ pub struct BastionConfig {
     /// Optional `[sandbox]` table: OS confinement of tools and harnesses.
     #[serde(default)]
     pub sandbox: SandboxConfig,
+    /// Optional `[sidecars]` table: Python MCP sidecars the daemon runs
+    /// itself (native install). See `crate::sidecars`.
+    #[serde(default)]
+    pub sidecars: SidecarsConfig,
+}
+
+/// `[sidecars]`. Empty `enabled` (the default): the daemon starts none —
+/// in a container deployment Compose runs them.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct SidecarsConfig {
+    /// Which to run: any of `memupalace`, `skill-writer`, `self-improving`,
+    /// `voice`.
+    #[serde(default)]
+    pub enabled: Vec<String>,
+    /// Root of the installed sidecar tree (`src/`, `venv/`, `models/`).
+    /// Absent: `<data dir>/sidecars`, where the native installer puts it.
+    #[serde(default)]
+    pub root: Option<std::path::PathBuf>,
 }
 
 /// `[sandbox]`.
@@ -908,25 +926,37 @@ pub fn workspace_root() -> std::path::PathBuf {
 }
 
 fn resolve_workspace_root(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> std::path::PathBuf {
+    let explicit = env("BASTION_WORKSPACE_DIR")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from);
+    explicit.unwrap_or_else(|| resolve_data_root(env).join("workspace"))
+}
+
+/// Where the daemon keeps its state when nothing more specific is set:
+/// `BASTION_DATA_DIR`, else `$XDG_DATA_HOME/bastion` or
+/// `~/.local/share/bastion` on Linux, `~/Library/Application Support/Bastion`
+/// on macOS.
+pub fn data_root() -> std::path::PathBuf {
+    resolve_data_root(|key| std::env::var_os(key))
+}
+
+fn resolve_data_root(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> std::path::PathBuf {
     use std::path::PathBuf;
     let non_empty = |key: &str| env(key).filter(|v| !v.is_empty()).map(PathBuf::from);
-    if let Some(explicit) = non_empty("BASTION_WORKSPACE_DIR") {
-        return explicit;
-    }
     if let Some(data_dir) = non_empty("BASTION_DATA_DIR") {
-        return data_dir.join("workspace");
+        return data_dir;
     }
     let home = non_empty("HOME");
     if cfg!(target_os = "macos") {
         if let Some(home) = home {
-            return home.join("Library/Application Support/Bastion/workspace");
+            return home.join("Library/Application Support/Bastion");
         }
     } else if let Some(xdg) = non_empty("XDG_DATA_HOME") {
-        return xdg.join("bastion/workspace");
+        return xdg.join("bastion");
     } else if let Some(home) = home {
-        return home.join(".local/share/bastion/workspace");
+        return home.join(".local/share/bastion");
     }
-    std::env::temp_dir().join("bastion-workspace")
+    std::env::temp_dir().join("bastion")
 }
 
 fn set_env_default(key: &str, value: &str) {
