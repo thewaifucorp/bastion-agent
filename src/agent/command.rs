@@ -214,16 +214,18 @@ async fn switch_model(
 
 fn connect_instructions(provider: Option<&str>) -> String {
     match provider {
-        None => "Choose a provider: /connect gemini, /connect anthropic, /connect openai, /connect openrouter, /connect ollama, /connect claude, /connect codex, or /connect opencode. Subscription logins stay in Docker volumes and are never stored in chat.".to_string(),
+        None => "Choose a provider: /connect gemini, /connect anthropic, /connect bedrock, /connect vertex, /connect openai, /connect openrouter, /connect ollama, /connect claude, /connect codex, or /connect opencode. Subscription logins stay in Docker volumes and are never stored in chat.".to_string(),
         Some("claude") => "Claude Code subscription: run `bastion connect claude` (or `docker compose exec -it core claude auth login`), complete the browser login, then select /backend use runtime:acp_claude (or the Claude Code option in installer.sh on the next install/update).".to_string(),
         Some("codex") => "Codex subscription: run `bastion connect codex` (or `docker compose exec -it core codex login`), complete the ChatGPT browser login, then select /backend use runtime:codex_app_server (or the Codex option in installer.sh on the next install/update).".to_string(),
         Some("opencode") => "OpenCode subscription: run `bastion connect opencode` (or `docker compose exec -it core opencode auth login`), complete the login, then select /backend use runtime:acpx_opencode (or the OpenCode option in installer.sh on the next install/update).".to_string(),
         Some("gemini") => "Gemini: add GEMINI_API_KEY to .env or your secret manager, restart the daemon, then open /model.".to_string(),
         Some("anthropic") => "Anthropic: add ANTHROPIC_API_KEY to .env or your secret manager, restart the daemon, then open /model.".to_string(),
+        Some("bedrock") => "Claude on Amazon Bedrock: set AWS_REGION and either AWS_BEARER_TOKEN_BEDROCK (a Bedrock API key), AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, a profile in ~/.aws/credentials (AWS_PROFILE), or an AWS CLI login (SSO works); restart the daemon, then /model bedrock/<model id>, e.g. bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0.".to_string(),
+        Some("vertex") => "Claude on Google Vertex AI: set ANTHROPIC_VERTEX_PROJECT_ID (and CLOUD_ML_REGION, default global), authenticate with `gcloud auth application-default login` or GOOGLE_APPLICATION_CREDENTIALS pointing at a service-account key; restart the daemon, then /model vertex/<model id>, e.g. vertex/claude-sonnet-4-5@20250929.".to_string(),
         Some("openai") => "OpenAI: add OPENAI_API_KEY to .env or your secret manager, restart the daemon, then open /model.".to_string(),
         Some("openrouter") => "OpenRouter: add OPENROUTER_API_KEY to .env or your secret manager, restart the daemon, then open /model.".to_string(),
         Some("ollama") => "Ollama: start the local Ollama service, then choose one of its installed models from /model. No API key is needed.".to_string(),
-        Some(_) => "Unknown provider. Choose gemini, anthropic, openai, openrouter, ollama, claude, codex, or opencode.".to_string(),
+        Some(_) => "Unknown provider. Choose gemini, anthropic, bedrock, vertex, openai, openrouter, ollama, claude, codex, or opencode.".to_string(),
     }
 }
 
@@ -264,6 +266,25 @@ async fn connect_status_overview(auth_cfg: &AuthConfig) -> String {
             if set { "configured" } else { "not set" }
         ));
     }
+    // Cloud accounts serving Claude: whether the region/project is set —
+    // credentials are resolved (and reported) on the first call.
+    let set = |name: &str| std::env::var(name).is_ok_and(|v| !v.trim().is_empty());
+    lines.push(format!(
+        "  Amazon Bedrock: {}",
+        if set("AWS_REGION") || set("AWS_DEFAULT_REGION") {
+            "region set"
+        } else {
+            "not set (AWS_REGION)"
+        }
+    ));
+    lines.push(format!(
+        "  Google Vertex AI: {}",
+        if set("ANTHROPIC_VERTEX_PROJECT_ID") || set("GOOGLE_CLOUD_PROJECT") {
+            "project set"
+        } else {
+            "not set (ANTHROPIC_VERTEX_PROJECT_ID)"
+        }
+    ));
     lines.push(String::new());
     lines.push(connect_instructions(None));
     lines.join("\n")

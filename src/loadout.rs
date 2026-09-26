@@ -1101,6 +1101,8 @@ mod tests {
             kinds,
             vec![
                 "anthropic",
+                "bedrock",
+                "vertex",
                 "openai",
                 "gemini",
                 "groq",

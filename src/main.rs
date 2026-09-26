@@ -1118,6 +1118,14 @@ async fn async_main() -> anyhow::Result<()> {
     agent.capability_registry.register(Arc::new(
         bastion::agent::skills::SkillCapability::new_many(bastion::agent::skills::skill_dirs()),
     ))?;
+    // The identity onboarding asks the agent to save its identity with
+    // `memory_store`; these are the agent's own hands on the belief memory
+    // (core only for the identity, revoke behind approval).
+    for capability in
+        bastion_cognition::agent::memory_tools::memory_capabilities(agent.memory.clone())
+    {
+        agent.capability_registry.register(capability)?;
+    }
 
     // Build the
     // RuntimeRegistry from whatever AgentRuntime adapters are actually

@@ -93,6 +93,25 @@ runs on the same machine as the daemon (or port 1455 is forwarded to it); if
 The connector is `Experimental`: it works end to end, but it signs in as the
 Codex CLI's public OAuth client against an endpoint OpenAI does not document.
 
+### Claude in Bastion's own loop (API key, Bedrock, Vertex)
+
+With a pay-per-token account, Claude serves inference while Bastion keeps the
+loop, memory, tools and approvals (unlike the subscription below, where Claude
+Code runs the turn). Pick the model with `/model`:
+
+| Account | Model id | Credentials |
+| --- | --- | --- |
+| Anthropic API | `claude-sonnet-4-5` | `ANTHROPIC_API_KEY` |
+| Amazon Bedrock | `bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0` | `AWS_REGION`, then a Bedrock API key (`AWS_BEARER_TOKEN_BEDROCK`), `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, static keys of `AWS_PROFILE` in `~/.aws/credentials`, or an AWS CLI login (SSO, assumed roles) |
+| Google Vertex AI | `vertex/claude-sonnet-4-5@20250929` | `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION` (default `global`), then `GOOGLE_APPLICATION_CREDENTIALS` (service-account key), `gcloud auth application-default login`, or the metadata server on Google Cloud |
+
+Any Bedrock model or inference-profile id works after `bedrock/`, any Vertex
+model id after `vertex/`. `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` and
+`ANTHROPIC_VERTEX_BASE_URL` override the hosts (a VPC endpoint, a proxy).
+Tokens are refreshed before they expire and never logged. For the egress
+policy both are cloud destinations, like the Anthropic API. `/connect bedrock`
+and `/connect vertex` print the same steps.
+
 ### Claude Code subscription
 
 Claude Code can serve the conversation under your own Claude login while
