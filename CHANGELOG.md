@@ -10,7 +10,7 @@ for how that differs from the library crates it depends on).
 
 ### Changed
 
-- Pins `bastion-core` at `v0.6.1` (`PENDING`): Claude on Bedrock/Vertex in
+- Pins `bastion-core` at `v0.6.1` (`c478c0b`): Claude on Bedrock/Vertex in
   the native loop, `memory_store`/`memory_revoke`, direct-API fixes
   (bastion-providers 0.2.7, bastion-cognition 0.2.2, bastion-runtime 0.4.1).
 - **Claude in the native loop through a cloud account.** `/model
