@@ -219,6 +219,34 @@ fn git_pre_args() -> Vec<String> {
     .collect()
 }
 
+impl CliCapability {
+    /// The CLI invocation: confined by [`crate::sandbox`] when this host has
+    /// a backend (the workspace is the only writable path and there is no
+    /// network — git never needs one for these subcommands), plain
+    /// otherwise. `env` is the child's entire environment.
+    fn command(&self, argv: &[String], env: Vec<(String, String)>) -> anyhow::Result<Command> {
+        if let Some(sandbox) = crate::sandbox::current() {
+            let binary = crate::sandbox::resolve_on_path(&self.binary).ok_or_else(|| {
+                anyhow::anyhow!("'{}' is not installed on this host", self.binary)
+            })?;
+            let spec = bastion_sandbox::SandboxSpec::new(binary)
+                .args(argv)
+                .envs(env)
+                .cwd(&self.workspace)
+                .read_write(&self.workspace)
+                .network(bastion_sandbox::Network::Blocked);
+            return Ok(Command::from(sandbox.command(&spec)?));
+        }
+        let mut command = Command::new(&self.binary);
+        command
+            .env_clear()
+            .envs(env)
+            .current_dir(&self.workspace)
+            .args(argv);
+        Ok(command)
+    }
+}
+
 #[async_trait]
 impl Capability for CliCapability {
     fn name(&self) -> &str {
@@ -291,26 +319,18 @@ impl Capability for CliCapability {
         argv.push(subcommand.to_string());
         argv.extend(extra_args);
 
-        let mut command = Command::new(&self.binary);
-        command.env_clear();
-        for key in INHERITED_ENV {
-            if let Some(value) = std::env::var_os(key) {
-                command.env(key, value);
-            }
-        }
-        let output = command
-            .envs(self.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-            .current_dir(&self.workspace)
-            .args(&argv)
-            .stdin(Stdio::null())
-            .output()
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "failed to spawn '{}' (is it installed on this host?): {e}",
-                    self.binary
-                )
-            })?;
+        let env: Vec<(String, String)> = INHERITED_ENV
+            .iter()
+            .filter_map(|key| std::env::var(key).ok().map(|v| (key.to_string(), v)))
+            .chain(self.env.iter().cloned())
+            .collect();
+        let mut command = self.command(&argv, env)?;
+        let output = command.stdin(Stdio::null()).output().await.map_err(|e| {
+            anyhow::anyhow!(
+                "failed to spawn '{}' (is it installed on this host?): {e}",
+                self.binary
+            )
+        })?;
 
         Ok(json!({
             "subcommand": subcommand,

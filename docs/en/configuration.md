@@ -117,6 +117,31 @@ git pack gets its own environment with your global git config off and
 repository hooks disabled; `git` reads without approval, `git_write` (init,
 add, commit, branch) asks for approval on every call.
 
+### Sandbox
+
+Programs the daemon runs — subprocess extensions, the git pack, and the agent
+harnesses (Claude Code, Codex, OpenCode) — are confined at the OS level: they
+see the system directories, the workspace, and the state directories of their
+own CLI (`~/.claude`, `~/.codex`, ...), never the rest of your home directory,
+and only the environment variables they were given.
+
+```toml
+[sandbox]
+mode = "auto"      # default: confine when this host supports it
+# mode = "required" # refuse to start without it (recommended for a desktop install)
+# mode = "off"
+```
+
+The backend is picked at startup and logged (`sandbox_ready`): bubblewrap on
+Linux when unprivileged user namespaces work, otherwise Landlock + seccomp
+(Ubuntu 24.04+ restricts namespaces), Seatbelt on macOS. Harnesses keep the
+network (they must reach their vendor); tools do not. Subprocess extensions
+always need a backend and are refused without one; the explicit escape hatch
+`BASTION_ALLOW_UNSANDBOXED_SUBPROCESS=true` is forbidden in managed mode.
+A granted path is seen at its real location (`BASTION_GRANTED_PATH_<n>` holds
+it), and a workspace-scoped extension runs with the workspace as its
+directory.
+
 ## Core settings
 
 | Area | Setting | Purpose |

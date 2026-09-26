@@ -77,6 +77,31 @@ dele nomear (`env = { KEY = "v" }`, `env_passthrough = ["GITHUB_TOKEN"]`,
 e com hooks do repositório desligados; `git` lê sem aprovação, `git_write`
 (init, add, commit, branch) pede aprovação a cada chamada.
 
+### Sandbox
+
+Os programas que o daemon executa — extensões por subprocesso, o pack de git e
+os harnesses de agente (Claude Code, Codex, OpenCode) — rodam confinados pelo
+sistema operacional: enxergam os diretórios do sistema, o workspace e os
+diretórios de estado do próprio CLI (`~/.claude`, `~/.codex`, ...), nunca o
+resto do seu home, e só as variáveis de ambiente que receberam.
+
+```toml
+[sandbox]
+mode = "auto"      # padrão: confina quando o host suporta
+# mode = "required" # não inicia sem sandbox (recomendado na instalação desktop)
+# mode = "off"
+```
+
+O backend é escolhido no boot e aparece no log (`sandbox_ready`): bubblewrap no
+Linux quando namespaces sem privilégio funcionam, senão Landlock + seccomp (o
+Ubuntu 24.04+ restringe namespaces), Seatbelt no macOS. Harnesses mantêm a rede
+(precisam falar com o fornecedor); ferramentas não. Extensões por subprocesso
+sempre exigem backend e são recusadas sem ele; a saída explícita
+`BASTION_ALLOW_UNSANDBOXED_SUBPROCESS=true` é proibida em modo managed. Um
+caminho concedido aparece no local real (`BASTION_GRANTED_PATH_<n>` guarda o
+caminho) e uma extensão com escopo de workspace roda com o workspace como
+diretório.
+
 ## Ajustes principais
 
 | Área | Chave | Finalidade |

@@ -10,6 +10,26 @@ for how that differs from the library crates it depends on).
 
 ### Security
 
+- **OS sandbox for everything the daemon runs** (`bastion-sandbox`, new
+  `[sandbox] mode = "auto" | "required" | "off"`, default `auto`). The backend
+  is detected once at startup (bubblewrap; Landlock + seccomp where Ubuntu
+  24.04+ blocks unprivileged namespaces; Seatbelt on macOS) and the `bastion`
+  binary is its own helper (`__bastion-sandbox`, forwarded first thing in
+  `main`, which now builds the tokio runtime itself).
+  - Agent harnesses (`codex_app_server`, `acpx_claude`, `acpx_opencode`) run
+    confined to `<workspace>/<owner>` plus their CLI's own state dirs
+    (`~/.codex`; `~/.claude`, `~/.claude.json`, `~/.acpx`, `~/.npm`; the
+    OpenCode dirs) and only the session's `env.allow`; they keep the network.
+    `/backend` reports their sandbox coverage as `Partial`.
+  - The git pack runs confined: the workspace is the only writable path, no
+    network.
+  - Subprocess extensions use the shared sandbox instead of their own
+    bubblewrap + seccomp builder, so they now work where bubblewrap cannot
+    create namespaces and on macOS. **Breaking for extension authors:**
+    `FsScope::WorkspaceRo/Rw` no longer mounts the workspace at `/workspace`
+    (the child's cwd is the real workspace), and `FsScope::Paths` grants are
+    at their real paths (`BASTION_GRANTED_PATH_<n>` now holds the real path,
+    not `/grants/<n>`).
 - **Workspace is explicit, never the daemon's current directory.** New
   `[workspace] root` (or `BASTION_WORKSPACE_DIR`), defaulting to
   `$BASTION_DATA_DIR/workspace` or the platform data directory, created `0700`.

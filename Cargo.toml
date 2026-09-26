@@ -78,6 +78,7 @@ bastion-extension-protocol = { git = "https://github.com/thewaifucorp/bastion-co
 # an ExtensionInstance/Capability) — the wasm runtime (wasmi) dependency
 # itself is isolated in this crate, never touching the kernel/protocol crates.
 bastion-extension-wasm = { git = "https://github.com/thewaifucorp/bastion-core", rev = "ea2ece131dab8b67ca1cae422668ba3a6b8618db" }
+bastion-sandbox = { git = "https://github.com/thewaifucorp/bastion-core", rev = "ea2ece131dab8b67ca1cae422668ba3a6b8618db" }
 bastion-cognition = { git = "https://github.com/thewaifucorp/bastion-core", rev = "ea2ece131dab8b67ca1cae422668ba3a6b8618db" }
 bastion-personas = { git = "https://github.com/thewaifucorp/bastion-core", rev = "ea2ece131dab8b67ca1cae422668ba3a6b8618db" }
 bastion-mesh = { git = "https://github.com/thewaifucorp/bastion-core", rev = "ea2ece131dab8b67ca1cae422668ba3a6b8618db" }

@@ -528,8 +528,17 @@ fn import_host_credentials(project_dir: &std::path::Path, yes: bool) -> anyhow::
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // First, before the async runtime or any env/config read: this binary is
+    // also the sandbox helper every confined tool and harness starts through.
+    bastion::sandbox::forward_helper_invocation();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_main())
+}
+
+async fn async_main() -> anyhow::Result<()> {
     // Load .env (if present) before any std::env::var read. Real shell env wins.
     dotenvy::dotenv().ok();
     // BASTION_DATA_DIR: fills in BASTION__SESSION__DB_PATH/BASTION__LOGGING__LOG_PATH/
@@ -598,6 +607,7 @@ async fn main() -> anyhow::Result<()> {
     let cfg = bastion::config::load_config(&config_path)?;
     let workspace_root = bastion::config::apply_workspace_default(&cfg.workspace)
         .map_err(|e| anyhow::anyhow!("cannot create the workspace directory: {e}"))?;
+    bastion::sandbox::init(cfg.sandbox.mode)?;
 
     // Init structured JSON logging
     std::fs::create_dir_all(
@@ -1071,7 +1081,8 @@ async fn main() -> anyhow::Result<()> {
     // turn start, never a silent fallback to Model). Cheap to build even
     // when `[backend]` is entirely absent from bastion.toml: `health()` here
     // is a handful of `--version` subprocess spawns, not a live session.
-    let runtime_registry = bastion::agent_runtime_registry::build_runtime_registry().await;
+    let runtime_registry =
+        bastion::agent_runtime_registry::build_runtime_registry(&workspace_root).await;
 
     let mut backend_profile = bastion::config::backend_profile_from_config(&cfg.backend);
     // Fase 2.2: an interactive `/backend use <id>` choice persisted by a

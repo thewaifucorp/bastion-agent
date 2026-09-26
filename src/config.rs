@@ -112,6 +112,32 @@ pub struct BastionConfig {
     /// Optional `[workspace]` table. See [`workspace_root`].
     #[serde(default)]
     pub workspace: WorkspaceConfig,
+    /// Optional `[sandbox]` table: OS confinement of tools and harnesses.
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
+}
+
+/// `[sandbox]`.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct SandboxConfig {
+    #[serde(default)]
+    pub mode: SandboxMode,
+}
+
+/// Whether the daemon confines the programs it runs (subprocess extensions,
+/// the git pack, agent harnesses) with `bastion-sandbox`.
+#[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SandboxMode {
+    /// Confine when this host has a backend; otherwise log it and run tools
+    /// unconfined (subprocess extensions are still refused).
+    #[default]
+    Auto,
+    /// Refuse to start without a backend. For a native desktop install,
+    /// where the container is not there to fall back on.
+    Required,
+    /// Never confine.
+    Off,
 }
 
 /// `[workspace]`: the one directory Bastion's own tools (the git pack,

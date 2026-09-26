@@ -16,7 +16,6 @@ use bastion_runtime::capability::{Capability, InvokeCtx};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[cfg(target_os = "linux")]
-use std::io::{Seek, Write};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -131,59 +130,13 @@ impl SubprocessCapability {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
-    fn blocked_network_syscalls() -> &'static [libc::c_long] {
-        &[
-            libc::SYS_socket,
-            libc::SYS_socketpair,
-            libc::SYS_connect,
-            libc::SYS_bind,
-            libc::SYS_listen,
-            libc::SYS_accept,
-            libc::SYS_accept4,
-            libc::SYS_sendto,
-            libc::SYS_sendmsg,
-            libc::SYS_sendmmsg,
-            libc::SYS_recvfrom,
-            libc::SYS_recvmsg,
-            libc::SYS_recvmmsg,
-            libc::SYS_getsockname,
-            libc::SYS_getpeername,
-            libc::SYS_setsockopt,
-            libc::SYS_getsockopt,
-            libc::SYS_shutdown,
-        ]
-    }
-
-    #[cfg(target_os = "linux")]
-    fn network_seccomp_filter() -> anyhow::Result<tempfile::NamedTempFile> {
-        const BPF_LOAD_SYSCALL: u16 = 0x20;
-        const BPF_JUMP_EQ: u16 = 0x15;
-        const BPF_RETURN: u16 = 0x06;
-        const SECCOMP_ALLOW: u32 = 0x7fff_0000;
-        const SECCOMP_ERRNO_EPERM: u32 = 0x0005_0000 | 1;
-
-        let mut bytes = Vec::new();
-        let mut instruction = |code: u16, jt: u8, jf: u8, value: u32| {
-            bytes.extend_from_slice(&code.to_ne_bytes());
-            bytes.push(jt);
-            bytes.push(jf);
-            bytes.extend_from_slice(&value.to_ne_bytes());
-        };
-        instruction(BPF_LOAD_SYSCALL, 0, 0, 0);
-        for syscall in Self::blocked_network_syscalls() {
-            instruction(BPF_JUMP_EQ, 0, 1, *syscall as u32);
-            instruction(BPF_RETURN, 0, 0, SECCOMP_ERRNO_EPERM);
-        }
-        instruction(BPF_RETURN, 0, 0, SECCOMP_ALLOW);
-
-        let mut filter = tempfile::NamedTempFile::new()?;
-        filter.write_all(&bytes)?;
-        filter.rewind()?;
-        Ok(filter)
-    }
-
-    fn sandboxed_command(&self) -> anyhow::Result<(Command, Option<tempfile::NamedTempFile>)> {
+    /// The child, confined by [`crate::sandbox`]: no network, its own
+    /// directory readable, the manifest's `FsScope` mapped onto the
+    /// workspace or the granted paths (each at its real path; a granted
+    /// path's location is also in `BASTION_GRANTED_PATH_<n>`). `env` is the
+    /// child's entire environment. With the explicit unsafe opt-in the child
+    /// runs plain, still with only `env`.
+    fn sandboxed_command(&self, mut env: Vec<(String, String)>) -> anyhow::Result<Command> {
         let unsafe_requested = self.allow_unsandboxed
             || std::env::var("BASTION_ALLOW_UNSANDBOXED_SUBPROCESS").as_deref() == Ok("true");
         let managed = std::env::var("BASTION_DEPLOYMENT_MODE")
@@ -192,88 +145,47 @@ impl SubprocessCapability {
         Self::validate_runner_policy(unsafe_requested, managed)?;
         if unsafe_requested {
             let mut command = Command::new(&self.command);
-            command.args(&self.args);
-            return Ok((command, None));
+            command.args(&self.args).env_clear().envs(env);
+            return Ok(command);
         }
-        #[cfg(target_os = "linux")]
-        {
-            let bwrap = "/usr/bin/bwrap";
-            if std::path::Path::new(bwrap).exists() {
-                let executable = std::fs::canonicalize(&self.command).map_err(|error| {
-                    anyhow::anyhow!(
-                        "cannot resolve extension executable '{}': {error}",
-                        self.command
-                    )
-                })?;
-                let filter = Self::network_seccomp_filter()?;
-                // Fixed shell program only opens the generated filter as fd 3;
-                // every dynamic value remains a positional argv item.
-                let mut cmd = Command::new("/bin/sh");
-                cmd.args(["-c", "exec 3<\"$1\"; shift; exec \"$@\"", "bastion-seccomp"])
-                    .arg(filter.path())
-                    .arg(bwrap);
-                cmd.args([
-                    "--die-with-parent",
-                    "--new-session",
-                    "--unshare-all",
-                    "--proc",
-                    "/proc",
-                    "--dev",
-                    "/dev",
-                    "--tmpfs",
-                    "/tmp",
-                    "--ro-bind",
-                    "/usr",
-                    "/usr",
-                ]);
-                for system_dir in ["/lib", "/lib64"] {
-                    if std::path::Path::new(system_dir).exists() {
-                        cmd.args(["--ro-bind", system_dir, system_dir]);
-                    }
+        let Some(sandbox) = crate::sandbox::current() else {
+            anyhow::bail!(
+                "subprocess extension '{}' requires an OS sandbox and this host has none; use \
+                 WASM or explicitly opt in to the unsafe runner",
+                self.manifest.id
+            );
+        };
+        let mut spec = bastion_sandbox::SandboxSpec::new(&self.command)
+            .args(&self.args)
+            .network(bastion_sandbox::Network::Blocked);
+        match &self.manifest.permissions.filesystem {
+            FsScope::None => {}
+            FsScope::WorkspaceRo => {
+                let workspace = crate::config::workspace_root();
+                spec = spec.read_only(&workspace).cwd(&workspace);
+            }
+            FsScope::WorkspaceRw => {
+                let workspace = crate::config::workspace_root();
+                spec = spec.read_write(&workspace).cwd(&workspace);
+            }
+            FsScope::Paths(paths) => {
+                for (index, path) in paths.iter().enumerate() {
+                    let path = std::fs::canonicalize(path).map_err(|error| {
+                        anyhow::anyhow!(
+                            "cannot resolve filesystem grant '{}': {error}",
+                            path.display()
+                        )
+                    })?;
+                    env.push((
+                        format!("BASTION_GRANTED_PATH_{index}"),
+                        path.to_string_lossy().into_owned(),
+                    ));
+                    spec = spec.read_only(path);
                 }
-                cmd.args(["--ro-bind"]).arg(&executable).arg("/extension");
-
-                match &self.manifest.permissions.filesystem {
-                    FsScope::None => {}
-                    FsScope::WorkspaceRo | FsScope::WorkspaceRw => {
-                        let workspace = crate::config::workspace_root();
-                        let bind =
-                            if matches!(self.manifest.permissions.filesystem, FsScope::WorkspaceRw)
-                            {
-                                "--bind"
-                            } else {
-                                "--ro-bind"
-                            };
-                        cmd.args([bind]).arg(workspace).arg("/workspace");
-                        cmd.args(["--chdir", "/workspace"]);
-                    }
-                    FsScope::Paths(paths) => {
-                        cmd.args(["--dir", "/grants"]);
-                        for (index, path) in paths.iter().enumerate() {
-                            let path = std::fs::canonicalize(path).map_err(|error| {
-                                anyhow::anyhow!(
-                                    "cannot resolve filesystem grant '{}': {error}",
-                                    path.display()
-                                )
-                            })?;
-                            let destination = format!("/grants/{index}");
-                            cmd.args(["--ro-bind"]).arg(&path).arg(&destination);
-                            cmd.arg("--setenv")
-                                .arg(format!("BASTION_GRANTED_PATH_{index}"))
-                                .arg(destination);
-                        }
-                    }
-                }
-                cmd.args(["--seccomp", "3"]);
-                cmd.arg("--").arg("/extension").args(&self.args);
-                return Ok((cmd, Some(filter)));
             }
         }
-
-        anyhow::bail!(
-            "subprocess extension '{}' requires an OS sandbox; use WASM or explicitly opt in to the unsafe runner",
-            self.manifest.id
-        )
+        let command = sandbox.command(&spec.envs(env))?;
+        Ok(Command::from(command))
     }
 
     /// Answer one host-mediated request from the child, using the SAME
@@ -421,10 +333,8 @@ impl SubprocessCapability {
         // secrets are added back, by name, after the clear.
         let declared_secrets = self.resolve_declared_secrets()?;
 
-        let (mut cmd, _sandbox_guard) = self.sandboxed_command()?;
-        cmd.env_clear()
-            .envs(declared_secrets)
-            .stdin(Stdio::piped())
+        let mut cmd = self.sandboxed_command(declared_secrets)?;
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
@@ -616,37 +526,5 @@ mod policy_tests {
         assert!(error.to_string().contains("forbidden in managed mode"));
         assert!(SubprocessCapability::validate_runner_policy(false, true).is_ok());
         assert!(SubprocessCapability::validate_runner_policy(true, false).is_ok());
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn linux_filter_blocks_socket_creation_and_use() {
-        let blocked = SubprocessCapability::blocked_network_syscalls();
-        for syscall in [
-            libc::SYS_socket,
-            libc::SYS_socketpair,
-            libc::SYS_connect,
-            libc::SYS_bind,
-            libc::SYS_listen,
-            libc::SYS_accept,
-            libc::SYS_accept4,
-            libc::SYS_sendto,
-            libc::SYS_sendmsg,
-            libc::SYS_sendmmsg,
-            libc::SYS_recvfrom,
-            libc::SYS_recvmsg,
-            libc::SYS_recvmmsg,
-            libc::SYS_getsockname,
-            libc::SYS_getpeername,
-            libc::SYS_setsockopt,
-            libc::SYS_getsockopt,
-            libc::SYS_shutdown,
-        ] {
-            assert!(
-                blocked.contains(&syscall),
-                "syscall {syscall} is not blocked"
-            );
-        }
-        assert!(SubprocessCapability::network_seccomp_filter().is_ok());
     }
 }

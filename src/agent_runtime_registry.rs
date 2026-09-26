@@ -33,9 +33,42 @@
 
 use bastion_agent_runtime::acpx::AcpxAgentRuntime;
 use bastion_agent_runtime::codex::CodexAppServerRuntime;
-use bastion_agent_runtime::AgentRuntime;
+use bastion_agent_runtime::{AgentRuntime, HarnessConfinement};
 use bastion_runtime::agent::backend::RuntimeRegistry;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// State each harness's CLI writes under `$HOME`: its login, its session
+/// store, the npm cache `npx` launches ACP adapters from. Only these (when
+/// they exist) are visible to a confined harness — never the rest of the
+/// home directory.
+fn state_dirs(runtime: &str) -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    let rel: &[&str] = match runtime {
+        "codex" => &[".codex"],
+        "claude" => &[".acpx", ".npm", ".claude", ".claude.json", ".config/claude"],
+        "opencode" => &[
+            ".acpx",
+            ".npm",
+            ".local/share/opencode",
+            ".local/state/opencode",
+            ".config/opencode",
+            ".cache/opencode",
+        ],
+        _ => &[],
+    };
+    rel.iter().map(|r| home.join(r)).collect()
+}
+
+/// The confinement for `runtime`'s sessions, when this host has a sandbox.
+fn confinement(runtime: &str, workspace_base: &Path) -> Option<HarnessConfinement> {
+    crate::sandbox::current().map(|sandbox| {
+        HarnessConfinement::new(sandbox.clone(), workspace_base)
+            .with_read_write(state_dirs(runtime))
+    })
+}
 
 /// acpx-wrapped agents Bastion probes for — one `AcpxAgentRuntime` per entry,
 /// registered only if both `acpx` and the wrapped CLI are present and
@@ -47,11 +80,19 @@ const ACPX_AGENTS: &[&str] = &["claude", "opencode"];
 /// this host. Cheap even when `[backend]` is entirely absent from
 /// bastion.toml — `health()` here is a handful of `--version` subprocess
 /// spawns, never a live session.
-pub async fn build_runtime_registry() -> RuntimeRegistry {
+///
+/// Each adapter is confined to `workspace_base/<owner>` plus its own state
+/// directories when `crate::sandbox` found a backend at startup.
+pub async fn build_runtime_registry(workspace_base: &Path) -> RuntimeRegistry {
     let mut registry = RuntimeRegistry::new();
 
     match CodexAppServerRuntime::new() {
-        Ok(runtime) => register_if_healthy(&mut registry, Arc::new(runtime)).await,
+        Ok(mut runtime) => {
+            if let Some(confinement) = confinement("codex", workspace_base) {
+                runtime = runtime.with_confinement(confinement);
+            }
+            register_if_healthy(&mut registry, Arc::new(runtime)).await
+        }
         Err(e) => tracing::debug!(
             event = "agent_runtime_construct_failed",
             adapter = "codex_app_server",
@@ -61,7 +102,12 @@ pub async fn build_runtime_registry() -> RuntimeRegistry {
 
     for agent in ACPX_AGENTS {
         match AcpxAgentRuntime::new(*agent) {
-            Ok(runtime) => register_if_healthy(&mut registry, Arc::new(runtime)).await,
+            Ok(mut runtime) => {
+                if let Some(confinement) = confinement(agent, workspace_base) {
+                    runtime = runtime.with_confinement(confinement);
+                }
+                register_if_healthy(&mut registry, Arc::new(runtime)).await
+            }
             Err(e) => tracing::debug!(
                 event = "agent_runtime_construct_failed",
                 adapter = %agent,

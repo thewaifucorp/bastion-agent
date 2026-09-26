@@ -20,6 +20,7 @@ pub mod product_import;
 pub mod proposals;
 pub mod provider_credential_state;
 pub mod routing;
+pub mod sandbox;
 pub mod secret;
 pub mod subscription_auth;
 pub mod subscription_view;
