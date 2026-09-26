@@ -10,6 +10,18 @@ for how that differs from the library crates it depends on).
 
 ### Changed
 
+- Pins `bastion-core` at `v0.6.0` (`PENDING`): governed runtime-backed
+  conversation (parked permission requests, live harness sessions, MCP
+  bridge), `acp_claude` isolation from the operator's Claude Code setup
+  (bastion-runtime 0.4.0, bastion-agent-runtime 0.3.0).
+- **The installer's Claude Code option and `/connect claude` now point at
+  `acp_claude`** (was `acpx_claude`). Existing selections are kept.
+- **Bastion MCP server:** a token in the `x-bastion-token` header or
+  `Authorization: Bearer` now authenticates (standard MCP clients cannot set
+  `_meta`); `bastion://memories` and `bastion://goals` are read as the token's
+  owner instead of the daemon's local owner; the HTTP transport lists its
+  tools (rmcp's `Router` wrapper used to answer `tools/list` with none).
+
 - Pins `bastion-core` at `v0.5.0` (`b8073c9`): `bastion-sandbox`, confined
   harnesses (`HarnessConfinement`), MCP over Unix sockets, runtime workspace
   base — what the sandbox, sidecar and native-install entries below build on.
@@ -22,6 +34,27 @@ for how that differs from the library crates it depends on).
   `edits`.
 
 ### Added
+
+- **Claude Code as a governed conversation runtime — `acp_claude`.** With the
+  `claude` CLI installed and logged in, the runtime registry offers
+  `acp_claude`: Bastion speaks ACP to Claude Code directly
+  (`claude-agent-acp` on `PATH`, else `npx -y
+  @agentclientprotocol/claude-agent-acp@0.81.2`), confined like the other
+  harnesses. Every file write or command Claude asks for parks the turn with
+  the request and its diff until the owner answers `sim`/`não`; the Claude
+  session keeps its context for the conversation; each answer records the
+  files edited. The session does not load the operator's Claude Code settings,
+  `allow` rules, hooks, plugins, skills, account MCP servers or auto memory.
+  Runtime health probes now run concurrently.
+- **Harness MCP bridge** (`harness_bridge`, `mcp-server` feature): when an
+  `acp_*` runtime is registered, the daemon serves Bastion's MCP server on
+  `127.0.0.1:<ephemeral>` with one 256-bit token per owner, minted on first
+  use and kept in memory, and hands it to each runtime session. Claude Code
+  sees Bastion's capabilities as `mcp__bastion__*`, pre-allowed on the Claude
+  side because Bastion's own policy (egress, approval queue) decides each call.
+  `tests/harness_bridge.rs` drives it as a standard MCP client;
+  `tests/acp_claude_live.rs` (ignored; real Claude Code) proves the parked
+  write, the approval, the bridge call and the isolation end to end.
 
 - **Native desktop install — `installer.sh --native`** (Linux, macOS). Builds
   `bastion`, keeps state in `<install>/data`, writes `bastion.native.toml`

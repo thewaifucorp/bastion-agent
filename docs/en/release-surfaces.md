@@ -47,7 +47,7 @@ or use a subscription today — this is a real, not cosmetic, gap for 0.3.0.
 | Session-expiry recovery | ✅ | An `Unauthorized` turn result drops out of the alternate screen, clears the stale session, re-pairs (bootstrap token or a fresh OTC prompt), and resumes — tested path, not just a crash-and-reconnect. |
 | `/model` picker | ✅ (🧪 discovery gap) | Typing `/model <id>` works for any resolver-supported model, including the subscription syntax `codex/gpt-5[@profile]` — but `MODEL_COMMANDS` (`src/tui.rs:559`) only autocompletes the fixed API-key shortlist, so a subscription model is reachable only if the operator already knows the syntax. Not broken, just undiscoverable from the picker. |
 | `/connect` picker | ✅ | Lists both API-key setup (`/connect gemini`, ...) and host-CLI subscription login (`/connect claude`\|`codex`\|`opencode`). **UAT-worthy naming collision**: `/connect codex` (host CLI login inside the container) and `/auth connect codex` (BAAUTH's own subscription flow, console-only, not in this picker at all) are two unrelated commands that happen to share a provider name — this is already called out in `src/agent/auth_command.rs`'s own module doc as a deliberate-but-confusable choice. |
-| `/backend` picker | ✅ | Lists the model loop plus registered runtime backends (`acpx_claude`, `codex_app_server`, `acpx_opencode`). |
+| `/backend` picker | ✅ | Lists the model loop plus registered runtime backends (`acp_claude`, `acpx_claude`, `codex_app_server`, `acpx_opencode`). |
 
 ## Manual UAT checklist
 

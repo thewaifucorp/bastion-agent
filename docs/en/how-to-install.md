@@ -107,6 +107,9 @@ The daemon refuses to start if this host has no sandbox backend.
 Log in to a subscription with `bastion connect claude|codex|opencode` (it runs
 the CLI's own login on your machine) or, for the ChatGPT subscription inside
 Bastion's own loop, `/auth connect codex` with `[subscriptions.codex] login = "browser"`.
+With Claude Code logged in, `/backend use acp_claude` runs the conversation on
+it and every edit it wants to make waits for your `sim` (see
+[Claude Code subscription](configuration.md#claude-code-subscription)).
 
 `bastion update --apply --yes` updates a native install in place (rebuild,
 sidecars, service restart) and rolls back if the new release fails its health

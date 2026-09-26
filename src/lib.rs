@@ -12,6 +12,8 @@ pub mod config;
 pub mod config_store;
 pub mod control_plane;
 pub mod extension;
+#[cfg(feature = "mcp-server")]
+pub mod harness_bridge;
 pub mod loadout;
 pub mod mcp;
 pub mod model_catalog;

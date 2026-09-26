@@ -366,6 +366,13 @@ Two of the original gaps were closed by the observability frontend work
   authentication (`mcp::server::call_tool`), so a flood of invalid tokens is
   bounded too; every other MCP tool is unaffected.
 
+- MCP clients that can only send HTTP headers (Claude Code, IDEs) authenticate
+  with the `x-bastion-token` header or `Authorization: Bearer <token>`; the
+  request's `_meta.x-bastion-token` still works and wins when both are present.
+  `bastion://memories` and `bastion://goals` are read as the token's owner (they
+  used to be read as the daemon's local owner whatever the token). The HTTP
+  server now lists its tools: it used to be wrapped in rmcp's `Router`, which
+  answered `tools/list` from its own empty table.
 - ~~Issuing a credential requires a shell on the daemon's host~~ — CLOSED,
   opt-in. `POST /v1/credentials` (mounted only when `[control_plane]
   remote_credential_issuance` is set) issues a credential for a named owner,

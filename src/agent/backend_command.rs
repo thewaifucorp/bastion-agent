@@ -38,6 +38,7 @@ use crate::config_store::{ConfigStore, KEY_BACKEND_SELECTED};
 /// config surfaces for the same three subscription runtimes.
 pub const RUNTIME_AUTH_PROFILES: &[(&str, &str)] = &[
     ("acpx_claude", "claude-subscription"),
+    ("acp_claude", "claude-subscription"),
     ("codex_app_server", "codex-subscription"),
     ("acpx_opencode", "opencode-subscription"),
 ];

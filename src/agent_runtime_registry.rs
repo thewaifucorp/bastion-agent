@@ -31,6 +31,7 @@
 //! the picker entirely, which is worse UX, not better safety (the fail-closed
 //! guarantee already lives in `AuthResolver::resolve` at turn start).
 
+use bastion_agent_runtime::acp::AcpAgentRuntime;
 use bastion_agent_runtime::acpx::AcpxAgentRuntime;
 use bastion_agent_runtime::codex::CodexAppServerRuntime;
 use bastion_agent_runtime::{AgentRuntime, HarnessConfinement};
@@ -75,23 +76,40 @@ fn confinement(runtime: &str, workspace_base: &Path) -> Option<HarnessConfinemen
 /// healthy on this host.
 const ACPX_AGENTS: &[&str] = &["claude", "opencode"];
 
+/// The Claude Code ACP bridge, pinned. Used through `npx` when no
+/// `claude-agent-acp` is installed on PATH.
+pub const CLAUDE_ACP_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp@0.81.2";
+
+/// The bridge command for `acp_claude` — Bastion speaking ACP to Claude Code
+/// directly, so every edit Claude asks to make reaches Bastion's approval.
+/// Offered only when the `claude` CLI is installed: the bridge runs Claude
+/// Code under the operator's own login, which lives with that install.
+fn claude_acp_command() -> Option<String> {
+    crate::sandbox::resolve_on_path("claude")?;
+    if crate::sandbox::resolve_on_path("claude-agent-acp").is_some() {
+        return Some("claude-agent-acp".to_string());
+    }
+    crate::sandbox::resolve_on_path("npx")?;
+    Some(format!("npx -y {CLAUDE_ACP_PACKAGE}"))
+}
+
 /// Probes every adapter Bastion knows how to construct and returns a
 /// registry containing only the ones that are actually usable RIGHT NOW on
 /// this host. Cheap even when `[backend]` is entirely absent from
-/// bastion.toml — `health()` here is a handful of `--version` subprocess
-/// spawns, never a live session.
+/// bastion.toml — `health()` is a `--version` spawn or an ACP `initialize`
+/// handshake, never a live session — and the probes run concurrently.
 ///
 /// Each adapter is confined to `workspace_base/<owner>` plus its own state
 /// directories when `crate::sandbox` found a backend at startup.
 pub async fn build_runtime_registry(workspace_base: &Path) -> RuntimeRegistry {
-    let mut registry = RuntimeRegistry::new();
+    let mut candidates: Vec<Arc<dyn AgentRuntime>> = Vec::new();
 
     match CodexAppServerRuntime::new() {
         Ok(mut runtime) => {
             if let Some(confinement) = confinement("codex", workspace_base) {
                 runtime = runtime.with_confinement(confinement);
             }
-            register_if_healthy(&mut registry, Arc::new(runtime)).await
+            candidates.push(Arc::new(runtime));
         }
         Err(e) => tracing::debug!(
             event = "agent_runtime_construct_failed",
@@ -106,7 +124,7 @@ pub async fn build_runtime_registry(workspace_base: &Path) -> RuntimeRegistry {
                 if let Some(confinement) = confinement(agent, workspace_base) {
                     runtime = runtime.with_confinement(confinement);
                 }
-                register_if_healthy(&mut registry, Arc::new(runtime)).await
+                candidates.push(Arc::new(runtime));
             }
             Err(e) => tracing::debug!(
                 event = "agent_runtime_construct_failed",
@@ -116,12 +134,35 @@ pub async fn build_runtime_registry(workspace_base: &Path) -> RuntimeRegistry {
         }
     }
 
+    if let Some(command) = claude_acp_command() {
+        let mut runtime = AcpAgentRuntime::new(command);
+        if let Some(confinement) = confinement("claude", workspace_base) {
+            runtime = runtime.with_confinement(confinement);
+        }
+        candidates.push(Arc::new(runtime));
+    }
+
+    let probed = futures_util::future::join_all(
+        candidates
+            .into_iter()
+            .map(|runtime| async move { (runtime.health().await, runtime) }),
+    )
+    .await;
+
+    let mut registry = RuntimeRegistry::new();
+    for (health, runtime) in probed {
+        register_if_healthy(&mut registry, runtime, health);
+    }
     registry
 }
 
-async fn register_if_healthy(registry: &mut RuntimeRegistry, runtime: Arc<dyn AgentRuntime>) {
+fn register_if_healthy(
+    registry: &mut RuntimeRegistry,
+    runtime: Arc<dyn AgentRuntime>,
+    health: Result<bastion_agent_runtime::RuntimeHealth, bastion_agent_runtime::RuntimeError>,
+) {
     let descriptor = runtime.descriptor();
-    match runtime.health().await {
+    match health {
         Ok(health) if health.ready => {
             tracing::info!(
                 event = "agent_runtime_registered",

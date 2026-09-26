@@ -25,7 +25,6 @@ use bastion_memory::{PrivacyTier, SharedMemory};
 use bastion_personas::persona::PersonaRegistry;
 use bastion_runtime::capability::CapabilityRegistry;
 use bastion_runtime::hooks::egress::check_egress;
-use rmcp::handler::server::router::Router as McpRouter;
 use rmcp::model::*;
 use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 use rmcp::transport::streamable_http_server::{
@@ -122,19 +121,55 @@ fn check_control_plane_scope(name: &str, scopes: &ScopeSet) -> Result<(), Missin
     require_scope(scopes, required)
 }
 
+/// The credential a caller presented: the MCP request's `_meta.x-bastion-token`
+/// when set, else the HTTP `x-bastion-token` header, else `Authorization:
+/// Bearer <token>`. Standard MCP clients (Claude Code, an IDE) can only send
+/// headers, which is how a harness bridged by the agent loop authenticates;
+/// `_meta` stays for callers that put it there. Empty when none is present.
+fn presented_token(meta: Option<&Meta>, headers: Option<&axum::http::HeaderMap>) -> String {
+    if let Some(token) = meta
+        .and_then(|m| m.get("x-bastion-token"))
+        .and_then(|v| v.as_str())
+        .filter(|t| !t.is_empty())
+    {
+        return token.to_string();
+    }
+    let Some(headers) = headers else {
+        return String::new();
+    };
+    if let Some(token) = headers
+        .get("x-bastion-token")
+        .and_then(|v| v.to_str().ok())
+        .filter(|t| !t.is_empty())
+    {
+        return token.to_string();
+    }
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string()
+}
+
+/// HTTP headers of the request being handled, when it came over Streamable
+/// HTTP (rmcp puts the request parts in the context's extensions).
+fn request_headers(context: &RequestContext<RoleServer>) -> Option<&axum::http::HeaderMap> {
+    context
+        .extensions
+        .get::<axum::http::request::Parts>()
+        .map(|parts| &parts.headers)
+}
+
 /// 09-REVIEW.md CR-01/CR-02: shared fail-closed token check used by `list_tools`,
 /// `call_tool`, `list_resources`, and `read_resource`. A missing token, an empty
 /// token map, or a token that doesn't match any configured entry is rejected —
 /// never defaulted to a permissive local-owner grant.
 fn authenticate_token(
     tokens: &HashMap<String, TokenPermissions>,
-    meta: Option<&Meta>,
+    presented: &str,
 ) -> Result<TokenPermissions, McpError> {
-    let presented = meta
-        .and_then(|m| m.get("x-bastion-token"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
     tokens
         .iter()
         // Milestone-close code review (2026-07-13): an empty-string presented
@@ -155,6 +190,11 @@ fn authenticate_token(
         })
 }
 
+/// Token → permissions, shared so tokens can be added while the server runs
+/// (the harness bridge mints one per owner on first use). Configured tokens
+/// are inserted once at startup.
+pub type TokenStore = Arc<std::sync::RwLock<HashMap<String, TokenPermissions>>>;
+
 /// Bastion MCP server — dispatches to CapabilityRegistry, Memory, PersonaRegistry, GoalEngine.
 pub struct BastionMcpServer {
     registry: Arc<CapabilityRegistry>,
@@ -173,8 +213,7 @@ pub struct BastionMcpServer {
     memory: SharedMemory,
     personas: Arc<PersonaRegistry>,
     goals: GoalEngine,
-    token_permissions: HashMap<String, TokenPermissions>,
-    local_owner: String,
+    token_permissions: TokenStore,
     /// The SAME instance `control_plane::routes::router` uses, constructed
     /// once in `main.rs`. Only applied to the 5 `control_plane_registry` tools in
     /// `call_tool` below, matching what the HTTP `/v1/*` routes limit; every
@@ -191,7 +230,6 @@ impl BastionMcpServer {
         personas: Arc<PersonaRegistry>,
         goals: GoalEngine,
         token_permissions: HashMap<String, TokenPermissions>,
-        local_owner: String,
         rate_limiter: crate::control_plane::rate_limit::RateLimiter,
     ) -> Self {
         Self {
@@ -200,10 +238,22 @@ impl BastionMcpServer {
             memory,
             personas,
             goals,
-            token_permissions,
-            local_owner,
+            token_permissions: Arc::new(std::sync::RwLock::new(token_permissions)),
             rate_limiter,
         }
+    }
+
+    /// Serve with a shared, growable token store instead of a fixed map.
+    pub fn with_token_store(mut self, store: TokenStore) -> Self {
+        self.token_permissions = store;
+        self
+    }
+
+    fn tokens(&self) -> HashMap<String, TokenPermissions> {
+        self.token_permissions
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 
@@ -216,7 +266,6 @@ impl Clone for BastionMcpServer {
             personas: self.personas.clone(),
             goals: self.goals.clone(),
             token_permissions: self.token_permissions.clone(),
-            local_owner: self.local_owner.clone(),
             rate_limiter: self.rate_limiter.clone(),
         }
     }
@@ -235,15 +284,16 @@ impl ServerHandler for BastionMcpServer {
     fn list_tools(
         &self,
         request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, McpError>> + MaybeSendFuture + '_ {
         let meta = request.and_then(|r| r.meta);
-        let token_permissions = self.token_permissions.clone();
+        let presented = presented_token(meta.as_ref(), request_headers(&context));
+        let token_permissions = self.tokens();
         let registry = self.registry.clone();
         let control_plane_registry = self.control_plane_registry.clone();
 
         async move {
-            authenticate_token(&token_permissions, meta.as_ref())?;
+            authenticate_token(&token_permissions, &presented)?;
 
             let mut tools: Vec<Tool> = registry
                 .list_tool_defs()
@@ -271,15 +321,15 @@ impl ServerHandler for BastionMcpServer {
     fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<CallToolResult, McpError>> + MaybeSendFuture + '_ {
-        let meta = request.meta.clone();
+        let presented = presented_token(request.meta.as_ref(), request_headers(&context));
         let name = request.name.clone();
         let mut args = request.arguments.unwrap_or_default();
 
         let registry = self.registry.clone();
         let control_plane_registry = self.control_plane_registry.clone();
-        let token_permissions = self.token_permissions.clone();
+        let token_permissions = self.tokens();
         let rate_limiter = self.rate_limiter.clone();
 
         async move {
@@ -293,24 +343,16 @@ impl ServerHandler for BastionMcpServer {
             // tool call is unaffected.
             let dispatches_to_control_plane_for_limit =
                 control_plane_registry.list_names().contains(&name.as_ref());
-            if dispatches_to_control_plane_for_limit {
-                let presented_token = meta
-                    .as_ref()
-                    .and_then(|m| m.get("x-bastion-token"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if !rate_limiter.check(&presented_token).await {
-                    tracing::warn!(event = "mcp_rate_limited");
-                    return Ok(CallToolResult::error(vec![Content::text(format!(
-                        "rate limited: more than {} requests in the current 60s window for \
-                         this credential",
-                        crate::control_plane::rate_limit::MAX_REQUESTS_PER_WINDOW
-                    ))]));
-                }
+            if dispatches_to_control_plane_for_limit && !rate_limiter.check(&presented).await {
+                tracing::warn!(event = "mcp_rate_limited");
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "rate limited: more than {} requests in the current 60s window for \
+                     this credential",
+                    crate::control_plane::rate_limit::MAX_REQUESTS_PER_WINDOW
+                ))]));
             }
 
-            let perms = authenticate_token(&token_permissions, meta.as_ref())?;
+            let perms = authenticate_token(&token_permissions, &presented)?;
 
             if perms.read_only {
                 return Ok(CallToolResult::error(vec![Content::text(
@@ -401,13 +443,14 @@ impl ServerHandler for BastionMcpServer {
     fn list_resources(
         &self,
         request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListResourcesResult, McpError>> + MaybeSendFuture + '_ {
         let meta = request.and_then(|r| r.meta);
-        let token_permissions = self.token_permissions.clone();
+        let presented = presented_token(meta.as_ref(), request_headers(&context));
+        let token_permissions = self.tokens();
 
         async move {
-            authenticate_token(&token_permissions, meta.as_ref())?;
+            authenticate_token(&token_permissions, &presented)?;
 
             let resources = vec![
                 Annotated::new(
@@ -436,25 +479,24 @@ impl ServerHandler for BastionMcpServer {
     fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ReadResourceResult, McpError>> + MaybeSendFuture + '_ {
         let uri = request.uri;
-        let meta = request.meta;
+        let presented = presented_token(request.meta.as_ref(), request_headers(&context));
 
         let memory = self.memory.clone();
         let personas = self.personas.clone();
         let goals = self.goals.clone();
-        let local_owner = self.local_owner.clone();
-        let token_permissions = self.token_permissions.clone();
+        let token_permissions = self.tokens();
 
         async move {
-            authenticate_token(&token_permissions, meta.as_ref())?;
+            let perms = authenticate_token(&token_permissions, &presented)?;
 
             let contents = match uri.as_str() {
                 "bastion://memories" => {
                     let mem = memory.read().await;
                     let beliefs = mem
-                        .retrieve_tagged(&local_owner, None)
+                        .retrieve_tagged(&perms.owner_id, None)
                         .await
                         .unwrap_or_default();
                     // CR-02: MCP is an external destination — drop any belief that
@@ -482,7 +524,7 @@ impl ServerHandler for BastionMcpServer {
                     vec![ResourceContents::text(json, &uri).with_mime_type("application/json")]
                 }
                 "bastion://goals" => {
-                    let all_goals = goals.list_goals(&local_owner).await.unwrap_or_default();
+                    let all_goals = goals.list_goals(&perms.owner_id).await.unwrap_or_default();
                     let json =
                         serde_json::to_string_pretty(&all_goals).unwrap_or_else(|_| "[]".into());
                     vec![ResourceContents::text(json, &uri).with_mime_type("application/json")]
@@ -512,8 +554,7 @@ pub fn build_mcp_axum_router(
     memory: SharedMemory,
     personas: Arc<PersonaRegistry>,
     goals: GoalEngine,
-    tokens: HashMap<String, TokenPermissions>,
-    local_owner: String,
+    tokens: TokenStore,
     rate_limiter: crate::control_plane::rate_limit::RateLimiter,
     mount_path: &str,
 ) -> Router {
@@ -523,15 +564,18 @@ pub fn build_mcp_axum_router(
         memory,
         personas,
         goals,
-        tokens,
-        local_owner,
+        HashMap::new(),
         rate_limiter,
-    );
+    )
+    .with_token_store(tokens);
     let session_manager = Arc::new(LocalSessionManager::default());
 
-    let streamable: StreamableHttpService<McpRouter<BastionMcpServer>, LocalSessionManager> =
+    // Served directly, not through rmcp's `Router`: that wrapper answers
+    // `tools/list` from its own (empty) tool router and never reaches
+    // `BastionMcpServer::list_tools`, so every HTTP client saw zero tools.
+    let streamable: StreamableHttpService<BastionMcpServer, LocalSessionManager> =
         StreamableHttpService::new(
-            move || Ok(McpRouter::new(server.clone())),
+            move || Ok(server.clone()),
             session_manager,
             StreamableHttpServerConfig::default(),
         );
@@ -582,7 +626,7 @@ mod tests {
     #[test]
     fn missing_token_is_rejected() {
         let tokens = tokens_with("real-token", rw_perms("alice"));
-        let result = authenticate_token(&tokens, None);
+        let result = authenticate_token(&tokens, &presented_token(None, None));
         assert!(result.is_err(), "absent x-bastion-token must be denied");
     }
 
@@ -590,7 +634,7 @@ mod tests {
     fn unknown_token_is_rejected() {
         let tokens = tokens_with("real-token", rw_perms("alice"));
         let meta = meta_with_token("wrong-token");
-        let result = authenticate_token(&tokens, Some(&meta));
+        let result = authenticate_token(&tokens, &presented_token(Some(&meta), None));
         assert!(result.is_err(), "unrecognized token must be denied");
     }
 
@@ -599,8 +643,8 @@ mod tests {
         // WR-06: enabled-with-no-tokens is unreachable, not fail-open.
         let tokens: HashMap<String, TokenPermissions> = HashMap::new();
         let meta = meta_with_token("anything");
-        assert!(authenticate_token(&tokens, Some(&meta)).is_err());
-        assert!(authenticate_token(&tokens, None).is_err());
+        assert!(authenticate_token(&tokens, &presented_token(Some(&meta), None)).is_err());
+        assert!(authenticate_token(&tokens, &presented_token(None, None)).is_err());
     }
 
     /// Regression (milestone-close code review, 2026-07-13): a misconfigured
@@ -611,12 +655,12 @@ mod tests {
     fn empty_configured_token_never_authenticates_missing_header() {
         let tokens = tokens_with("", rw_perms("alice"));
         assert!(
-            authenticate_token(&tokens, None).is_err(),
+            authenticate_token(&tokens, &presented_token(None, None)).is_err(),
             "an empty configured token must never grant access to a caller with no token"
         );
         let meta = meta_with_token("");
         assert!(
-            authenticate_token(&tokens, Some(&meta)).is_err(),
+            authenticate_token(&tokens, &presented_token(Some(&meta), None)).is_err(),
             "an empty configured token must never grant access to an explicit empty token either"
         );
     }
@@ -625,10 +669,48 @@ mod tests {
     fn valid_token_resolves_to_its_configured_permissions() {
         let tokens = tokens_with("real-token", rw_perms("alice"));
         let meta = meta_with_token("real-token");
-        let perms =
-            authenticate_token(&tokens, Some(&meta)).expect("valid token must authenticate");
+        let perms = authenticate_token(&tokens, &presented_token(Some(&meta), None))
+            .expect("valid token must authenticate");
         assert_eq!(perms.owner_id, "alice");
         assert!(!perms.read_only);
+    }
+
+    /// Standard MCP clients (a harness bridged by the agent loop) can only
+    /// send headers: `x-bastion-token` and `Authorization: Bearer` both
+    /// authenticate, `_meta` wins when both are present, and a bare or empty
+    /// header does not.
+    #[test]
+    fn a_token_in_an_http_header_authenticates() {
+        let tokens = tokens_with("real-token", rw_perms("alice"));
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-bastion-token", "real-token".parse().unwrap());
+        assert_eq!(
+            authenticate_token(&tokens, &presented_token(None, Some(&headers)))
+                .unwrap()
+                .owner_id,
+            "alice"
+        );
+
+        let mut bearer = axum::http::HeaderMap::new();
+        bearer.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer real-token".parse().unwrap(),
+        );
+        assert!(authenticate_token(&tokens, &presented_token(None, Some(&bearer))).is_ok());
+
+        let meta = meta_with_token("wrong-token");
+        assert!(
+            authenticate_token(&tokens, &presented_token(Some(&meta), Some(&headers))).is_err(),
+            "_meta is read first"
+        );
+
+        let mut empty = axum::http::HeaderMap::new();
+        empty.insert("x-bastion-token", "".parse().unwrap());
+        empty.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer ".parse().unwrap(),
+        );
+        assert!(authenticate_token(&tokens, &presented_token(None, Some(&empty))).is_err());
     }
 
     #[test]
