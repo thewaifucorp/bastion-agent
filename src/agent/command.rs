@@ -215,7 +215,7 @@ async fn switch_model(
 fn connect_instructions(provider: Option<&str>) -> String {
     match provider {
         None => "Choose a provider: /connect gemini, /connect anthropic, /connect openai, /connect openrouter, /connect ollama, /connect claude, /connect codex, or /connect opencode. Subscription logins stay in Docker volumes and are never stored in chat.".to_string(),
-        Some("claude") => "Claude Code subscription: run `bastion connect claude` (or `docker compose exec -it core claude auth login`), complete the browser login, then select /backend use runtime:acpx_claude (or the Claude Code option in installer.sh on the next install/update).".to_string(),
+        Some("claude") => "Claude Code subscription: run `bastion connect claude` (or `docker compose exec -it core claude auth login`), complete the browser login, then select /backend use runtime:acp_claude (or the Claude Code option in installer.sh on the next install/update).".to_string(),
         Some("codex") => "Codex subscription: run `bastion connect codex` (or `docker compose exec -it core codex login`), complete the ChatGPT browser login, then select /backend use runtime:codex_app_server (or the Codex option in installer.sh on the next install/update).".to_string(),
         Some("opencode") => "OpenCode subscription: run `bastion connect opencode` (or `docker compose exec -it core opencode auth login`), complete the login, then select /backend use runtime:acpx_opencode (or the OpenCode option in installer.sh on the next install/update).".to_string(),
         Some("gemini") => "Gemini: add GEMINI_API_KEY to .env or your secret manager, restart the daemon, then open /model.".to_string(),

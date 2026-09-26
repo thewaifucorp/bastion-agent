@@ -205,7 +205,7 @@ configure_backend() {
       configure_provider
       ;;
     2)
-      env_set BASTION_BACKEND_CONVERSATION runtime:acpx_claude
+      env_set BASTION_BACKEND_CONVERSATION runtime:acp_claude
       env_set BASTION_BACKEND_AUTH claude-subscription
       info "Run 'bastion connect claude' after startup to complete its browser login."
       ;;

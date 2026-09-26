@@ -92,6 +92,9 @@ tiver backend de sandbox.
 Faça login numa assinatura com `bastion connect claude|codex|opencode` (roda o
 login do próprio CLI na sua máquina) ou, para a assinatura do ChatGPT no loop do
 próprio Bastion, `/auth connect codex` com `[subscriptions.codex] login = "browser"`.
+Com o Claude Code logado, `/backend use acp_claude` roda a conversa nele e cada
+edição que ele quiser fazer espera o seu `sim` (veja
+[Assinatura do Claude Code](configuracao.md#assinatura-do-claude-code)).
 
 `bastion update --apply --yes` atualiza a instalação nativa no lugar
 (recompila, sidecars, reinicia o serviço) e volta a versão anterior se a nova

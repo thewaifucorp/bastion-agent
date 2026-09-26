@@ -1305,8 +1305,6 @@ async fn async_main() -> anyhow::Result<()> {
             use rmcp::ServiceExt;
 
             let token_perms = build_token_perms(&cfg);
-            let local_owner = std::env::var("BASTION_OWNER_ID")
-                .unwrap_or_else(|_| bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string());
             let personas = Arc::new(registry_for_product.clone());
             // US External Control Plane and SDK, Phase 5: the 5 MCP tools
             // (create_task/get_task/list_tasks/steer_task/cancel_task) live
@@ -1331,7 +1329,6 @@ async fn async_main() -> anyhow::Result<()> {
                 personas,
                 goals_for_product.clone(),
                 token_perms,
-                local_owner,
                 bastion::control_plane::rate_limit::RateLimiter::new(),
             );
             let (stdin, stdout) = rmcp::transport::stdio();
@@ -1847,8 +1844,6 @@ async fn daemon_loop(
                 let mem = agent.memory.clone();
                 let personas = Arc::new(registry_for_product.clone());
                 let goals = goals_for_product.clone();
-                let local_owner = std::env::var("BASTION_OWNER_ID")
-                    .unwrap_or_else(|_| bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string());
                 let token_perms = build_token_perms(cfg);
                 // WR-06: after CR-01's fail-closed auth fix, an empty token map means the
                 // server is enabled but permanently unreachable (no token can ever match) —
@@ -1877,8 +1872,7 @@ async fn daemon_loop(
                     mem,
                     personas,
                     goals,
-                    token_perms,
-                    local_owner,
+                    std::sync::Arc::new(std::sync::RwLock::new(token_perms)),
                     rate_limiter.clone(),
                     &cfg.mcp_server.mount_path,
                 );
@@ -1901,6 +1895,31 @@ async fn daemon_loop(
                 }
                 None
             };
+
+            // Runtime-backed turns reach Bastion's memory, personas and
+            // capabilities through an MCP bridge of their own (loopback, one
+            // in-memory token per owner) — only when an adapter that can take
+            // one (`acp_*`) is registered. Built here, after every capability
+            // is registered, because `CapabilityRegistry` clones are snapshots.
+            #[cfg(feature = "mcp-server")]
+            if runtime_registry_for_product
+                .descriptors()
+                .iter()
+                .any(|d| d.id.starts_with("acp_"))
+            {
+                match bastion::harness_bridge::HarnessBridge::start(
+                    Arc::new(agent.capability_registry.clone()),
+                    Arc::new(bastion_runtime::capability::CapabilityRegistry::new()),
+                    agent.memory.clone(),
+                    Arc::new(registry_for_product.clone()),
+                    goals_for_product.clone(),
+                )
+                .await
+                {
+                    Ok(bridge) => agent.runtime_mcp_bridge = Some(bridge.as_runtime_bridge()),
+                    Err(e) => tracing::warn!(event = "harness_bridge_failed", error = %e),
+                }
+            }
 
             // CR-02: create an OtcStore and pass it to serve_with_mesh so skill commands
             // can insert BAST-XXXX codes for /auth/exchange and /mesh/pair.

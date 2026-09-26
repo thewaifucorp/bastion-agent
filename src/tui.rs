@@ -595,8 +595,12 @@ const BACKEND_COMMANDS: &[CommandInfo] = &[
         "Bastion tool loop (provider/model via /model)",
     ),
     pet_option(
+        "/backend use acp_claude",
+        "Claude Code subscription — Bastion approves each edit",
+    ),
+    pet_option(
         "/backend use acpx_claude",
-        "Claude Code subscription runtime",
+        "Claude Code subscription via acpx (Claude decides its own permissions)",
     ),
     pet_option(
         "/backend use codex_app_server",
@@ -1464,7 +1468,7 @@ fn connect_subscription_target(
     text: &str,
 ) -> Option<(&'static str, &'static [&'static str], &'static str)> {
     match text {
-        "/connect claude" => Some(("claude", &["auth", "login"], "acpx_claude")),
+        "/connect claude" => Some(("claude", &["auth", "login"], "acp_claude")),
         "/connect codex" => Some(("codex", &["login"], "codex_app_server")),
         "/connect opencode" => Some(("opencode", &["auth", "login"], "acpx_opencode")),
         _ => None,
@@ -2538,6 +2542,7 @@ mod tests {
             .map(|c| c.name())
             .collect();
         assert_eq!(spaced.len(), BACKEND_COMMANDS.len() - 1);
+        assert!(spaced.contains(&"/backend use acp_claude"));
         assert!(spaced.contains(&"/backend use acpx_claude"));
         assert!(spaced.contains(&"/backend use codex_app_server"));
         assert!(spaced.contains(&"/backend use acpx_opencode"));
@@ -2583,7 +2588,7 @@ mod tests {
     fn connect_subscription_target_matches_exact_form_only() {
         assert_eq!(
             connect_subscription_target("/connect claude"),
-            Some(("claude", ["auth", "login"].as_slice(), "acpx_claude"))
+            Some(("claude", ["auth", "login"].as_slice(), "acp_claude"))
         );
         assert_eq!(
             connect_subscription_target("/connect codex"),

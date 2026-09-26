@@ -93,6 +93,37 @@ runs on the same machine as the daemon (or port 1455 is forwarded to it); if
 The connector is `Experimental`: it works end to end, but it signs in as the
 Codex CLI's public OAuth client against an endpoint OpenAI does not document.
 
+### Claude Code subscription
+
+Claude Code can serve the conversation under your own Claude login while
+Bastion keeps the permissions, the memory and the record:
+
+1. Install Claude Code and log in (`claude auth login`, or `bastion connect
+   claude`).
+2. `/backend use acp_claude` (installer option 2 sets it for a new install).
+
+Bastion speaks ACP to Claude Code directly (`claude-agent-acp` when it is on
+`PATH`, otherwise `npx -y @agentclientprotocol/claude-agent-acp@0.81.2`), so:
+
+- **It asks before it acts.** Before Claude writes a file or runs a command,
+  the turn stops and shows what it wants to do, with the diff. Reply `sim` to
+  allow or `não` to deny; any other message denies it and becomes your next
+  prompt; with no answer in 10 minutes it is denied. A message from an
+  unauthenticated channel never answers it.
+- **It keeps its context** for the whole conversation; the Claude session
+  closes after 30 minutes idle.
+- **It reaches Bastion** — memory, personas, capabilities — through Bastion's
+  own MCP server, on a loopback port with a per-owner token that lives only in
+  the daemon's memory. Capabilities that need approval still ask.
+- **It does not load your personal Claude Code setup**: no settings or
+  `allow` rules, no hooks, plugins, skills, no MCP servers from your account,
+  no auto memory. Only your login is used.
+- It runs in the sandbox, in `<workspace>/<owner>`, with network (it has to
+  reach Anthropic). Each answer ends with a line naming the files it edited.
+
+`acpx_claude` is still available; through `acpx`, Claude decides its own
+permissions and Bastion never sees them.
+
 ### Workspace
 
 The one directory Bastion's tools (the git pack, subprocess extensions) and
