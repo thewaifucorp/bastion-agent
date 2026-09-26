@@ -85,6 +85,8 @@ pub const OLLAMA_DISPLAY_NAME: &str = "Ollama";
 /// Provider kinds in the order `GET /models` groups them.
 pub const PROVIDER_KIND_ORDER: &[&str] = &[
     "anthropic",
+    "bedrock",
+    "vertex",
     "openai",
     "gemini",
     "groq",
@@ -115,6 +117,33 @@ const STATIC_MODELS: &[(&str, &str)] = &[
     ("claude-opus-4-5", "Claude Opus 4.5"),
     ("claude-sonnet-4-5", "Claude Sonnet 4.5"),
     ("claude-haiku-4-5", "Claude Haiku 4.5"),
+    // Claude on Amazon Bedrock (prefix `bedrock/`, then a Bedrock model or
+    // inference-profile id) — AWS credentials, not an Anthropic key
+    (
+        "bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0",
+        "Claude Opus 4.5 (Bedrock)",
+    ),
+    (
+        "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "Claude Sonnet 4.5 (Bedrock)",
+    ),
+    (
+        "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "Claude Haiku 4.5 (Bedrock)",
+    ),
+    // Claude on Google Vertex AI (prefix `vertex/`) — Google ADC
+    (
+        "vertex/claude-opus-4-5@20251101",
+        "Claude Opus 4.5 (Vertex)",
+    ),
+    (
+        "vertex/claude-sonnet-4-5@20250929",
+        "Claude Sonnet 4.5 (Vertex)",
+    ),
+    (
+        "vertex/claude-haiku-4-5@20251001",
+        "Claude Haiku 4.5 (Vertex)",
+    ),
     // openai — GPT/o-series (prefixes `gpt`/`o1`/`o3`)
     ("gpt-5.1", "GPT-5.1"),
     ("gpt-5", "GPT-5"),
