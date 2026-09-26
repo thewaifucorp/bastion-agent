@@ -8,6 +8,33 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+### Added
+
+- **Native desktop install — `installer.sh --native`** (Linux, macOS). Builds
+  `bastion`, keeps state in `<install>/data`, writes `bastion.native.toml`
+  (merged over `bastion.toml` through the new `BASTION_CONFIG_OVERLAY`) with
+  `[sandbox] mode = "required"`, installs the sidecars and registers a user
+  service (systemd `--user` unit with `NoNewPrivileges`, or a launchd agent).
+  `--with-voice` adds the voice sidecar. `bastion connect` logs in with the
+  host's own CLI (`BASTION_NATIVE=1`), and `bastion update --apply` updates a
+  native install natively, rolling back on a failed health check.
+- **Native sidecars on Unix sockets, confined with no network**
+  (`[sidecars] enabled`, `src/sidecars.rs`). The daemon supervises memupalace,
+  skill-writer, self-improving and voice (restart with backoff, stderr to
+  `data/sidecars/logs/`), each under the OS sandbox with the network blocked:
+  code and virtualenv read-only, its own data dir writable (skill-writer also
+  the skills dir, self-improving reads it), models downloaded at install time.
+  Each listens on `<run dir>/<name>.sock` (`MCP_UNIX_SOCKET`; the run dir is
+  `BASTION_RUN_DIR`, else `$XDG_RUNTIME_DIR/bastion`, else
+  `$TMPDIR/bastion-<uid>` — short, because socket paths are capped at ~104
+  bytes; longer paths are refused with a clear error) and reaches
+  memupalace and the daemon's `/api/infer` through their sockets
+  (`MEMUPALACE_SOCKET`, `CORE_GATEWAY_SOCKET`); the daemon connects with
+  `url = "unix:<socket>"`. `/api/infer` listens on `<run dir>/infer.sock` and
+  opens TCP only when `BASTION_INFER_ADDR` is set explicitly. Without a
+  sandbox no sidecar starts. In a container nothing changes: without those
+  variables the sidecars listen on TCP as before.
+
 ### Security
 
 - **OS sandbox for everything the daemon runs** (`bastion-sandbox`, new

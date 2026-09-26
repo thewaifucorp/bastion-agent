@@ -51,6 +51,11 @@ async fn a_native_sidecar_runs_confined_on_a_unix_socket() {
     std::fs::create_dir_all(&skills).unwrap();
     // This test binary owns its process: nothing else reads these.
     std::env::set_var("BASTION_DATA_DIR", data.path());
+    let run = tempfile::Builder::new()
+        .prefix("bst")
+        .tempdir_in("/tmp")
+        .unwrap();
+    std::env::set_var("BASTION_RUN_DIR", run.path());
     std::env::set_var("SKILLS_DIR", &skills);
 
     let servers = bastion::sidecars::start(&SidecarsConfig {
@@ -58,10 +63,10 @@ async fn a_native_sidecar_runs_confined_on_a_unix_socket() {
         root: Some(root.clone()),
     })
     .await;
-    let entry = servers.get("self-improving").expect("sidecar registered");
+    let entry = servers.get("self_improving").expect("sidecar registered");
     assert!(entry.url.starts_with("unix:"), "{}", entry.url);
     assert!(
-        data.path().join("run/self-improving.sock").exists(),
+        run.path().join("self-improving.sock").exists(),
         "socket never appeared; log: {}",
         std::fs::read_to_string(root.join("logs/self-improving.log")).unwrap_or_default()
     );
@@ -69,7 +74,7 @@ async fn a_native_sidecar_runs_confined_on_a_unix_socket() {
     let client = McpClient::connect_from_config(&servers).await.unwrap();
     assert_eq!(
         client.registry().server_for("observe_usage"),
-        Some("self-improving"),
+        Some("self_improving"),
         "tools: {:?}",
         client.registry().list_tool_names()
     );

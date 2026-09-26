@@ -995,8 +995,14 @@ pub fn personas_install_dir() -> String {
 ///   BASTION__AGENT__DEFAULT_MODEL=claude-opus-4-7
 ///   BASTION__SESSION__DB_PATH=/data/sessions.db
 pub fn load_config(path: &str) -> anyhow::Result<BastionConfig> {
-    let cfg = config::Config::builder()
-        .add_source(config::File::with_name(path))
+    let mut builder = config::Config::builder().add_source(config::File::with_name(path));
+    // `BASTION_CONFIG_OVERLAY`: a second TOML file merged over the first —
+    // how the native installer adds `[sandbox]` and `[sidecars]` without
+    // editing the tracked bastion.toml. Named explicitly, so it must exist.
+    if let Some(overlay) = std::env::var_os("BASTION_CONFIG_OVERLAY").filter(|v| !v.is_empty()) {
+        builder = builder.add_source(config::File::from(std::path::PathBuf::from(overlay)));
+    }
+    let cfg = builder
         .add_source(config::Environment::with_prefix("BASTION").separator("__"))
         .build()?;
     let cfg: BastionConfig = cfg.try_deserialize()?;

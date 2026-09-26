@@ -5,7 +5,8 @@
 //! In a container deployment Compose runs them on an `internal: true`
 //! network: they can talk to each other and to the daemon but not to the
 //! Internet. Natively the same guarantee comes from Unix sockets: every
-//! sidecar listens on `<data>/run/<name>.sock` (`MCP_UNIX_SOCKET`), reaches
+//! sidecar listens on `<run dir>/<name>.sock` (`MCP_UNIX_SOCKET`; see
+//! [`run_dir`]), reaches
 //! memupalace and the daemon's `/api/infer` through their sockets too
 //! (`MEMUPALACE_SOCKET`, `CORE_GATEWAY_SOCKET`), and the daemon's MCP client
 //! connects with `url = "unix:<socket>"`. No TCP port is opened, so nothing
@@ -34,13 +35,62 @@ use crate::config::SidecarsConfig;
 /// The sidecars this module knows how to launch.
 pub const KNOWN: &[&str] = &["memupalace", "skill-writer", "self-improving", "voice"];
 
+/// The `[mcp.servers.<key>]` name a sidecar has in bastion.toml and in the
+/// container deployment (`skill_writer`, not `skill-writer`), so native and
+/// container installs register the same server names.
+pub fn mcp_server_key(name: &str) -> String {
+    name.replace('-', "_")
+}
+
 /// Where the daemon's own `/api/infer` listens when sidecars run natively.
 pub fn infer_socket_path() -> PathBuf {
     run_dir().join("infer.sock")
 }
 
-fn run_dir() -> PathBuf {
-    crate::config::data_root().join("run")
+/// Where the sockets live: `BASTION_RUN_DIR`, else `$XDG_RUNTIME_DIR/bastion`
+/// (Linux: `/run/user/<uid>`, a per-user tmpfs), else
+/// `<temp dir>/bastion-<uid>`. Deliberately not under the data dir: a Unix
+/// socket path is limited to ~104 bytes (macOS) / 108 (Linux), and a data
+/// dir under a long home path would exceed it. Created 0700 before use.
+pub fn run_dir() -> PathBuf {
+    resolve_run_dir(|key| std::env::var_os(key), current_uid())
+}
+
+fn resolve_run_dir(env: impl Fn(&str) -> Option<std::ffi::OsString>, uid: Option<u32>) -> PathBuf {
+    let set = |key: &str| env(key).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if let Some(explicit) = set("BASTION_RUN_DIR") {
+        return explicit;
+    }
+    if let Some(runtime) = set("XDG_RUNTIME_DIR") {
+        return runtime.join("bastion");
+    }
+    let suffix = uid
+        .map(|u| format!("bastion-{u}"))
+        .unwrap_or_else(|| "bastion".into());
+    std::env::temp_dir().join(suffix)
+}
+
+/// The operator's uid, read off their home directory (no `unsafe` libc call).
+fn current_uid() -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::env::var_os("HOME")
+            .and_then(|home| std::fs::metadata(home).ok())
+            .map(|m| m.uid())
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// Longest socket path both Linux (108) and macOS (104) accept, with room
+/// for the terminating NUL.
+const MAX_SOCKET_PATH: usize = 103;
+
+fn socket_path_fits(path: &Path) -> bool {
+    path.as_os_str().len() <= MAX_SOCKET_PATH
 }
 
 /// Paths of one installed sidecar tree.
@@ -296,6 +346,16 @@ pub async fn start(cfg: &SidecarsConfig) -> HashMap<String, McpServerEntry> {
             }
         }
         let socket = layout.socket(name);
+        if !socket_path_fits(&socket) {
+            tracing::error!(
+                event = "sidecar_socket_path_too_long",
+                sidecar = %name,
+                socket = %socket.display(),
+                "Unix socket paths are limited to {MAX_SOCKET_PATH} bytes; set BASTION_RUN_DIR \
+                 to a shorter directory"
+            );
+            continue;
+        }
         let _ = std::fs::remove_file(&socket);
         let ready_within = launch.ready_within;
         tokio::spawn(supervise(
@@ -304,7 +364,8 @@ pub async fn start(cfg: &SidecarsConfig) -> HashMap<String, McpServerEntry> {
             layout.log(name),
             sandbox.clone(),
         ));
-        servers.insert(name.clone(), mcp_entry(name, &socket));
+        let key = mcp_server_key(name);
+        servers.insert(key.clone(), mcp_entry(&key, &socket));
         waits.push((name.clone(), socket, ready_within));
     }
     for (name, socket, ready_within) in waits {
@@ -455,7 +516,47 @@ mod tests {
     }
 
     #[test]
+    fn run_dir_prefers_explicit_then_runtime_dir_then_a_per_user_temp_dir() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |key: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| std::ffi::OsString::from(v))
+            }
+        };
+        assert_eq!(
+            resolve_run_dir(
+                env(&[
+                    ("BASTION_RUN_DIR", "/r"),
+                    ("XDG_RUNTIME_DIR", "/run/user/1000")
+                ]),
+                Some(1000)
+            ),
+            PathBuf::from("/r")
+        );
+        assert_eq!(
+            resolve_run_dir(env(&[("XDG_RUNTIME_DIR", "/run/user/1000")]), Some(1000)),
+            PathBuf::from("/run/user/1000/bastion")
+        );
+        assert_eq!(
+            resolve_run_dir(env(&[]), Some(501)),
+            std::env::temp_dir().join("bastion-501")
+        );
+    }
+
+    #[test]
+    fn socket_paths_over_the_os_limit_are_refused() {
+        assert!(socket_path_fits(Path::new(
+            "/run/user/1000/bastion/self-improving.sock"
+        )));
+        let long = format!("/{}/self-improving.sock", "x".repeat(100));
+        assert!(!socket_path_fits(Path::new(&long)));
+    }
+
+    #[test]
     fn mcp_entries_use_the_unix_scheme_and_are_local() {
+        assert_eq!(mcp_server_key("skill-writer"), "skill_writer");
         let e = mcp_entry("voice", Path::new("/data/run/voice.sock"));
         assert_eq!(e.url, "unix:/data/run/voice.sock");
         assert!(e.is_local);

@@ -344,6 +344,32 @@ fn connect_subscription(
         "--setup-token only applies to `bastion connect claude`"
     );
 
+    // Native install: the CLIs and their logins are the operator's own, on
+    // this host — log in directly, no container in between.
+    if std::env::var("BASTION_NATIVE").as_deref() == Ok("1") {
+        anyhow::ensure!(
+            !import_host,
+            "--import-host copies host logins into the container; a native install already \
+             uses them"
+        );
+        let login_args = connect_login_args(provider, setup_token)?;
+        let status = ProcessCommand::new(provider).args(login_args).status()?;
+        anyhow::ensure!(status.success(), "{provider} login exited with {status}");
+        let (verify_program, verify_args) =
+            bastion::auth_profile_registry::host_cli_status_args(provider)
+                .expect("provider already validated as claude|codex|opencode above");
+        let verified = ProcessCommand::new(verify_program)
+            .args(verify_args)
+            .status()
+            .is_ok_and(|s| s.success());
+        anyhow::ensure!(
+            verified,
+            "{provider} login finished but its status check failed"
+        );
+        println!("✔ {provider} autenticado.");
+        return Ok(());
+    }
+
     let project_dir = bastion::compose::locate_project_dir().ok_or_else(|| {
         anyhow::anyhow!(
             "could not locate the Bastion docker-compose project; run from the install dir or set BASTION_COMPOSE_DIR"
@@ -441,6 +467,8 @@ async fn self_update(apply: bool, yes: bool) -> anyhow::Result<()> {
         .arg("--release")
         .arg(tag)
         .arg("--non-interactive")
+        // A native install updates natively (rebuild, sidecars, service).
+        .args((std::env::var("BASTION_NATIVE").as_deref() == Ok("1")).then_some("--native"))
         .status()
         .context("running the Bastion installer")?;
     anyhow::ensure!(status.success(), "Bastion update exited with {status}");
@@ -532,10 +560,14 @@ fn main() -> anyhow::Result<()> {
     // First, before the async runtime or any env/config read: this binary is
     // also the sandbox helper every confined tool and harness starts through.
     bastion::sandbox::forward_helper_invocation();
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?
-        .block_on(async_main())
+        .build()?;
+    let result = runtime.block_on(async_main());
+    // Bounded: a blocking stdin read (a terminal, a socket) would otherwise
+    // keep the runtime — and the process — alive after SIGTERM forever.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(5));
+    result
 }
 
 async fn async_main() -> anyhow::Result<()> {
@@ -607,7 +639,6 @@ async fn async_main() -> anyhow::Result<()> {
     let cfg = bastion::config::load_config(&config_path)?;
     let workspace_root = bastion::config::apply_workspace_default(&cfg.workspace)
         .map_err(|e| anyhow::anyhow!("cannot create the workspace directory: {e}"))?;
-    bastion::sandbox::init(cfg.sandbox.mode)?;
 
     // Init structured JSON logging
     std::fs::create_dir_all(
@@ -625,6 +656,8 @@ async fn async_main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(log_file)
         .init();
+    // After logging, so the detected backend (or why none) is recorded.
+    bastion::sandbox::init(cfg.sandbox.mode)?;
 
     // Init SessionManager
     let db_path = cfg.session.db_path.clone();
@@ -763,6 +796,15 @@ async fn async_main() -> anyhow::Result<()> {
     // Native install: start the sidecars (confined, no network, on Unix
     // sockets) first, and connect to them alongside the configured servers.
     let mut mcp_servers = cfg.mcp.servers.clone();
+    if !cfg.sidecars.enabled.is_empty() {
+        // Natively the known sidecars are served here or not at all: drop
+        // bastion.toml's container/loopback entries for them.
+        mcp_servers.retain(|name, _| {
+            !bastion::sidecars::KNOWN
+                .iter()
+                .any(|known| bastion::sidecars::mcp_server_key(known) == *name)
+        });
+    }
     mcp_servers.extend(bastion::sidecars::start(&cfg.sidecars).await);
     let mut mcp_client = McpClient::connect_from_config(&mcp_servers).await?;
 
