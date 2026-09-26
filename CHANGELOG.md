@@ -8,6 +8,19 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+### Changed
+
+- Pins `bastion-core` at `v0.5.0` (`b8073c9`): `bastion-sandbox`, confined
+  harnesses (`HarnessConfinement`), MCP over Unix sockets, runtime workspace
+  base — what the sandbox, sidecar and native-install entries below build on.
+
+- Pins `bastion-core` at `v0.4.0` (`ea2ece1`): the direct ACP adapter
+  (`AcpAgentRuntime`, bastion-agent-runtime 0.2.0), proposed diffs on
+  `RuntimeEvent::PermissionRequest`, and STABLE/VOLATILE system-prompt caching
+  (bastion-types 0.3.0, bastion-runtime 0.2.6). No behavior change for an
+  existing deployment; test fixtures that build `PermissionRequest` now set
+  `edits`.
+
 ### Added
 
 - **Native desktop install — `installer.sh --native`** (Linux, macOS). Builds
@@ -34,6 +47,20 @@ for how that differs from the library crates it depends on).
   opens TCP only when `BASTION_INFER_ADDR` is set explicitly. Without a
   sandbox no sidecar starts. In a container nothing changes: without those
   variables the sidecars listen on TCP as before.
+
+- **Codex subscription login in the browser.** `[subscriptions.codex] login =
+  "browser"` makes `/auth connect codex` print an authorize URL and receive the
+  redirect on `127.0.0.1:1455` (falling back to `1457`, the only two ports
+  OpenAI accepts), instead of showing a device code. The listener binds
+  loopback only, before the URL is shown; a callback is checked against the
+  login's state before anything else, stray requests and foreign states are
+  answered without ending the login, and a refusal at OpenAI ends it as
+  `ReauthRequired` with nothing exchanged. The browser tab shows the real
+  outcome, after the exchange. Default stays `device`, which is the only mode
+  that works on a VPS or in a container: upgrading changes nothing.
+- `docs/{en/configuration.md,pt-br/configuracao.md}` document the subscription
+  flow end to end (`/auth connect`, `/model codex/<model>@<profile>`,
+  `/model status`) and how it differs from the TUI's `/connect codex`.
 
 ### Security
 
@@ -76,31 +103,6 @@ for how that differs from the library crates it depends on).
   approved per call. `git-capability` 1.1.0 (software-sdlc pack) declares
   both; an install of 1.0.0 keeps working read-only (logged as
   `git_write_not_declared`) until the pack is reinstalled.
-
-### Added
-
-- **Codex subscription login in the browser.** `[subscriptions.codex] login =
-  "browser"` makes `/auth connect codex` print an authorize URL and receive the
-  redirect on `127.0.0.1:1455` (falling back to `1457`, the only two ports
-  OpenAI accepts), instead of showing a device code. The listener binds
-  loopback only, before the URL is shown; a callback is checked against the
-  login's state before anything else, stray requests and foreign states are
-  answered without ending the login, and a refusal at OpenAI ends it as
-  `ReauthRequired` with nothing exchanged. The browser tab shows the real
-  outcome, after the exchange. Default stays `device`, which is the only mode
-  that works on a VPS or in a container: upgrading changes nothing.
-- `docs/{en/configuration.md,pt-br/configuracao.md}` document the subscription
-  flow end to end (`/auth connect`, `/model codex/<model>@<profile>`,
-  `/model status`) and how it differs from the TUI's `/connect codex`.
-
-### Changed
-
-- Pins `bastion-core` at `v0.4.0` (`ea2ece1`): the direct ACP adapter
-  (`AcpAgentRuntime`, bastion-agent-runtime 0.2.0), proposed diffs on
-  `RuntimeEvent::PermissionRequest`, and STABLE/VOLATILE system-prompt caching
-  (bastion-types 0.3.0, bastion-runtime 0.2.6). No behavior change for an
-  existing deployment; test fixtures that build `PermissionRequest` now set
-  `edits`.
 
 ### Fixed
 
