@@ -10,7 +10,7 @@ for how that differs from the library crates it depends on).
 
 ### Changed
 
-- Pins `bastion-core` at `v0.6.0` (`PENDING`): governed runtime-backed
+- Pins `bastion-core` at `v0.6.0` (`4af1d42`): governed runtime-backed
   conversation (parked permission requests, live harness sessions, MCP
   bridge), `acp_claude` isolation from the operator's Claude Code setup
   (bastion-runtime 0.4.0, bastion-agent-runtime 0.3.0).
