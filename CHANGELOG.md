@@ -10,6 +10,22 @@ for how that differs from the library crates it depends on).
 
 ### Changed
 
+- Pins `bastion-core` at `v0.6.1` (`PENDING`): Claude on Bedrock/Vertex in
+  the native loop, `memory_store`/`memory_revoke`, direct-API fixes
+  (bastion-providers 0.2.7, bastion-cognition 0.2.2, bastion-runtime 0.4.1).
+- **Claude in the native loop through a cloud account.** `/model
+  bedrock/<model id>` and `/model vertex/<model id>` (catalog entries for the
+  4.5 family; any id works), `/connect bedrock` and `/connect vertex` with the
+  credential steps, and the `/connect` overview says whether a Bedrock region
+  or Vertex project is set. See Configuration → "Claude in Bastion's own loop".
+- **The agent can finally save its identity.** `memory_store` and
+  `memory_revoke` are registered: the onboarding had been asking for a tool
+  that did not exist, so every agent asked for an identity forever (and a
+  harness answered by writing its own memory files). Core beliefs are only
+  the identity; revoking asks the owner.
+- The direct Anthropic provider no longer prints every token to the daemon's
+  stdout and no longer drops server-sent events split across network reads.
+
 - Pins `bastion-core` at `v0.6.0` (`4af1d42`): governed runtime-backed
   conversation (parked permission requests, live harness sessions, MCP
   bridge), `acp_claude` isolation from the operator's Claude Code setup
