@@ -1208,6 +1208,7 @@ pub async fn serve(
         None, // control_plane_routes — this self-contained entry point mounts none
         None, // loadout_routes — likewise
         None, // extension_ui_routes — likewise
+        None, // device_routes — likewise
         None,
         None,
         readiness,
@@ -1260,6 +1261,10 @@ pub async fn serve_with_mesh(
     // SPA, `webapp::router`). `None` — the default for every deployment that
     // has not opted in — mounts nothing at all, exactly as before.
     extension_ui_routes: Option<axum::Router>,
+    // Multi-device: the `/node` WebSocket and `/devices/*` API, pre-built over
+    // `PrimaryDevices` by `daemon_loop` and merged like the routers above.
+    // `None` for a single-device install — nothing is mounted.
+    device_routes: Option<axum::Router>,
     // WhatsApp Cloud API config (CHAN-01). None = WhatsApp routes are mounted but
     // reject with 404/403 rather than panicking (daemon startup wiring lands in
     // Plan 10-09).
@@ -1350,6 +1355,9 @@ pub async fn serve_with_mesh(
     }
     if let Some(extension_ui) = extension_ui_routes {
         app = app.merge(extension_ui);
+    }
+    if let Some(device_routes) = device_routes {
+        app = app.merge(device_routes);
     }
     // Observability frontend A2: the embedded web app (or its graceful
     // "not built" answer) — stateless, always mounted.

@@ -166,6 +166,36 @@ enum Command {
         #[arg(long)]
         apply_product_state: bool,
     },
+    /// Multi-device: set this installation up as the owner's primary or as a
+    /// node of it (spec multi-device-brain-and-nodes).
+    Node {
+        #[command(subcommand)]
+        action: NodeAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum NodeAction {
+    /// Make this installation the owner's primary (creates the owner key and
+    /// a registry with only this device, at epoch 1).
+    Init {
+        /// Owner id for this brain (default: BASTION_OWNER_ID or "_local").
+        #[arg(long)]
+        owner: Option<String>,
+    },
+    /// Pair this installation as a node of a primary.
+    Pair {
+        /// The primary's base URL, e.g. https://linux-box.tailnet.ts.net:8443
+        #[arg(long)]
+        primary: String,
+        /// A one-time pairing code from `bastion node pairing-code` on the primary.
+        #[arg(long)]
+        code: String,
+    },
+    /// Serve the primary as a node until stopped.
+    Run,
+    /// Promote this node to primary (owner action, done locally).
+    Promote,
 }
 
 #[derive(Subcommand)]
@@ -712,6 +742,45 @@ async fn async_main() -> anyhow::Result<()> {
         }
     }
 
+    // Multi-device (spec multi-device-brain-and-nodes): the `node` commands
+    // are one-shot CLI actions over the devices state directory, handled here
+    // before the daemon composition below (like `auth`). `run`/`promote` need
+    // the session db path; `init`/`pair` do not.
+    if let Command::Node { action } = &command {
+        let devices_cfg = &cfg.devices;
+        match action {
+            NodeAction::Init { owner } => {
+                let owner_id = owner.clone().unwrap_or_else(|| {
+                    std::env::var("BASTION_OWNER_ID").unwrap_or_else(|_| {
+                        bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string()
+                    })
+                });
+                let state = bastion::devices::state::DeviceState::open(devices_cfg.state_dir())?;
+                let device = bastion::devices::state::default_device_id();
+                bastion::devices::primary::init_primary(
+                    &state,
+                    &owner_id,
+                    device.clone(),
+                    devices_cfg.address.clone(),
+                )?;
+                println!(
+                    "This installation is now the primary for owner {owner_id:?} (device {device}). \
+                     Set [devices] enabled = true and restart the daemon to serve nodes."
+                );
+            }
+            NodeAction::Pair { primary, code } => {
+                bastion::devices::node_cmd::pair(devices_cfg, primary, code).await?;
+            }
+            NodeAction::Run => {
+                bastion::devices::node_cmd::run(devices_cfg).await?;
+            }
+            NodeAction::Promote => {
+                bastion::devices::node_cmd::promote(devices_cfg, &db_path).await?;
+            }
+        }
+        return Ok(());
+    }
+
     // Adaptive Execution (US-201): durable store for Pursue tasks, sharing the
     // one session DB. Pending tasks enqueued here are drained by the executor.
     let task_store: Arc<dyn TaskStore> = {
@@ -970,11 +1039,42 @@ async fn async_main() -> anyhow::Result<()> {
             events_tx.clone(),
         ));
 
+    // Multi-device: if this installation is set up as the owner's primary,
+    // load the hub + event log now, so the shared memory below is wrapped to
+    // log every belief write for the replica nodes (BMD-16).
+    let devices_primary: Option<Arc<bastion::devices::primary::PrimaryDevices>> =
+        if cfg.devices.enabled {
+            let state = bastion::devices::state::DeviceState::open(cfg.devices.state_dir())?;
+            match bastion::devices::primary::PrimaryDevices::load(state, &db_path)? {
+                Some(primary) => {
+                    tracing::info!(
+                        event = "devices_primary_loaded",
+                        device = %primary.device(),
+                        epoch = primary.hub().epoch()
+                    );
+                    Some(primary)
+                }
+                None => {
+                    tracing::info!(
+                        event = "devices_enabled_as_node",
+                        "[devices] enabled but this device is a node; run `bastion node run`"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
     // Init shared memory
-    let memory: bastion_memory::SharedMemory = Arc::new(RwLock::new(Box::new(SqliteMemory::new(
-        &db_path,
-    ))
-        as Box<dyn bastion_memory::Memory>));
+    let memory_backend: Box<dyn bastion_memory::Memory> = match &devices_primary {
+        Some(primary) => primary.wrap_memory(Box::new(SqliteMemory::new(&db_path))),
+        None => Box::new(SqliteMemory::new(&db_path)),
+    };
+    let memory: bastion_memory::SharedMemory = Arc::new(RwLock::new(memory_backend));
+    if let Some(primary) = &devices_primary {
+        primary.attach_memory(memory.clone());
+    }
 
     // Init goal engine
     let goals = GoalEngine::new(&db_path, ScoringConfig::default());
@@ -1126,6 +1226,18 @@ async fn async_main() -> anyhow::Result<()> {
     {
         agent.capability_registry.register(capability)?;
     }
+    // Multi-device: a remote tool for every capability the owner granted a
+    // node (`<device>_<capability>`), so the model can drive the owner's other
+    // devices. Each still passes persona/egress/approval at the registry
+    // boundary before the hub sends it (BMD-11).
+    if let Some(primary) = &devices_primary {
+        for capability in primary.remote_capabilities().await {
+            let name = capability.name().to_string();
+            if let Err(e) = agent.capability_registry.register(capability) {
+                tracing::warn!(event = "devices_remote_cap_skipped", name = %name, error = %e);
+            }
+        }
+    }
 
     // Build the
     // RuntimeRegistry from whatever AgentRuntime adapters are actually
@@ -1272,6 +1384,7 @@ async fn async_main() -> anyhow::Result<()> {
         }
         Command::Connect { .. } => unreachable!("connect is handled before daemon initialization"),
         Command::Auth { .. } => unreachable!("auth is handled before daemon initialization"),
+        Command::Node { .. } => unreachable!("node is handled before daemon initialization"),
         Command::Update { .. } => unreachable!("update is handled before daemon initialization"),
         Command::Updater { .. } => unreachable!("updater is handled before daemon initialization"),
         Command::Completions { .. } => {
@@ -1305,6 +1418,7 @@ async fn async_main() -> anyhow::Result<()> {
                 events_tx,
                 companion_handle,
                 pursue_task_model_hint,
+                devices_primary,
             )
             .await?;
         }
@@ -1581,9 +1695,19 @@ async fn daemon_loop(
     // loop spawns via `run_coding_pursue`/`run_delegated`. `None` (no rule
     // configured) is byte-identical to pre-seam behavior.
     pursue_task_model_hint: Option<String>,
+    // Multi-device: `Some` when this installation serves as the owner's
+    // primary (loaded in `main()`). It carries the hub, event log, registry
+    // and reconciliation; here it mounts the `/node` + `/devices` routes and
+    // spawns the replicator/reconciler.
+    devices_primary: Option<Arc<bastion::devices::primary::PrimaryDevices>>,
 ) -> anyhow::Result<()> {
     use bastion::agent::command::{CommandResources, CommandResult};
     use tokio::io::{AsyncBufReadExt, BufReader};
+
+    // Multi-device: start the replicator + reconciler for this primary.
+    if let Some(primary) = &devices_primary {
+        primary.spawn_background();
+    }
 
     // A4 S2: staged `secret_set` values live ONLY in this in-memory pen
     // between the web POST and the console approve (see
@@ -2178,6 +2302,11 @@ async fn daemon_loop(
                 control_plane_delivery_store_for_loop,
                 std::time::Duration::from_secs(5),
             ));
+            // Multi-device: the `/node` WebSocket and the `/devices/*` API,
+            // the owner half gated by the daemon token (BMD-08..).
+            let device_routes = devices_primary.as_ref().map(|primary| {
+                bastion::devices::routes::router(primary.clone(), lifecycle_auth.clone())
+            });
             tokio::spawn(async move {
                 if let Err(e) = bastion::channel::webhook::serve_with_mesh(
                     h,
@@ -2195,6 +2324,7 @@ async fn daemon_loop(
                     control_plane_routes,
                     loadout_routes,
                     extension_ui_routes,
+                    device_routes,
                     whatsapp_config,
                     composio_oauth.clone(),
                     readiness_for_webhook,
