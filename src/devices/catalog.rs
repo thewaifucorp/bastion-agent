@@ -30,21 +30,18 @@ const MAX_READ: u64 = 256 * 1024;
 const RUN_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Every primitive's descriptor, known to the primary without asking a node.
-/// The Windows-only UI Automation primitives (`ui.snapshot`, `ui.act`) are
-/// advertised only on Windows, where a node can actually run them.
+/// Platform-independent on purpose: the primary (say, Linux) registers the
+/// tools of a Windows node from this list, so the UI Automation primitives
+/// are always here. Only [`node_capabilities`] is limited to what this host
+/// can run; a node asked for something it lacks answers `UnknownCapability`.
 pub fn descriptors() -> Vec<CapabilityDescriptor> {
-    #[allow(unused_mut)]
-    let mut descriptors = vec![
+    vec![
         SystemRun.descriptor(),
         FileRead.descriptor(),
         FileWrite.descriptor(),
-    ];
-    #[cfg(windows)]
-    {
-        descriptors.push(super::ui::snapshot_descriptor());
-        descriptors.push(super::ui::act_descriptor());
-    }
-    descriptors
+        super::ui::snapshot_descriptor(),
+        super::ui::act_descriptor(),
+    ]
 }
 
 /// The primitives this node can actually run.
@@ -390,9 +387,8 @@ mod tests {
     #[test]
     fn the_catalog_describes_every_primitive_once() {
         let names: Vec<String> = descriptors().into_iter().map(|d| d.name).collect();
-        #[cfg(not(windows))]
-        assert_eq!(names, [SYSTEM_RUN, FILE_READ, FILE_WRITE]);
-        #[cfg(windows)]
+        // The same on every host: a Linux primary registers a Windows
+        // node's UI tools from this list.
         assert_eq!(
             names,
             [
