@@ -15,7 +15,6 @@ use bastion_extension_protocol::{ExtensionError, ExtensionManifest, FsScope};
 use bastion_runtime::capability::{Capability, InvokeCtx};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-#[cfg(target_os = "linux")]
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

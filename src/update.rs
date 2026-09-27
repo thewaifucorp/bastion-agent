@@ -6,6 +6,7 @@
 //! health-check, and roll back the Compose deployment safely.
 
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
