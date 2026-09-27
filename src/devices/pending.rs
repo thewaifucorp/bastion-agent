@@ -39,6 +39,10 @@ pub struct EnrollmentRequest {
     pub device: DeviceId,
     /// Ed25519 public key, base64url (as in `AgentCard`).
     pub device_key: String,
+    /// The device's secrets key (age recipient, bech32), if it will keep
+    /// secrets; `None` otherwise (§5.7).
+    #[serde(default)]
+    pub secrets_recipient: Option<String>,
     pub platform: Platform,
     pub holds_replica: bool,
     pub requested_at: i64,
@@ -109,6 +113,7 @@ impl Pending {
         &self,
         device: DeviceId,
         device_key: String,
+        secrets_recipient: Option<String>,
         platform: Platform,
         holds_replica: bool,
     ) -> anyhow::Result<EnrollmentRequest> {
@@ -116,6 +121,7 @@ impl Pending {
             id: random_token(26),
             device,
             device_key,
+            secrets_recipient,
             platform,
             holds_replica,
             requested_at: now(),
@@ -178,7 +184,13 @@ mod tests {
         let state = DeviceState::open(dir.path()).unwrap();
         let pending = Pending::open(&state).unwrap();
         let r = pending
-            .add_request(DeviceId::new("pc"), "key".into(), Platform::Windows, true)
+            .add_request(
+                DeviceId::new("pc"),
+                "key".into(),
+                None,
+                Platform::Windows,
+                true,
+            )
             .unwrap();
         assert_eq!(r.id.len(), 26);
         let reopened = Pending::open(&state).unwrap();

@@ -31,9 +31,12 @@ for how that differs from the library crates it depends on).
   - `desktop/shell` (`bastion-shell`): a Windows tray app embedding the
     primary's web app in a WebView2, with a Stop that cuts the local node and a
     per-user installer.
-  - Secrets on a node (dormant credentials replicated for promotion, BMD-18,
-    BMD-29..33) are **not** in this release: a promoted device starts without
-    the owner's credentials.
+  - Secrets a node keeps, dormant until promotion (BMD-18, BMD-29..33): the
+    owner grants secrets per device (`PUT /devices/{id}/secrets`), the primary
+    seals each to the device's own secrets key, the node stores ciphertext only
+    and cannot open it while a node; `bastion node promote` with the pairing
+    passphrase installs them. A rotation reseals on reconnect; revocation wipes
+    them.
   - New Windows CI job for the daemon's device code and the UI helper.
   - Docs: [Devices](docs/en/devices.md) / [Dispositivos](docs/pt-br/dispositivos.md).
 

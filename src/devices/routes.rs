@@ -69,6 +69,7 @@ pub fn router(devices: Shared, admin: DaemonAccessAuth) -> Router {
         .route("/devices/requests/{id}/refuse", post(refuse))
         .route("/devices/{id}/grants", put(set_grants))
         .route("/devices/{id}/address", put(set_address))
+        .route("/devices/{id}/secrets", put(set_secrets))
         .route("/devices/{id}/revoke", post(revoke))
         .route("/devices/conflicts", get(conflicts))
         .route("/devices/conflicts/{id}", post(resolve_conflict))
@@ -96,6 +97,10 @@ struct EnrollBody {
     device: String,
     /// Ed25519 public key, base64url.
     device_key: String,
+    /// The device's secrets key (age recipient, bech32), if it will keep
+    /// secrets (§5.7).
+    #[serde(default)]
+    secrets_recipient: Option<String>,
     platform: Platform,
     #[serde(default)]
     holds_replica: bool,
@@ -128,6 +133,7 @@ async fn enroll(State(devices): State<Shared>, Json(body): Json<EnrollBody>) -> 
     match devices.pending().add_request(
         DeviceId::new(body.device),
         body.device_key,
+        body.secrets_recipient,
         body.platform,
         body.holds_replica,
     ) {
@@ -264,6 +270,27 @@ async fn set_address(
     Json(body): Json<AddressBody>,
 ) -> Response {
     match devices.set_address(&DeviceId::new(id), body.address).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct SecretsBody {
+    /// The names of the secrets this device may keep. Replaces its set; a
+    /// name dropped here is ungranted.
+    secrets: Vec<String>,
+}
+
+async fn set_secrets(
+    State(devices): State<Shared>,
+    Path(id): Path<String>,
+    Json(body): Json<SecretsBody>,
+) -> Response {
+    match devices
+        .set_secret_grants(&DeviceId::new(id), body.secrets)
+        .await
+    {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err(StatusCode::BAD_REQUEST, e.to_string()),
     }

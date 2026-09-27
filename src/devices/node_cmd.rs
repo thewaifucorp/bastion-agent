@@ -32,6 +32,15 @@ pub async fn pair(cfg: &DevicesConfig, primary_url: &str, code: &str) -> anyhow:
     let device = super::state::default_device_id();
     let device_key =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(identity.verifying_key_bytes());
+    // Opt in to keeping the owner's secrets, dormant until promotion (§5.7):
+    // set BASTION_SECRETS_PASSPHRASE to create this device's secrets key. The
+    // passphrase is asked again at `promote` to unwrap it; it is never stored.
+    let secrets_recipient = match std::env::var("BASTION_SECRETS_PASSPHRASE") {
+        Ok(passphrase) if !passphrase.is_empty() => {
+            Some(vault::create_secrets_key(&state, &passphrase)?)
+        }
+        _ => None,
+    };
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
@@ -47,6 +56,7 @@ pub async fn pair(cfg: &DevicesConfig, primary_url: &str, code: &str) -> anyhow:
             "code": code,
             "device": device.as_str(),
             "device_key": device_key,
+            "secrets_recipient": secrets_recipient,
             "platform": Platform::current(),
             "holds_replica": true,
         }))
@@ -138,6 +148,33 @@ pub async fn promote(cfg: &DevicesConfig, db_path: &str) -> anyhow::Result<()> {
          host to restore). Restart the daemon here to serve as primary.",
         rest.len()
     );
+
+    // Install the secrets this device kept (§5.7, BMD-29): the passphrase set
+    // when this device paired unwraps its secrets key here, with the owner
+    // present — the only path that opens them.
+    if vault::has_secrets_key(&state) {
+        match std::env::var("BASTION_SECRETS_PASSPHRASE") {
+            Ok(passphrase) if !passphrase.is_empty() => {
+                let dir = state.path("promoted-secrets");
+                let names = super::secret_sync::install_on_promote(&state, &passphrase, &dir)?;
+                if names.is_empty() {
+                    println!("No secrets were sealed to this device.");
+                } else {
+                    println!(
+                        "Installed {} secret(s) into {}. Set BASTION_SECRETS_DIR to that path so \
+                         the daemon uses them: {}.",
+                        names.len(),
+                        dir.display(),
+                        names.join(", ")
+                    );
+                }
+            }
+            _ => println!(
+                "This device holds sealed secrets. Set BASTION_SECRETS_PASSPHRASE (the passphrase \
+                 from pairing) and run `bastion node promote` again to install them."
+            ),
+        }
+    }
     if state.owner_identity()?.is_none() {
         println!(
             "Note: the owner key is not on this device, so it cannot enroll new devices or change \
@@ -145,6 +182,25 @@ pub async fn promote(cfg: &DevicesConfig, db_path: &str) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+/// On revocation (BMD-33): wipe this device's sealed secrets, its secrets key
+/// and its replica key, so nothing it held can ever be opened again.
+struct RevocationWipe {
+    state: DeviceState,
+    device: DeviceId,
+}
+
+#[async_trait::async_trait]
+impl bastion_mesh::devices::RevocationHook for RevocationWipe {
+    async fn revoked(&self) {
+        if let Err(e) = super::secret_sync::wipe(&self.state) {
+            eprintln!("bastion node: could not wipe sealed secrets: {e}");
+        }
+        if let Ok(vault) = vault::default_vault(&self.state) {
+            let _ = vault::forget_replica_key(&*vault, self.device.as_str());
+        }
+    }
 }
 
 struct Loaded {
@@ -230,7 +286,12 @@ pub async fn run(cfg: &DevicesConfig) -> anyhow::Result<()> {
         identity: loaded.identity,
         state_path: Some(loaded.state.path("node.json")),
     })?
-    .with_replica(replica);
+    .with_replica(replica)
+    .with_secrets(Arc::new(super::secret_sync::SealedSink::new(&loaded.state)))
+    .with_revocation_hook(Arc::new(RevocationWipe {
+        state: loaded.state.clone(),
+        device: loaded.device.clone(),
+    }));
     for cap in super::catalog::node_capabilities() {
         agent = agent.with_capability(cap);
     }

@@ -58,6 +58,7 @@ pub struct PrimaryDevices {
     pub(crate) registry: Arc<RwLock<DeviceRegistry>>,
     pub(crate) pending: Pending,
     memory: std::sync::Mutex<Option<bastion_memory::SharedMemory>>,
+    secret_resolver: std::sync::Mutex<Option<Arc<dyn bastion_types::SecretResolver>>>,
 }
 
 impl PrimaryDevices {
@@ -103,6 +104,7 @@ impl PrimaryDevices {
             registry,
             pending,
             memory: std::sync::Mutex::new(None),
+            secret_resolver: std::sync::Mutex::new(None),
         })))
     }
 
@@ -129,6 +131,68 @@ impl PrimaryDevices {
     /// Hand the shared memory over, for reconciliation to write into.
     pub fn attach_memory(&self, memory: bastion_memory::SharedMemory) {
         *self.memory.lock().unwrap_or_else(|p| p.into_inner()) = Some(memory);
+    }
+
+    /// Give this primary the daemon's secret resolver, so it can seal the
+    /// secrets the owner grants a node (§5.7). Without it, no secret is sent.
+    pub fn attach_secrets(&self, resolver: Arc<dyn bastion_types::SecretResolver>) {
+        *self
+            .secret_resolver
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(resolver);
+    }
+
+    fn resolver(&self) -> Option<Arc<dyn bastion_types::SecretResolver>> {
+        self.secret_resolver
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// Seal exactly what `device` may keep and send it, if connected and a
+    /// resolver is attached. Called on grant, on rotation and when the node
+    /// connects (so a reconnect refreshes it, BMD-31).
+    pub async fn reseal_and_send(&self, device: &DeviceId) {
+        let Some(resolver) = self.resolver() else {
+            return;
+        };
+        let record = match self.registry.read().await.get(device) {
+            Some(record) => record.clone(),
+            None => return,
+        };
+        match super::secret_sync::seal_for(&record, &resolver) {
+            Ok(sealed) if !sealed.is_empty() => self.hub.send_secrets(device, sealed).await,
+            Ok(_) => {}
+            Err(e) => tracing::warn!(event = "devices_seal_failed", device = %device, error = %e),
+        }
+    }
+
+    /// Grant a set of secrets to `device` (replacing its grant set) and seal
+    /// them to it (BMD-18). Names not listed are ungranted.
+    pub async fn set_secret_grants(
+        &self,
+        device: &DeviceId,
+        secrets: Vec<String>,
+    ) -> anyhow::Result<()> {
+        {
+            let mut registry = self.registry.write().await;
+            let current: Vec<String> = registry
+                .get(device)
+                .map(|r| r.secret_grants.iter().map(|g| g.secret.clone()).collect())
+                .unwrap_or_default();
+            for name in &current {
+                if !secrets.contains(name) {
+                    registry.ungrant_secret(device, name)?;
+                }
+            }
+            let at = super::pending::now();
+            for name in &secrets {
+                registry.grant_secret(device, name.clone(), at)?;
+            }
+        }
+        self.registry_changed().await?;
+        self.reseal_and_send(device).await;
+        Ok(())
     }
 
     /// A remote tool for every capability granted to every active node —
@@ -197,7 +261,12 @@ impl PrimaryDevices {
                     tracing::warn!(event = "devices_role_not_saved", error = %e);
                 }
             }
-            HubEvent::Connected { device } => self.maybe_request_proposals(&device).await,
+            HubEvent::Connected { device } => {
+                self.maybe_request_proposals(&device).await;
+                // A reconnect refreshes the node's sealed secrets, picking up
+                // any rotation since it was last online (BMD-31).
+                self.reseal_and_send(&device).await;
+            }
             HubEvent::Proposals {
                 device,
                 epoch,
@@ -321,7 +390,7 @@ impl PrimaryDevices {
             .ok_or_else(|| anyhow::anyhow!("no such enrollment request"))?;
         let owner = self.owner()?;
         let device_key = decode_key(&request.device_key)?;
-        let enrollment = Enrollment::new(
+        let mut enrollment = Enrollment::new(
             {
                 let r = self.registry.read().await;
                 r.owner().to_string()
@@ -330,8 +399,9 @@ impl PrimaryDevices {
             device_key,
             request.platform,
             request.holds_replica,
-        )
-        .sign(owner);
+        );
+        enrollment.secrets_recipient = request.secrets_recipient.clone();
+        let enrollment = enrollment.sign(owner);
         let approval = bastion_mesh::devices::EnrollmentApproval::sign(
             self.device.clone(),
             &self.identity,

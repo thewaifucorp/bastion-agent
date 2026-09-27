@@ -92,10 +92,26 @@ stops accepting writes, so two primaries never both write in one epoch.
 
 ## Secrets
 
-By default **no** credential (API key, token) is copied to a node. Copying
-secrets to a device, dormant until promotion, is a further step (spec BMD-18,
-BMD-29..33) not enabled in this release: a promoted device starts without the
-owner's credentials, and you set them there yourself.
+By default **no** credential (API key, token) is copied to a node. You can let
+a device keep chosen secrets, dormant until promotion (BMD-18, BMD-29..33):
+
+- On the device that will keep them, set `BASTION_SECRETS_PASSPHRASE` before
+  `bastion node pair`. That creates the device's **secrets key**, wrapped under
+  the passphrase; only that device holds it, and it is never stored unwrapped.
+- On the primary, grant secrets per device in the Devices view or
+  `PUT /devices/{id}/secrets` with `{ "secrets": ["anthropic_api_key", …] }`.
+  The primary seals each granted secret's current value to that device's
+  secrets key and sends it; the node stores ciphertext only.
+- While it is a node the device **cannot** open them — there is no code path
+  that decrypts a sealed secret in the node role (BMD-30).
+- At `bastion node promote`, set `BASTION_SECRETS_PASSPHRASE` again: the
+  passphrase unwraps the secrets key and installs the secrets into a
+  `promoted-secrets` folder; point `BASTION_SECRETS_DIR` there so the daemon
+  uses them. This is the only path that opens them (BMD-29), and it runs
+  locally with you present.
+- A reconnect reseals at the current value, so a rotation on the primary
+  reaches the node (BMD-31). Revoking a device wipes its sealed secrets and its
+  secrets key, and lists what to rotate (BMD-33).
 
 ## The desktop shell (Windows)
 

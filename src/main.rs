@@ -1397,6 +1397,11 @@ async fn async_main() -> anyhow::Result<()> {
         Command::Daemon => {
             let secret_resolver: Arc<dyn bastion_types::SecretResolver> =
                 Arc::new(bastion::secret::default_secret_resolver());
+            // Multi-device: let the primary seal the secrets the owner grants
+            // a node from the same resolver the daemon uses (§5.7).
+            if let Some(primary) = &devices_primary {
+                primary.attach_secrets(secret_resolver.clone());
+            }
             daemon_loop(
                 &mut agent,
                 &cfg,

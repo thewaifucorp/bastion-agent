@@ -92,10 +92,27 @@ mesma época.
 
 ## Segredos
 
-Por padrão **nenhuma** credencial (API key, token) é copiada para um nó. Copiar
-segredos para um dispositivo, dormentes até a promoção, é um passo a mais (spec
-BMD-18, BMD-29..33) não habilitado nesta versão: um dispositivo promovido
-começa sem as credenciais do dono, e você as configura nele.
+Por padrão **nenhuma** credencial (API key, token) é copiada para um nó. Você
+pode deixar um dispositivo guardar segredos escolhidos, dormentes até a
+promoção (BMD-18, BMD-29..33):
+
+- No dispositivo que vai guardá-los, defina `BASTION_SECRETS_PASSPHRASE` antes
+  do `bastion node pair`. Isso cria a **chave de segredos** do dispositivo,
+  embrulhada pela passphrase; só ele a tem, e nunca fica desembrulhada em disco.
+- No primário, conceda segredos por dispositivo na tela Devices ou com
+  `PUT /devices/{id}/secrets` e `{ "secrets": ["anthropic_api_key", …] }`. O
+  primário sela o valor atual de cada segredo concedido para a chave de
+  segredos do dispositivo e envia; o nó guarda só o texto cifrado.
+- Enquanto for nó, o dispositivo **não consegue** abri-los — não há caminho de
+  código que decifre um segredo selado no papel de nó (BMD-30).
+- No `bastion node promote`, defina `BASTION_SECRETS_PASSPHRASE` de novo: a
+  passphrase desembrulha a chave de segredos e instala os segredos numa pasta
+  `promoted-secrets`; aponte `BASTION_SECRETS_DIR` para ela para o daemon usar.
+  Esse é o único caminho que os abre (BMD-29), e roda localmente com você
+  presente.
+- Uma reconexão sela de novo com o valor atual, então uma rotação no primário
+  chega ao nó (BMD-31). Revogar um dispositivo apaga os segredos selados e a
+  chave de segredos dele, e lista o que girar (BMD-33).
 
 ## A casca desktop (Windows)
 

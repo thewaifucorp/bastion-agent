@@ -10,6 +10,7 @@ pub mod node_cmd;
 pub mod pending;
 pub mod primary;
 pub mod routes;
+pub mod secret_sync;
 pub mod state;
 pub mod ui;
 pub mod vault;
