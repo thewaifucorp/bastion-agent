@@ -312,6 +312,7 @@ mod tests {
         assert!(version_from_tag("latest").is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn constant_time_comparison_requires_same_value() {
         assert!(constant_time_eq(b"same", b"same"));
