@@ -1,0 +1,40 @@
+# The UI Automation helper for a Windows node (spec
+# `multi-device-brain-and-nodes.md`, BMD-13/BMD-14).
+#
+# This is a SEPARATE package, outside the bastion-agent crate, on purpose:
+# bastion-agent sets `unsafe_code = "forbid"`, and UI Automation needs COM /
+# Win32 (`unsafe`). The helper is the only place that touches the desktop; the
+# `ui.snapshot` / `ui.act` node capabilities only talk to it over JSON on
+# stdin/stdout. It is its own workspace root so no ancestor `Cargo.toml` ever
+# pulls it into the agent build.
+[package]
+name = "uia"
+version = "0.1.0"
+edition = "2021"
+description = "Windows UI Automation helper for a Bastion node (JSON over stdin/stdout)."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "uia"
+path = "src/main.rs"
+
+# Standalone: never absorbed into a parent Cargo workspace.
+[workspace]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Threading",
+    "Win32_UI_Accessibility",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_Xps",
+] }

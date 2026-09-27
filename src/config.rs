@@ -119,6 +119,47 @@ pub struct BastionConfig {
     /// itself (native install). See `crate::sidecars`.
     #[serde(default)]
     pub sidecars: SidecarsConfig,
+    /// Optional `[devices]` table: this installation as one of the owner's
+    /// devices (primary or node). See `crate::devices`.
+    #[serde(default)]
+    pub devices: DevicesConfig,
+}
+
+/// `[devices]`. Absent: the daemon is a single-device install, exactly as
+/// before — no `/node` endpoint, no event log, no replication.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct DevicesConfig {
+    /// Turn multi-device on. The role (primary or node) is not configured
+    /// here: it lives in the state directory, because promotion moves it.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Where keys, the registry and the replica live. Default
+    /// `$BASTION_DATA_DIR/devices`, else `.bastion/devices`.
+    #[serde(default)]
+    pub state_dir: Option<std::path::PathBuf>,
+    /// This device's address on the owner's private network, as other
+    /// devices reach it (e.g. `https://linux-box.tailnet.ts.net:8443`).
+    /// Published in the registry so clients find the primary (§5.6).
+    #[serde(default)]
+    pub address: Option<String>,
+    /// PEM file with extra CA certificates a node trusts for the primary
+    /// (a self-signed primary); the public web roots are always trusted.
+    #[serde(default)]
+    pub ca_file: Option<std::path::PathBuf>,
+    /// Allow `ws://` to the primary. Only for a route that is already
+    /// encrypted end to end (a Tailscale tailnet) or loopback tests.
+    #[serde(default)]
+    pub allow_plain_transport: bool,
+}
+
+impl DevicesConfig {
+    pub fn state_dir(&self) -> std::path::PathBuf {
+        self.state_dir.clone().unwrap_or_else(|| {
+            std::env::var_os("BASTION_DATA_DIR")
+                .map(|d| std::path::PathBuf::from(d).join("devices"))
+                .unwrap_or_else(|| std::path::PathBuf::from(".bastion/devices"))
+        })
+    }
 }
 
 /// `[sidecars]`. Empty `enabled` (the default): the daemon starts none —

@@ -1,0 +1,36 @@
+# The desktop shell for a Bastion device (spec `multi-device-brain-and-nodes.md`,
+# slice 3: BMD-15, BMD-27, BMD-28).
+#
+# A SEPARATE package, outside bastion-agent, on purpose: it is a native GUI
+# (tray + WebView2) with its own dependency tree that the headless daemon must
+# never pull in. It has no chat/memory UI of its own (BMD-27) — it embeds the
+# primary's web app (`/app`) in a WebView and adds only a tray, a Stop item
+# that cuts the local node now (BMD-15), and system permission prompts.
+#
+# It builds on Windows (WebView2). tao/wry also build on Linux/macOS with the
+# platform webview, so `cargo check` works cross-platform where the webview
+# system libraries are present.
+[package]
+name = "bastion-shell"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop shell (tray + embedded web app) for a Bastion device."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "bastion-shell"
+path = "src/main.rs"
+
+# Standalone: never absorbed into a parent Cargo workspace.
+[workspace]
+
+[dependencies]
+tao = "0.30"
+wry = "0.45"
+tray-icon = "0.19"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
+directories = "5"

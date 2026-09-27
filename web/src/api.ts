@@ -17,6 +17,15 @@ export const tokens = {
   set cp(v: string) {
     localStorage.setItem("bastion.web.cp-token", v);
   },
+  // The daemon operator token (BASTION_DAEMON_TOKEN). Device administration
+  // (approve, grant, revoke) is an operator action, so it is gated by this
+  // token, never the owner or Control Plane one.
+  get daemon(): string {
+    return localStorage.getItem("bastion.web.daemon-token") ?? "";
+  },
+  set daemon(v: string) {
+    localStorage.setItem("bastion.web.daemon-token", v);
+  },
 };
 
 export class ApiError extends Error {
@@ -373,6 +382,115 @@ export async function agentCard(): Promise<Record<string, unknown> | null> {
   if (!resp || !resp.ok) return null;
   return resp.json().catch(() => null);
 }
+
+// ── /devices (multi-device, spec multi-device-brain-and-nodes) ───────────
+// Discovery is public; administration is gated by the daemon operator token.
+
+export interface PrimaryInfo {
+  device: string | null;
+  address: string | null;
+  epoch: number;
+  this_device: string;
+  this_device_is_primary: boolean;
+}
+
+export interface DeviceGrant {
+  capability: string;
+  scope: unknown;
+  needs_approval: boolean;
+}
+
+export interface DeviceRow {
+  device: string;
+  platform: string;
+  role: unknown;
+  revoked: boolean;
+  holds_replica: boolean;
+  address: string | null;
+  granted: DeviceGrant[];
+  connected: boolean;
+}
+
+export interface EnrollmentRequestRow {
+  id: string;
+  device: string;
+  platform: string;
+  holds_replica: boolean;
+  requested_at: number;
+  status: "pending" | "approved" | "refused";
+}
+
+export interface DevicesSnapshot {
+  owner: string;
+  current_epoch: number;
+  devices: DeviceRow[];
+  requests: EnrollmentRequestRow[];
+}
+
+export interface DeviceConflict {
+  id: number;
+  belief: unknown;
+  ours: unknown;
+  theirs: unknown;
+  status: string;
+}
+
+/** Who the primary is and whether it is reachable — public, so a client can
+ * always show "primary offline" rather than an opaque error (BMD-26). */
+export async function primaryInfo(): Promise<PrimaryInfo | null> {
+  const resp = await fetch("/devices/primary").catch(() => null);
+  if (!resp || !resp.ok) return null;
+  return resp.json().catch(() => null);
+}
+
+async function daemonRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = tokens.daemon;
+  if (!token) throw new ApiError("daemon_token_missing", 0);
+  const resp = await fetch(path, {
+    ...init,
+    headers: {
+      authorization: `Bearer ${token}`,
+      ...(init?.body ? { "content-type": "application/json" } : {}),
+    },
+  });
+  if (resp.status === 204) return undefined as T;
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new ApiError(body?.error ?? `http_${resp.status}`, resp.status);
+  return body as T;
+}
+
+export const devicesApi = {
+  list: () => daemonRequest<DevicesSnapshot>("/devices"),
+  newCode: () =>
+    daemonRequest<{ code: string; expires_at: number }>("/devices/pairing-codes", {
+      method: "POST",
+    }),
+  approve: (id: string) =>
+    daemonRequest<void>(`/devices/requests/${encodeURIComponent(id)}/approve`, {
+      method: "POST",
+    }),
+  refuse: (id: string) =>
+    daemonRequest<void>(`/devices/requests/${encodeURIComponent(id)}/refuse`, {
+      method: "POST",
+    }),
+  setGrants: (device: string, grants: DeviceGrant[]) =>
+    daemonRequest<void>(`/devices/${encodeURIComponent(device)}/grants`, {
+      method: "PUT",
+      body: JSON.stringify({ grants }),
+    }),
+  revoke: (device: string) =>
+    daemonRequest<{ rotate_secrets: unknown[] }>(
+      `/devices/${encodeURIComponent(device)}/revoke`,
+      { method: "POST" },
+    ),
+  conflicts: () =>
+    daemonRequest<{ conflicts: DeviceConflict[] }>("/devices/conflicts"),
+  resolveConflict: (id: number, decision: "keep_ours" | "take_theirs") =>
+    daemonRequest<void>(`/devices/conflicts/${id}`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    }),
+};
 
 // ── /events (SSE via fetch — EventSource não envia header de auth) ───────
 
