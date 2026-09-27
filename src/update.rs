@@ -15,6 +15,7 @@ use tokio::sync::RwLock;
 pub const REPOSITORY: &str = "thewaifucorp/bastion-agent";
 const RELEASE_URL: &str = "https://api.github.com/repos/thewaifucorp/bastion-agent/releases/latest";
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+#[cfg(unix)]
 const MAX_UPDATER_REQUEST_BYTES: usize = 4 * 1024;
 
 #[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
@@ -144,18 +145,21 @@ pub async fn snapshot_text(state: &SharedUpdateState) -> String {
     }
 }
 
+#[cfg(unix)]
 #[derive(Debug, Deserialize)]
 struct UpdaterRequest {
     token: String,
     action: String,
 }
 
+#[cfg(unix)]
 #[derive(Debug, Serialize, Deserialize)]
 struct UpdaterResponse {
     accepted: bool,
     message: String,
 }
 
+#[cfg(unix)]
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
