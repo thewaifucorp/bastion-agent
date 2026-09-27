@@ -24,6 +24,26 @@ jobs:
       - run: cargo test
       - run: bash tests/test-installer.sh
 
+  # Multi-device on Windows (spec multi-device-brain-and-nodes): the daemon's
+  # device code, its `cfg(windows)` UI Automation primitives (BMD-13/14), and
+  # the out-of-workspace UI helper must build and test on Windows.
+  # `--no-default-features` skips the ALSA/OpenSSL-bound `voice` stack that a
+  # Windows runner has no system libraries for.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --no-default-features --lib -- -D warnings
+      - run: cargo test --no-default-features --lib devices
+      # The UI Automation helper (desktop/uia) is the Windows-only unsafe
+      # boundary; it is its own package, not a workspace member.
+      - run: cargo clippy --manifest-path desktop/uia/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path desktop/uia/Cargo.toml
+
   # Observability frontend A2: typecheck + build the web app. The rust job
   # deliberately does NOT depend on this — build.rs treats a missing
   # web/dist as a supported state.

@@ -13,6 +13,7 @@ import Personas from "./views/Personas";
 import Providers from "./views/Providers";
 import Models from "./views/Models";
 import Buddy from "./views/Buddy";
+import Devices from "./views/Devices";
 import About from "./views/About";
 
 export interface LedgerEntry {
@@ -58,6 +59,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
   {
     section: "settings",
     items: [
+      { key: "devices", label: "Devices" },
       { key: "connection", label: "Connection" },
       { key: "about", label: "About" },
     ],
@@ -240,6 +242,7 @@ export default function App() {
           {route === "connection" && (
             <Connection onSaved={() => setStreamGen((g) => g + 1)} />
           )}
+          {route === "devices" && <Devices />}
           {route === "about" && <About />}
         </div>
       </div>
