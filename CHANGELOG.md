@@ -8,6 +8,35 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+### Added
+
+- **One agent across your devices** (spec `multi-device-brain-and-nodes`). This
+  install can be the owner's **primary** or a **node** of it.
+  - `bastion node init|pair|run|promote` and a `[devices]` config section.
+  - The primary serves `GET /node` (a node dials in, never listens) and a
+    `/devices/*` API for pairing, approval, grants, revocation and
+    reconciliation conflicts, plus public `GET /devices/primary` discovery.
+  - A **Devices** view in the web app: primary status ("primary offline" when
+    none answers), enrollment approvals, per-device grants and revocation, and
+    the conflict queue. Device administration uses the daemon operator token.
+  - A node runs confined primitives — `system.run`, `file.read`, `file.write`,
+    and on Windows the UI Automation primitives `ui.snapshot` / `ui.act`
+    (scoped to granted apps, approval-gated, out-of-workspace `desktop/uia`
+    helper). Each granted capability appears to the model as
+    `<device>_<capability>` and still passes persona/egress/approval on the
+    primary before it is sent.
+  - A replica node keeps the memory event log encrypted at rest (key in the
+    system vault); `promote` rebuilds it into a live primary, and a returning
+    ex-primary's writes are reconciled (union, with a conflict queue).
+  - `desktop/shell` (`bastion-shell`): a Windows tray app embedding the
+    primary's web app in a WebView2, with a Stop that cuts the local node and a
+    per-user installer.
+  - Secrets on a node (dormant credentials replicated for promotion, BMD-18,
+    BMD-29..33) are **not** in this release: a promoted device starts without
+    the owner's credentials.
+  - New Windows CI job for the daemon's device code and the UI helper.
+  - Docs: [Devices](docs/en/devices.md) / [Dispositivos](docs/pt-br/dispositivos.md).
+
 ### Changed
 
 - Pins `bastion-core` at `v0.6.1` (`c478c0b`): Claude on Bedrock/Vertex in
