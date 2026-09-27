@@ -274,24 +274,27 @@ CLAUDE.md
 GEMINI.md
 # Bastion host-dev local state (bastion.local.toml / run-local.sh)
 .local-data/
-
+# Vite dev-server dependency pre-bundle cache (regenerated on npm run dev)
+web/.vite/
 # aag:ignore:start
 # Local AAG graph and agent-integration artifacts. Keep .mcp.json versioned.
 .aag/
 .aag.lock
 .claude/settings.json
 .claude/skills/aag-*/
+.agents/skills/aag-*/
 .cursor/mcp.json
 .cursor/hooks.json
 .cursor/rules/aag.mdc
 .gemini/settings.json
 .kiro/settings/mcp.json
 .kiro/steering/aag.md
+.roo/mcp.json
+.roo/rules/aag.md
+.vscode/mcp.json
+.zed/settings.json
 opencode.json
 # aag:ignore:end
-
-# Vite dev-server dependency pre-bundle cache (regenerated on npm run dev)
-web/.vite/
 
 # Native install (installer.sh --native)
 /bastion.native.toml
