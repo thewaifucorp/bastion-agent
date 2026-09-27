@@ -350,10 +350,13 @@ fn screenshot(hwnd: HWND) -> Result<String, HelperError> {
             return Err(failed("PrintWindow/GetDIBits captured nothing"));
         }
 
-        // BGRA -> RGBA.
-        for px in buffer.chunks_exact_mut(4) {
-            px.swap(0, 2);
-            px[3] = 0xFF;
+        // BGRA -> RGBA (step by 4 rather than chunks_exact_mut, which clippy
+        // flags for a constant chunk size).
+        let mut i = 0;
+        while i + 3 < buffer.len() {
+            buffer.swap(i, i + 2);
+            buffer[i + 3] = 0xFF;
+            i += 4;
         }
         encode_png(width as u32, height as u32, buffer)
     }
