@@ -1161,6 +1161,50 @@ mod tests {
     }
 
     #[test]
+    fn pricing_defaults_to_the_packaged_table() {
+        let absent: super::PricingConfig = toml::from_str("").expect("empty");
+        let pricing = absent.build().expect("packaged table");
+        assert!(pricing.table_version().starts_with("langfuse@"));
+        assert_eq!(pricing.attribute_namespace(), "bastion");
+        let err = pricing
+            .ensure_priced(
+                bastion_types::CostBasis::Metered,
+                false,
+                "no-such-model-xyz",
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("[pricing] overrides"), "{err}");
+    }
+
+    #[test]
+    fn pricing_override_file_prices_an_unlisted_model() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("prices.json");
+        std::fs::write(
+            &path,
+            r#"[{"modelName":"my-model","matchPattern":"(?i)^my-model$","pricingTiers":[
+                {"name":"Standard","isDefault":true,"priority":0,"conditions":[],
+                 "prices":{"input":0.000001,"output":0.000002}}]}]"#,
+        )
+        .unwrap();
+        let cfg: super::PricingConfig = toml::from_str(&format!(
+            "overrides = {:?}\nattribute_namespace = \"acme\"\n",
+            path.display().to_string()
+        ))
+        .expect("pricing table");
+        let pricing = cfg.build().expect("override loads");
+        assert_eq!(pricing.attribute_namespace(), "acme");
+        assert!(pricing
+            .ensure_priced(bastion_types::CostBasis::Metered, false, "my-model")
+            .is_ok());
+
+        let missing: super::PricingConfig =
+            toml::from_str("overrides = \"/definitely/not/here.json\"\n").unwrap();
+        assert!(missing.build().is_err());
+    }
+
+    #[test]
     fn codex_login_defaults_to_device_and_accepts_browser() {
         let absent: super::SubscriptionsConfig = toml::from_str("").expect("empty");
         assert_eq!(absent.codex.login, super::CodexLoginMode::Device);
