@@ -1009,6 +1009,19 @@ async fn async_main() -> anyhow::Result<()> {
         .unwrap_or_else(|| cfg.agent.fallback_models.clone());
 
     let daily_budget = cfg.agent.daily_budget_usd;
+    // BUP-01/02: model prices — the table packaged with bastion-core plus the
+    // operator's `[pricing] overrides` file. A configured override that is
+    // missing or invalid stops startup: prices the operator set must apply.
+    let pricing = std::sync::Arc::new(
+        cfg.pricing
+            .build()
+            .map_err(|e| anyhow::anyhow!("[pricing]: {e}"))?,
+    );
+    tracing::info!(
+        event = "pricing_ready",
+        table = pricing.table_version(),
+        overrides = ?cfg.pricing.overrides,
+    );
 
     // Init persona registry (load from BASTION_PERSONAS_DIR, defaulting to "./personas/";
     // empty if missing — PERS-07)
@@ -1363,6 +1376,7 @@ async fn async_main() -> anyhow::Result<()> {
     let runtime_registry_for_product = runtime_registry.clone();
 
     agent = agent
+        .with_pricing(pricing.clone())
         .with_backend_profile(backend_profile)
         .with_runtime_registry(runtime_registry)
         .with_runtime_workspace_base(workspace_root.clone())
@@ -2867,12 +2881,31 @@ async fn daemon_loop(
             }
         };
 
-        let generator: Arc<dyn bastion_cognition::learn::CandidateGenerator> =
-            Arc::new(bastion_cognition::learn::LlmCandidateGenerator::new(
+        // BUP-01/05: the Reflector's calls are priced, traced and charged to
+        // the daily budget like a turn's (background scope, no session), and
+        // its per-tick `budget_usd` is checked against the model's price.
+        let reflector_meter = Arc::new(
+            bastion_runtime::pricing::CostMeter::new(agent.pricing.clone()).with_ledger(
+                bastion_runtime::session::SessionManager::new(cfg.session.db_path.clone()),
+                cfg.agent.daily_budget_usd,
+            ),
+        );
+        let reflector_provider = bastion_runtime::pricing::MeteredProvider::wrap(
+            reflector_provider,
+            reflector_meter,
+            bastion_runtime::pricing::MeterScope::background(Some(
+                bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string(),
+            )),
+        )
+        .await;
+        let generator: Arc<dyn bastion_cognition::learn::CandidateGenerator> = Arc::new(
+            bastion_cognition::learn::LlmCandidateGenerator::new(
                 reflector_provider,
                 reflector_model,
                 cfg.reflector.allow_cloud,
-            ));
+            )
+            .with_pricing(agent.pricing.clone()),
+        );
 
         let reflector = bastion_cognition::learn::Reflector::new(
             agent.memory.clone(),

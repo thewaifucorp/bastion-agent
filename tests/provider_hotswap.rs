@@ -38,6 +38,9 @@ impl Provider for MockProvider {
     fn name(&self) -> &'static str {
         self.name_str
     }
+    fn cost_basis(&self) -> bastion_types::CostBasis {
+        bastion_types::CostBasis::Local
+    }
 }
 
 #[tokio::test]

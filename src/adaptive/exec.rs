@@ -200,6 +200,10 @@ impl TaskExecutor for RuntimeTaskExecutor {
             })?;
 
         let mut usage = UsageAccum::default();
+        // BUP-03/04: a harness runs on the operator's own login, so its work
+        // costs no metered dollars (`cost_usd = 0`); the tokens it reports
+        // are recorded with the fidelity the adapter declares.
+        let usage_coverage = runtime.descriptor().policy_coverage.budget;
         let mut evidence = Vec::new();
         let mut transcript = String::new();
 
@@ -215,7 +219,11 @@ impl TaskExecutor for RuntimeTaskExecutor {
                     transcript.push_str(&text);
                 }
                 RuntimeEvent::Usage { task, delta } if task == task_id => {
-                    usage.add_tokens(delta.input_tokens, delta.output_tokens);
+                    usage.merge_from(&UsageAccum::from_runtime_usage(
+                        delta.input_tokens,
+                        delta.output_tokens,
+                        usage_coverage,
+                    ));
                 }
                 RuntimeEvent::Diff {
                     task,
@@ -285,6 +293,10 @@ impl TaskExecutor for RuntimeTaskExecutor {
                 _ => {}
             }
         };
+        if usage.cost_usd.is_none() {
+            // No usage event at all: still a subscription run — zero dollars.
+            usage.merge_from(&UsageAccum::from_runtime_usage(0, 0, usage_coverage));
+        }
         tracing::debug!(
             event = "adaptive_exec_transcript",
             runtime_id = %runtime_id,

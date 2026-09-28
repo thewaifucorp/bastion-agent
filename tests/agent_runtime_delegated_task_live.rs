@@ -67,6 +67,9 @@ impl Provider for MockProvider {
     fn name(&self) -> &'static str {
         "mock"
     }
+    fn cost_basis(&self) -> bastion_types::CostBasis {
+        bastion_types::CostBasis::Local
+    }
 }
 
 fn make_registry() -> PersonaRegistry {

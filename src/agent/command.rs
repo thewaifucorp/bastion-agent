@@ -664,6 +664,9 @@ mod tests {
         fn name(&self) -> &'static str {
             "stub"
         }
+        fn cost_basis(&self) -> bastion_types::CostBasis {
+            bastion_types::CostBasis::Local
+        }
     }
 
     fn make_provider() -> SharedProvider {

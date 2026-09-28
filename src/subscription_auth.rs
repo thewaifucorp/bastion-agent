@@ -598,6 +598,9 @@ pub(crate) mod fakes {
         fn name(&self) -> &'static str {
             "fake"
         }
+        fn cost_basis(&self) -> bastion_types::CostBasis {
+            bastion_types::CostBasis::Local
+        }
     }
 
     pub(crate) struct FakeProviderFactory;

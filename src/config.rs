@@ -123,6 +123,57 @@ pub struct BastionConfig {
     /// devices (primary or node). See `crate::devices`.
     #[serde(default)]
     pub devices: DevicesConfig,
+    /// Optional `[pricing]` table: the operator's model-price override and
+    /// the cost telemetry namespace. Absent: the price table packaged with
+    /// bastion-core alone, attributes under `bastion.*`.
+    #[serde(default)]
+    pub pricing: PricingConfig,
+}
+
+/// `[pricing]` (BUP-01/02). Budgets are checked against model prices from
+/// the Langfuse table packaged with bastion-core; `overrides` names a file in
+/// the SAME format whose entries win over it — how an operator prices a
+/// model the table lacks (a metered model with no price is refused before
+/// the call) or corrects a price.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PricingConfig {
+    /// Path of the override file (Langfuse `default-model-prices.json`
+    /// format). A configured file that is missing or invalid stops startup.
+    #[serde(default)]
+    pub overrides: Option<std::path::PathBuf>,
+    /// Namespace of the cost span attributes (`<ns>.cost.usd`,
+    /// `<ns>.cost.price_table`, `<ns>.cost.billing`, `<ns>.owner`). Absent:
+    /// `bastion`. Set it to the namespace your telemetry platform expects.
+    #[serde(default)]
+    pub attribute_namespace: Option<String>,
+}
+
+impl PricingConfig {
+    /// Build the kernel's [`bastion_runtime::pricing::Pricing`] from this
+    /// table: the packaged prices, the override file when configured, and
+    /// an error hint that names this config key.
+    pub fn build(
+        &self,
+    ) -> Result<bastion_runtime::pricing::Pricing, bastion_runtime::pricing::PricingError> {
+        let mut pricing = bastion_runtime::pricing::Pricing::bundled();
+        pricing = match &self.overrides {
+            Some(path) => pricing
+                .with_override_file(path)?
+                .with_override_hint(format!("`[pricing] overrides` = {}", path.display())),
+            None => pricing.with_override_hint(
+                "set `[pricing] overrides` in bastion.toml to a file in Langfuse's \
+                 default-model-prices.json format",
+            ),
+        };
+        if let Some(namespace) = self
+            .attribute_namespace
+            .as_deref()
+            .filter(|n| !n.is_empty())
+        {
+            pricing = pricing.with_attribute_namespace(namespace);
+        }
+        Ok(pricing)
+    }
 }
 
 /// `[devices]`. Absent: the daemon is a single-device install, exactly as

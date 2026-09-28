@@ -70,6 +70,9 @@ impl Provider for UnusedProvider {
     fn name(&self) -> &'static str {
         "unused"
     }
+    fn cost_basis(&self) -> bastion_types::CostBasis {
+        bastion_types::CostBasis::Local
+    }
 }
 
 async fn make_loop(db_path: &str) -> AgentLoop {

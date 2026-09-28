@@ -53,6 +53,9 @@ impl Provider for MockProvider {
     fn name(&self) -> &'static str {
         "mock"
     }
+    fn cost_basis(&self) -> bastion_types::CostBasis {
+        bastion_types::CostBasis::Local
+    }
 }
 
 fn make_provider(name: &str) -> SharedProvider {
@@ -528,6 +531,9 @@ async fn turn_scoped_denial_skips_remaining_tool_calls_and_ends_turn() {
         fn name(&self) -> &'static str {
             "mock"
         }
+        fn cost_basis(&self) -> bastion_types::CostBasis {
+            bastion_types::CostBasis::Local
+        }
     }
 
     let f = NamedTempFile::new().unwrap();
@@ -702,6 +708,9 @@ async fn cloud_ok_persona_tool_loop_passes_egress_gate() {
         }
         fn name(&self) -> &'static str {
             "mock"
+        }
+        fn cost_basis(&self) -> bastion_types::CostBasis {
+            bastion_types::CostBasis::Local
         }
     }
 
@@ -884,6 +893,9 @@ impl Provider for ToolThenTextNamed {
     fn name(&self) -> &'static str {
         "mock"
     }
+    fn cost_basis(&self) -> bastion_types::CostBasis {
+        bastion_types::CostBasis::Local
+    }
 }
 
 /// Extracts the FIRST `ContentPart::ToolResult.content` string found in the
@@ -1037,6 +1049,9 @@ impl Provider for ToolsRecordingProvider {
     }
     fn name(&self) -> &'static str {
         "mock"
+    }
+    fn cost_basis(&self) -> bastion_types::CostBasis {
+        bastion_types::CostBasis::Local
     }
 }
 
@@ -1223,6 +1238,9 @@ impl Provider for RoundAwareProvider {
     fn name(&self) -> &'static str {
         "mock"
     }
+    fn cost_basis(&self) -> bastion_types::CostBasis {
+        bastion_types::CostBasis::Local
+    }
 }
 
 /// Stub capability with `is_local()==false` (untrusted by default) that
@@ -1376,6 +1394,9 @@ impl Provider for ToolVisibilityRecordingProvider {
     }
     fn name(&self) -> &'static str {
         "mock"
+    }
+    fn cost_basis(&self) -> bastion_types::CostBasis {
+        bastion_types::CostBasis::Local
     }
 }
 
