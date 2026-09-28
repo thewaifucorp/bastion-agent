@@ -419,7 +419,7 @@ trait Suggestion {
 }
 
 /// The top-level command word of a (possibly nested) suggestion name, e.g.
-/// `"/backend use acpx_claude"` -> `"/backend"`. Nested picker entries are
+/// `"/backend use acpx_opencode"` -> `"/backend"`. Nested picker entries are
 /// always `"/<command> <rest>"`, so the first token is always the real
 /// command this row belongs to.
 fn leading_command(name: &str) -> &str {
@@ -595,12 +595,8 @@ const BACKEND_COMMANDS: &[CommandInfo] = &[
         "Bastion tool loop (provider/model via /model)",
     ),
     pet_option(
-        "/backend use acp_claude",
-        "Claude Code subscription — Bastion approves each edit",
-    ),
-    pet_option(
-        "/backend use acpx_claude",
-        "Claude Code subscription via acpx (Claude decides its own permissions)",
+        "/backend use claude",
+        "Claude Code subscription (your own login) — Bastion approves each edit",
     ),
     pet_option(
         "/backend use codex_app_server",
@@ -1456,10 +1452,13 @@ fn spawn_sse_listener(tx: UnboundedSender<AppMsg>, client: Client, base_url: Str
     });
 }
 
-/// Fase 2.5: `/connect claude|codex|opencode` (exact match, no extra args —
+/// Fase 2.5: `/connect codex|opencode` (exact match, no extra args —
 /// anything else falls through to the normal turn/command path) maps to the
 /// CLI binary, its login verb-args, and the runtime id the follow-up
-/// `/backend use <id>` hint should name. Kept local to `tui.rs` (not shared
+/// `/backend use <id>` hint should name. `/connect claude` is not here: for
+/// the Claude subscription Bastion only checks the install and the login
+/// (the daemon's `/connect claude` answers that); signing in is the user's
+/// own `claude auth login`. Kept local to `tui.rs` (not shared
 /// with `main.rs`'s `connect_login_args`) because the two live in different
 /// crate targets (binary vs. lib) with no shared module for this, and the
 /// TUI's flow has no `--setup-token` equivalent (that's a headless-CLI-only
@@ -1468,7 +1467,6 @@ fn connect_subscription_target(
     text: &str,
 ) -> Option<(&'static str, &'static [&'static str], &'static str)> {
     match text {
-        "/connect claude" => Some(("claude", &["auth", "login"], "acp_claude")),
         "/connect codex" => Some(("codex", &["login"], "codex_app_server")),
         "/connect opencode" => Some(("opencode", &["auth", "login"], "acpx_opencode")),
         _ => None,
@@ -2542,18 +2540,19 @@ mod tests {
             .map(|c| c.name())
             .collect();
         assert_eq!(spaced.len(), BACKEND_COMMANDS.len() - 1);
-        assert!(spaced.contains(&"/backend use acp_claude"));
-        assert!(spaced.contains(&"/backend use acpx_claude"));
+        assert!(spaced.contains(&"/backend use claude"));
+        assert!(!spaced.contains(&"/backend use acp_claude"));
+        assert!(!spaced.contains(&"/backend use acpx_claude"));
         assert!(spaced.contains(&"/backend use codex_app_server"));
         assert!(spaced.contains(&"/backend use acpx_opencode"));
         assert!(spaced.contains(&"/backend use model"));
 
         assert_eq!(
-            command_matches("/backend use acpx_c")
+            command_matches("/backend use acpx_o")
                 .iter()
                 .map(|c| c.name())
                 .collect::<Vec<_>>(),
-            vec!["/backend use acpx_claude"]
+            vec!["/backend use acpx_opencode"]
         );
     }
 
@@ -2586,10 +2585,8 @@ mod tests {
 
     #[test]
     fn connect_subscription_target_matches_exact_form_only() {
-        assert_eq!(
-            connect_subscription_target("/connect claude"),
-            Some(("claude", ["auth", "login"].as_slice(), "acp_claude"))
-        );
+        // Claude is only checked, never logged in from here.
+        assert_eq!(connect_subscription_target("/connect claude"), None);
         assert_eq!(
             connect_subscription_target("/connect codex"),
             Some(("codex", ["login"].as_slice(), "codex_app_server"))

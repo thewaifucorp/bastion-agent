@@ -289,9 +289,9 @@ mod tests {
             ExecutionOwner::Bastion
         );
         assert_eq!(
-            ExecutionOwner::from(&ConversationBackend::Runtime("acpx_claude".to_string())),
+            ExecutionOwner::from(&ConversationBackend::Runtime("claude".to_string())),
             ExecutionOwner::ExternalRuntime {
-                runtime_id: "acpx_claude".to_string()
+                runtime_id: "claude".to_string()
             }
         );
     }

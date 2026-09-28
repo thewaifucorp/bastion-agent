@@ -215,7 +215,7 @@ async fn switch_model(
 fn connect_instructions(provider: Option<&str>) -> String {
     match provider {
         None => "Choose a provider: /connect gemini, /connect anthropic, /connect bedrock, /connect vertex, /connect openai, /connect openrouter, /connect ollama, /connect claude, /connect codex, or /connect opencode. Subscription logins stay in Docker volumes and are never stored in chat.".to_string(),
-        Some("claude") => "Claude Code subscription: run `bastion connect claude` (or `docker compose exec -it core claude auth login`), complete the browser login, then select /backend use runtime:acp_claude (or the Claude Code option in installer.sh on the next install/update).".to_string(),
+        Some("claude") => format!("Claude Code subscription: sign in with `{}` yourself (Bastion only checks the login, never runs it or reads its credentials), confirm with `bastion connect claude`, then select /backend use claude (or the Claude Code option in installer.sh on the next install/update).", claude_login_command()),
         Some("codex") => "Codex subscription: run `bastion connect codex` (or `docker compose exec -it core codex login`), complete the ChatGPT browser login, then select /backend use runtime:codex_app_server (or the Codex option in installer.sh on the next install/update).".to_string(),
         Some("opencode") => "OpenCode subscription: run `bastion connect opencode` (or `docker compose exec -it core opencode auth login`), complete the login, then select /backend use runtime:acpx_opencode (or the OpenCode option in installer.sh on the next install/update).".to_string(),
         Some("gemini") => "Gemini: add GEMINI_API_KEY to .env or your secret manager, restart the daemon, then open /model.".to_string(),
@@ -227,6 +227,24 @@ fn connect_instructions(provider: Option<&str>) -> String {
         Some("ollama") => "Ollama: start the local Ollama service, then choose one of its installed models from /model. No API key is needed.".to_string(),
         Some(_) => "Unknown provider. Choose gemini, anthropic, bedrock, vertex, openai, openrouter, ollama, claude, codex, or opencode.".to_string(),
     }
+}
+
+/// Where the user signs Claude Code in: the daemon's own host for a native
+/// install, the `core` container otherwise.
+fn claude_login_command() -> &'static str {
+    if std::env::var("BASTION_NATIVE").as_deref() == Ok("1") {
+        "claude auth login"
+    } else {
+        "docker compose exec -it core claude auth login"
+    }
+}
+
+/// `/connect claude`: a live check of the install and the login, never a
+/// login flow (the subscription is used only through the user's own
+/// `claude` login).
+async fn claude_connect_reply() -> String {
+    let connection = crate::auth_profile_registry::check_claude_connection().await;
+    crate::auth_profile_registry::claude_connection_message(connection, claude_login_command())
 }
 
 /// Fase 2.7: `/connect` (no-arg) status overview — subscription runtimes via
@@ -395,6 +413,7 @@ pub async fn handle_command(
                 None => Ok(CommandResult::Handled(
                     connect_status_overview(auth_cfg).await,
                 )),
+                Some("claude") => Ok(CommandResult::Handled(claude_connect_reply().await)),
                 Some(provider) => Ok(CommandResult::Handled(connect_instructions(Some(provider)))),
             }
         }

@@ -10,7 +10,7 @@
 //! coverage.
 //!
 //! Deliberately app-level, not kernel: naming `CodexAppServerRuntime` /
-//! `AcpxAgentRuntime` concretely is exactly what the kernel
+//! `ClaudeCodeRuntime` / `AcpxAgentRuntime` concretely is exactly what the kernel
 //! (`bastion_runtime::agent::backend`) must never do — it only ever sees
 //! `Arc<dyn AgentRuntime>`.
 //!
@@ -23,16 +23,26 @@
 //! This is intentional, not a gap this module should close: a runtime that
 //! isn't logged in yet should still be listable (`/backend`, `RuntimeRegistry
 //! ::descriptors()`) and selectable — the user needs to be ABLE to select
-//! `runtime:acpx_claude` before running `/connect claude` so the login flow
+//! `runtime:claude` before running `/connect claude` so the login flow
 //! has somewhere to attach. Login state is a property of the AUTH profile
 //! (`auth_profile_registry.rs`), surfaced separately by `/backend`'s listing
 //! and startup's `runtime_not_logged_in` warning (`main.rs`) — conflating the
 //! two here would make an unauthenticated-but-installed runtime vanish from
 //! the picker entirely, which is worse UX, not better safety (the fail-closed
 //! guarantee already lives in `AuthResolver::resolve` at turn start).
+//!
+//! # Claude runs only as the `claude` binary
+//!
+//! A Claude Pro/Max subscription may only be used through the unmodified
+//! `claude` binary under the user's own login, so Claude Code is registered
+//! once, as `ClaudeCodeRuntime` (id `claude`). It is not offered through
+//! `claude-agent-acp` (`acp_claude`) or `acpx` (`acpx_claude`): both put an
+//! Agent SDK application in front of Claude Code on that same login. Saved
+//! selections naming those ids resolve to `claude`
+//! (`config::canonical_runtime_id`).
 
-use bastion_agent_runtime::acp::AcpAgentRuntime;
 use bastion_agent_runtime::acpx::AcpxAgentRuntime;
+use bastion_agent_runtime::claude_code::ClaudeCodeRuntime;
 use bastion_agent_runtime::codex::CodexAppServerRuntime;
 use bastion_agent_runtime::{AgentRuntime, HarnessConfinement};
 use bastion_runtime::agent::backend::RuntimeRegistry;
@@ -49,7 +59,15 @@ fn state_dirs(runtime: &str) -> Vec<PathBuf> {
     };
     let rel: &[&str] = match runtime {
         "codex" => &[".codex"],
-        "claude" => &[".acpx", ".npm", ".claude", ".claude.json", ".config/claude"],
+        // Claude Code's own login, conversation store and native install
+        // (`~/.local/share/claude/versions/*`, which it also updates). The
+        // binary reads them; Bastion never does.
+        "claude" => &[
+            ".claude",
+            ".claude.json",
+            ".config/claude",
+            ".local/share/claude",
+        ],
         "opencode" => &[
             ".acpx",
             ".npm",
@@ -74,24 +92,7 @@ fn confinement(runtime: &str, workspace_base: &Path) -> Option<HarnessConfinemen
 /// acpx-wrapped agents Bastion probes for — one `AcpxAgentRuntime` per entry,
 /// registered only if both `acpx` and the wrapped CLI are present and
 /// healthy on this host.
-const ACPX_AGENTS: &[&str] = &["claude", "opencode"];
-
-/// The Claude Code ACP bridge, pinned. Used through `npx` when no
-/// `claude-agent-acp` is installed on PATH.
-pub const CLAUDE_ACP_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp@0.81.2";
-
-/// The bridge command for `acp_claude` — Bastion speaking ACP to Claude Code
-/// directly, so every edit Claude asks to make reaches Bastion's approval.
-/// Offered only when the `claude` CLI is installed: the bridge runs Claude
-/// Code under the operator's own login, which lives with that install.
-fn claude_acp_command() -> Option<String> {
-    crate::sandbox::resolve_on_path("claude")?;
-    if crate::sandbox::resolve_on_path("claude-agent-acp").is_some() {
-        return Some("claude-agent-acp".to_string());
-    }
-    crate::sandbox::resolve_on_path("npx")?;
-    Some(format!("npx -y {CLAUDE_ACP_PACKAGE}"))
-}
+const ACPX_AGENTS: &[&str] = &["opencode"];
 
 /// Probes every adapter Bastion knows how to construct and returns a
 /// registry containing only the ones that are actually usable RIGHT NOW on
@@ -134,12 +135,18 @@ pub async fn build_runtime_registry(workspace_base: &Path) -> RuntimeRegistry {
         }
     }
 
-    if let Some(command) = claude_acp_command() {
-        let mut runtime = AcpAgentRuntime::new(command);
-        if let Some(confinement) = confinement("claude", workspace_base) {
-            runtime = runtime.with_confinement(confinement);
+    match ClaudeCodeRuntime::new() {
+        Ok(mut runtime) => {
+            if let Some(confinement) = confinement("claude", workspace_base) {
+                runtime = runtime.with_confinement(confinement);
+            }
+            candidates.push(Arc::new(runtime));
         }
-        candidates.push(Arc::new(runtime));
+        Err(e) => tracing::debug!(
+            event = "agent_runtime_construct_failed",
+            adapter = "claude",
+            error = %e,
+        ),
     }
 
     let probed = futures_util::future::join_all(

@@ -24,6 +24,21 @@ for how that differs from the library crates it depends on).
   the budget. Adaptive `Pursue` tasks fill `cost_usd` (`0` on a harness
   login). Requires the bastion-core pin that ships `bastion_runtime::pricing`.
 
+- **Claude subscription as a conversation runtime: `/backend use claude`.**
+  A Claude Pro/Max subscription is used only through Claude Code itself — the
+  installed, unmodified `claude` binary under the user's own login — driven by
+  bastion-core's new `ClaudeCodeRuntime` (stream-json, one process per
+  conversation). Before Claude writes a file or runs a command the turn stops
+  with the diff for the owner's `sim`/`não`; the Claude session is the child
+  of the Bastion session and is reattached after a restart; it reaches
+  Bastion's memory, personas, goals, capabilities and (read-only) tasks
+  through Bastion's own MCP server, every call under Bastion's capability,
+  egress and approval policy; its usage is recorded as subscription usage at
+  no metered cost. Bastion never calls Claude with the subscription, never
+  reads `~/.claude`, never sees the login token, and withholds every
+  `ANTHROPIC_*` variable and other credential from the binary. Claude in
+  Bastion's own loop keeps using an API key, Bedrock or Vertex.
+
 - **One agent across your devices** (spec `multi-device-brain-and-nodes`). This
   install can be the owner's **primary** or a **node** of it.
   - `bastion node init|pair|run|promote` and a `[devices]` config section.
@@ -55,6 +70,25 @@ for how that differs from the library crates it depends on).
   - Docs: [Devices](docs/en/devices.md) / [Dispositivos](docs/pt-br/dispositivos.md).
 
 ### Changed
+
+- **`bastion connect claude` and `/connect claude` only check** that Claude
+  Code is installed and signed in (`claude --version`, `claude auth status`,
+  exit codes only) and say how to sign in (`claude auth login`, or its
+  `docker compose exec` form). They no longer run the login; the TUI no
+  longer suspends to run it either. Codex and OpenCode are unchanged.
+- **Removed `bastion connect claude --setup-token` and `--import-host`.** The
+  first minted a long-lived Claude token, the second copied `~/.claude` into
+  the container; neither is compatible with using the subscription only
+  through the user's own login in the unmodified binary.
+- **`acp_claude` and `acpx_claude` are no longer registered.** Both ran
+  Claude Code through `claude-agent-acp`, an Agent SDK application, on the
+  subscription login. A saved `/backend` selection, `[backend]`
+  conversation/task runtime, or `/backend use` naming either resolves to
+  `claude`. The installer's Claude option now selects `runtime:claude`.
+- The harness MCP bridge token now carries `tasks:read` (`get_task`,
+  `list_tasks`); creating, steering and cancelling tasks stay with the owner.
+- A runtime session reattached after a restart gets the MCP bridge again
+  (bastion-core `ResumeSpec::mcp_bridge`).
 
 - Pins `bastion-core` at `v0.6.1` (`c478c0b`): Claude on Bedrock/Vertex in
   the native loop, `memory_store`/`memory_revoke`, direct-API fixes

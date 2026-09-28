@@ -218,9 +218,112 @@ pub async fn probe_host_cli(cli: &str) -> Result<(), String> {
     }
 }
 
+/// What `bastion connect claude` / `/connect claude` find on the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaudeConnection {
+    /// No `claude` binary answers `--version`.
+    NotInstalled,
+    /// Installed, but `claude auth status` says the user is not signed in.
+    LoggedOut,
+    /// Installed and signed in with the user's own login.
+    LoggedIn,
+}
+
+impl ClaudeConnection {
+    /// Classifies the two exit statuses (`None` = the program could not run).
+    pub fn from_checks(version_ok: Option<bool>, status_ok: Option<bool>) -> Self {
+        match (version_ok, status_ok) {
+            (Some(true), Some(true)) => Self::LoggedIn,
+            (Some(true), _) => Self::LoggedOut,
+            _ => Self::NotInstalled,
+        }
+    }
+}
+
+/// Checks the host's Claude Code for the subscription runtime: installed
+/// (`claude --version`) and signed in (`claude auth status`). Nothing else —
+/// no login is started, `~/.claude` is never read, and only exit codes are
+/// inspected, never the account details the status command prints. Signing
+/// in stays the user's own action in the unmodified `claude` binary.
+pub async fn check_claude_connection() -> ClaudeConnection {
+    let version_ok = Command::new("claude")
+        .arg("--version")
+        .kill_on_drop(true)
+        .output()
+        .await
+        .ok()
+        .map(|o| o.status.success());
+    let status_ok = if version_ok == Some(true) {
+        Some(probe_host_cli("claude").await.is_ok())
+    } else {
+        None
+    };
+    ClaudeConnection::from_checks(version_ok, status_ok)
+}
+
+/// The guidance for a [`ClaudeConnection`]; `login` is the command the user
+/// runs to sign in where Bastion runs (`claude auth login`, or its
+/// `docker compose exec` form).
+pub fn claude_connection_message(connection: ClaudeConnection, login: &str) -> String {
+    match connection {
+        ClaudeConnection::NotInstalled => format!(
+            "Claude Code is not installed where Bastion runs. Install it \
+             (https://claude.com/claude-code), sign in with `{login}`, then run \
+             /connect claude again."
+        ),
+        ClaudeConnection::LoggedOut => format!(
+            "Claude Code is installed but not signed in. Sign in yourself with `{login}` — \
+             Bastion never runs the login, reads its credentials or handles its token — \
+             then select it with /backend use claude."
+        ),
+        ClaudeConnection::LoggedIn => "Claude Code is installed and signed in. Select it with \
+             /backend use claude: it runs under your own subscription login, and Bastion \
+             approves each edit and command it asks to make."
+            .to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_connection_needs_both_checks() {
+        assert_eq!(
+            ClaudeConnection::from_checks(Some(true), Some(true)),
+            ClaudeConnection::LoggedIn
+        );
+        assert_eq!(
+            ClaudeConnection::from_checks(Some(true), Some(false)),
+            ClaudeConnection::LoggedOut
+        );
+        assert_eq!(
+            ClaudeConnection::from_checks(Some(true), None),
+            ClaudeConnection::LoggedOut
+        );
+        assert_eq!(
+            ClaudeConnection::from_checks(Some(false), None),
+            ClaudeConnection::NotInstalled
+        );
+        assert_eq!(
+            ClaudeConnection::from_checks(None, None),
+            ClaudeConnection::NotInstalled
+        );
+    }
+
+    #[test]
+    fn claude_connection_messages_point_at_the_users_own_login() {
+        let out = claude_connection_message(ClaudeConnection::LoggedOut, "claude auth login");
+        assert!(out.contains("`claude auth login`"));
+        assert!(out.contains("never runs the login"));
+        let ok = claude_connection_message(ClaudeConnection::LoggedIn, "claude auth login");
+        assert!(ok.contains("/backend use claude"));
+        let missing = claude_connection_message(
+            ClaudeConnection::NotInstalled,
+            "docker compose exec -it core claude auth login",
+        );
+        assert!(missing.contains("docker compose exec -it core claude auth login"));
+    }
 
     #[tokio::test]
     async fn empty_config_verifies_nothing() {

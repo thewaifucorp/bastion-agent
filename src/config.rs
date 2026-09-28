@@ -428,7 +428,7 @@ pub fn backend_profile_from_config(
         None | Some("model") | Some("") => ConversationBackend::Model,
         Some(spec) => {
             let id = spec.strip_prefix("runtime:").unwrap_or(spec);
-            ConversationBackend::Runtime(id.to_string())
+            ConversationBackend::Runtime(canonical_runtime_id(id).to_string())
         }
     };
 
@@ -441,9 +441,35 @@ pub fn backend_profile_from_config(
 
     BackendProfile {
         conversation,
-        task_runtime: cfg.task_runtime.clone(),
+        task_runtime: cfg
+            .task_runtime
+            .as_deref()
+            .map(|id| canonical_runtime_id(id).to_string()),
         auth,
         coverage_note: None,
+    }
+}
+
+/// Runtime ids that ran Claude Code through `claude-agent-acp` — an Agent SDK
+/// application in front of Claude Code — on the user's subscription login.
+/// A Claude subscription may only be used through the unmodified `claude`
+/// binary, so both now resolve to the `claude` runtime, which drives it
+/// directly. A saved selection or `[backend]` entry naming either keeps
+/// working instead of failing every turn.
+const RETIRED_CLAUDE_RUNTIMES: &[&str] = &["acp_claude", "acpx_claude"];
+
+/// The runtime id a configured one resolves to (see
+/// [`RETIRED_CLAUDE_RUNTIMES`]); every other id is returned unchanged.
+pub fn canonical_runtime_id(id: &str) -> &str {
+    if RETIRED_CLAUDE_RUNTIMES.contains(&id) {
+        tracing::warn!(
+            event = "backend_runtime_id_migrated",
+            from = %id,
+            to = bastion_agent_runtime::claude_code::RUNTIME_ID,
+        );
+        bastion_agent_runtime::claude_code::RUNTIME_ID
+    } else {
+        id
     }
 }
 
@@ -1687,24 +1713,46 @@ telegram_chat_id = "222"
     fn test_backend_config_bare_id_without_prefix_maps_to_runtime_id() {
         use bastion_runtime::agent::backend::ConversationBackend;
         let cfg = BackendConfig {
-            conversation: Some("acpx_claude".to_string()),
+            conversation: Some("acpx_opencode".to_string()),
             ..Default::default()
         };
         assert_eq!(
             backend_profile_from_config(&cfg).conversation,
-            ConversationBackend::Runtime("acpx_claude".to_string())
+            ConversationBackend::Runtime("acpx_opencode".to_string())
         );
+    }
+
+    /// The retired Agent-SDK Claude runtimes resolve to `claude`, in both
+    /// the conversation and the delegated-task slot, prefixed or not.
+    #[test]
+    fn retired_claude_runtime_ids_resolve_to_the_claude_runtime() {
+        use bastion_runtime::agent::backend::ConversationBackend;
+        for spec in ["runtime:acp_claude", "acpx_claude", "runtime:claude"] {
+            let cfg = BackendConfig {
+                conversation: Some(spec.to_string()),
+                task_runtime: Some(spec.trim_start_matches("runtime:").to_string()),
+                auth: None,
+            };
+            let profile = backend_profile_from_config(&cfg);
+            assert_eq!(
+                profile.conversation,
+                ConversationBackend::Runtime("claude".to_string()),
+                "{spec}"
+            );
+            assert_eq!(profile.task_runtime.as_deref(), Some("claude"), "{spec}");
+        }
+        assert_eq!(canonical_runtime_id("codex_app_server"), "codex_app_server");
     }
 
     #[test]
     fn test_backend_config_task_runtime_and_auth_pass_through() {
         let cfg = BackendConfig {
             conversation: None,
-            task_runtime: Some("acpx_claude".to_string()),
+            task_runtime: Some("acpx_opencode".to_string()),
             auth: Some("host-claude-login".to_string()),
         };
         let profile = backend_profile_from_config(&cfg);
-        assert_eq!(profile.task_runtime.as_deref(), Some("acpx_claude"));
+        assert_eq!(profile.task_runtime.as_deref(), Some("acpx_opencode"));
         assert_eq!(
             profile.auth.map(|a| a.0),
             Some("host-claude-login".to_string())
@@ -1719,7 +1767,7 @@ telegram_chat_id = "222"
             r#"
 [backend]
 conversation = "runtime:codex_app_server"
-task_runtime = "acpx_claude"
+task_runtime = "acpx_opencode"
 auth = "host-chatgpt-login"
 "#,
         );
@@ -1732,7 +1780,7 @@ auth = "host-chatgpt-login"
             profile.conversation,
             ConversationBackend::Runtime("codex_app_server".to_string())
         );
-        assert_eq!(profile.task_runtime.as_deref(), Some("acpx_claude"));
+        assert_eq!(profile.task_runtime.as_deref(), Some("acpx_opencode"));
     }
 
     /// Fase 2.1: an empty-string `auth` (e.g. round-tripped through a

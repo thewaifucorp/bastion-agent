@@ -35,10 +35,10 @@ use crate::config_store::{ConfigStore, KEY_BACKEND_SELECTED};
 /// with `installer.sh`'s `configure_backend` (which wires the exact same
 /// three pairs via `BASTION_BACKEND_CONVERSATION`/`BASTION_BACKEND_AUTH`) —
 /// there is no shared crate boundary enforcing this, both are product-side
-/// config surfaces for the same three subscription runtimes.
+/// config surfaces for the same three subscription runtimes. Claude's is the
+/// `claude` runtime only (the unmodified binary under the user's login).
 pub const RUNTIME_AUTH_PROFILES: &[(&str, &str)] = &[
-    ("acpx_claude", "claude-subscription"),
-    ("acp_claude", "claude-subscription"),
+    ("claude", "claude-subscription"),
     ("codex_app_server", "codex-subscription"),
     ("acpx_opencode", "opencode-subscription"),
 ];
@@ -190,7 +190,8 @@ async fn use_backend(
         return Ok("Backend de conversa definido para: model (Bastion tool loop).".to_string());
     }
 
-    let id = spec.strip_prefix("runtime:").unwrap_or(spec).to_string();
+    let id = crate::config::canonical_runtime_id(spec.strip_prefix("runtime:").unwrap_or(spec))
+        .to_string();
 
     let runtime = agent.runtime_registry.resolve(&id).await.map_err(|e| {
         anyhow::anyhow!(
@@ -298,10 +299,10 @@ mod tests {
 
     #[test]
     fn runtime_auth_profiles_cover_all_three_subscription_runtimes() {
-        assert_eq!(
-            mapped_auth_profile("acpx_claude"),
-            Some("claude-subscription")
-        );
+        assert_eq!(mapped_auth_profile("claude"), Some("claude-subscription"));
+        // The retired Agent-SDK Claude runtimes are not offered any more.
+        assert_eq!(mapped_auth_profile("acp_claude"), None);
+        assert_eq!(mapped_auth_profile("acpx_claude"), None);
         assert_eq!(
             mapped_auth_profile("codex_app_server"),
             Some("codex-subscription")
@@ -343,11 +344,11 @@ mod tests {
         assert!(backend_notice(&model_profile).is_none());
 
         let runtime_profile = BackendProfile {
-            conversation: ConversationBackend::Runtime("acpx_claude".to_string()),
+            conversation: ConversationBackend::Runtime("claude".to_string()),
             ..Default::default()
         };
         let notice = backend_notice(&runtime_profile).expect("must warn for runtime backend");
-        assert!(notice.contains("runtime:acpx_claude"));
+        assert!(notice.contains("runtime:claude"));
     }
 
     #[test]
@@ -365,12 +366,12 @@ mod tests {
     #[test]
     fn model_reply_prefix_runtime_always_warns() {
         let runtime_profile = BackendProfile {
-            conversation: ConversationBackend::Runtime("acpx_claude".to_string()),
+            conversation: ConversationBackend::Runtime("claude".to_string()),
             ..Default::default()
         };
         // Bare: both the label and the warning.
         let bare_prefix = model_reply_prefix(&runtime_profile, true);
-        assert!(bare_prefix.contains("Backend de conversa: runtime:acpx_claude"));
+        assert!(bare_prefix.contains("Backend de conversa: runtime:claude"));
         assert!(bare_prefix.contains("Aviso"));
 
         // Non-bare: warning only, no redundant label line.
@@ -389,9 +390,6 @@ mod tests {
         // constructing a real AgentLoop is out of scope for a pure unit test
         // here (covered by the E2E checklist in the plan instead).
         assert!(!auth_cfg.profiles.contains_key("claude-subscription"));
-        assert_eq!(
-            mapped_auth_profile("acpx_claude"),
-            Some("claude-subscription")
-        );
+        assert_eq!(mapped_auth_profile("claude"), Some("claude-subscription"));
     }
 }

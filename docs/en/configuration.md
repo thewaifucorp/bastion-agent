@@ -114,15 +114,21 @@ and `/connect vertex` print the same steps.
 
 ### Claude Code subscription
 
-Claude Code can serve the conversation under your own Claude login while
-Bastion keeps the permissions, the memory and the record:
+A Claude Pro/Max subscription serves the conversation through Claude Code
+itself — the unmodified `claude` binary, under your own login — while Bastion
+keeps the permissions, the memory and the record. It is not a model provider:
+Bastion never calls Claude with your subscription, never reads `~/.claude`,
+never sees or stores the login token, and never runs a login for you. (For
+Claude in Bastion's own loop use an API key, Bedrock or Vertex, above.)
 
-1. Install Claude Code and log in (`claude auth login`, or `bastion connect
-   claude`).
-2. `/backend use acp_claude` (installer option 2 sets it for a new install).
+1. Install Claude Code where Bastion runs and sign in yourself: `claude auth
+   login` (Docker install: `docker compose exec -it core claude auth login`).
+2. `bastion connect claude` (or `/connect claude`) checks that it is installed
+   and signed in — `claude --version` and `claude auth status`, nothing else.
+3. `/backend use claude` (installer option 2 sets it for a new install).
 
-Bastion speaks ACP to Claude Code directly (`claude-agent-acp` when it is on
-`PATH`, otherwise `npx -y @agentclientprotocol/claude-agent-acp@0.81.2`), so:
+Bastion runs `claude` in its stream-json mode, one process per conversation,
+so:
 
 - **It asks before it acts.** Before Claude writes a file or runs a command,
   the turn stops and shows what it wants to do, with the diff. Reply `sim` to
@@ -130,18 +136,25 @@ Bastion speaks ACP to Claude Code directly (`claude-agent-acp` when it is on
   prompt; with no answer in 10 minutes it is denied. A message from an
   unauthenticated channel never answers it.
 - **It keeps its context** for the whole conversation; the Claude session
-  closes after 30 minutes idle.
-- **It reaches Bastion** — memory, personas, capabilities — through Bastion's
-  own MCP server, on a loopback port with a per-owner token that lives only in
-  the daemon's memory. Capabilities that need approval still ask.
+  closes after 30 minutes idle. The Bastion session is the conversation of
+  record: the Claude session is its child, and after a restart Bastion
+  reattaches it (`claude --resume`).
+- **It reaches Bastion** — memory, personas, goals, capabilities, and your
+  Bastion tasks (read-only) — through Bastion's own MCP server, on a loopback
+  port with a per-owner token that lives only in the daemon's memory and in a
+  private file handed to that session. Every call goes through Bastion's
+  capability policy, egress filter and approval queue.
 - **It does not load your personal Claude Code setup**: no settings or
-  `allow` rules, no hooks, plugins, skills, no MCP servers from your account,
-  no auto memory. Only your login is used.
+  `allow` rules, no hooks, plugins, no MCP servers from your account, no auto
+  memory. No `ANTHROPIC_*` variable or other credential reaches it: only your
+  login is used, and Bastion warns if Claude Code reports anything else.
 - It runs in the sandbox, in `<workspace>/<owner>`, with network (it has to
   reach Anthropic). Each answer ends with a line naming the files it edited.
+  Its token usage is recorded as subscription usage, at no metered cost.
 
-`acpx_claude` is still available; through `acpx`, Claude decides its own
-permissions and Bastion never sees them.
+`acp_claude` and `acpx_claude` (Claude Code through `claude-agent-acp`, an
+Agent SDK application) are no longer offered; a saved selection of either now
+uses `claude`.
 
 ### Workspace
 
