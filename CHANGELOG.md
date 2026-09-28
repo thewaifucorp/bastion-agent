@@ -10,6 +10,20 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **Model prices for budgets (`[pricing]`, BUP-01..05).** Budgets
+  (`agent.daily_budget_usd`, a task's `max_cost_usd`, `[reflector] budget_usd`)
+  are priced per model from the Langfuse table packaged with bastion-core,
+  cache and reasoning tokens included. `[pricing] overrides` names a file in the
+  same format that wins over it; `[pricing] attribute_namespace` sets the
+  prefix of the cost span attributes (default `bastion`). A metered model with
+  no price is refused before the call with an error naming the model and the
+  override. Every model call of a turn — routing, persona, Cabinet, tool loop,
+  compaction — and the Reflector's are traced (`chat {model}` spans with
+  `<ns>.cost.usd`/`price_table`/`billing`/`owner`) and charged; Ollama,
+  subscriptions (Codex, Copilot) and agent harnesses cost `0` and never consume
+  the budget. Adaptive `Pursue` tasks fill `cost_usd` (`0` on a harness
+  login). Requires the bastion-core pin that ships `bastion_runtime::pricing`.
+
 - **One agent across your devices** (spec `multi-device-brain-and-nodes`). This
   install can be the owner's **primary** or a **node** of it.
   - `bastion node init|pair|run|promote` and a `[devices]` config section.

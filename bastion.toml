@@ -12,6 +12,13 @@ default_model         = "gemini-2.5-flash"
 daily_budget_usd      = 5.0
 # fallback_models = ["groq/llama-3.1-8b-instant"]  # D-11: tried in order on hard provider failure
 
+# Model prices come from the Langfuse table packaged with bastion-core. A metered
+# model missing from it is refused before the call — price it in an override file
+# (same JSON format as Langfuse's default-model-prices.json, USD per token).
+# [pricing]
+# overrides = "/etc/bastion/model-prices.json"
+# attribute_namespace = "bastion"
+
 # Subscription runtimes are selected by the installer through environment
 # overrides. Their actual OAuth credentials stay in Docker volumes, never here.
 [auth.claude-subscription]

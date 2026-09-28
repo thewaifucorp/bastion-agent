@@ -192,12 +192,48 @@ A granted path is seen at its real location (`BASTION_GRANTED_PATH_<n>` holds
 it), and a workspace-scoped extension runs with the workspace as its
 directory.
 
+### Model prices and budgets
+
+`agent.daily_budget_usd` (and a task's `max_cost_usd`, and `[reflector]
+budget_usd`) are checked against model prices before each call. Prices come
+from the Langfuse model table packaged with bastion-core — nothing is fetched at
+run time. Every model call is priced by the model that actually answered,
+including cached and reasoning tokens; a provider that reports its own cost
+(OpenRouter) is charged that cost.
+
+- A metered model the table does not know is **refused before the call**, with
+  an error naming the model and this setting. Add it to an override file:
+
+```toml
+[pricing]
+overrides = "/etc/bastion/model-prices.json"   # same format as Langfuse's default-model-prices.json
+# attribute_namespace = "bastion"              # prefix of the cost span attributes
+```
+
+```json
+[{"modelName": "my-model", "matchPattern": "(?i)^my-model$",
+  "pricingTiers": [{"name": "Standard", "isDefault": true, "priority": 0, "conditions": [],
+    "prices": {"input": 0.000001, "output": 0.000002}}]}]
+```
+
+  Prices are USD per token. Override entries win over the packaged table; a
+  missing or invalid override file stops startup.
+- Ollama is `local` and ChatGPT (Codex) and Copilot subscriptions are
+  `subscription`: they need no price, cost `0` and never consume the daily
+  budget. So do agent harnesses (Claude Code, Codex, OpenCode) running on their
+  own login; their tokens are still recorded.
+- Each model call emits a `chat {model}` span with the GenAI token attributes
+  and `<ns>.cost.usd`, `<ns>.cost.price_table` (e.g. `langfuse@868fc7d`, or
+  `…+override`), `<ns>.cost.billing` (`metered`, `subscription`, `local`) and
+  `<ns>.owner`. The dollars on the span are the dollars charged to the budget.
+
 ## Core settings
 
 | Area | Setting | Purpose |
 | --- | --- | --- |
 | Agent | `agent.default_model` | Provider model name used by the runtime. |
-| Agent | `agent.daily_budget_usd` | Daily budget configured for the agent. |
+| Agent | `agent.daily_budget_usd` | Daily USD budget; metered model calls are priced from the model table and refused once it is spent. |
+| Pricing | `pricing.overrides`, `pricing.attribute_namespace` | Model-price override file and cost span attribute namespace (see above). |
 | Session | `session.db_path` | SQLite session database location. |
 | Session | `session.autocompact_threshold` | Session compaction threshold. |
 | Logging | `logging.log_path` | JSON log file location. |

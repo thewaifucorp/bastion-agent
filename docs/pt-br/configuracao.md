@@ -157,6 +157,42 @@ caminho concedido aparece no local real (`BASTION_GRANTED_PATH_<n>` guarda o
 caminho) e uma extensão com escopo de workspace roda com o workspace como
 diretório.
 
+### Preços de modelo e orçamentos
+
+`agent.daily_budget_usd` (e o `max_cost_usd` de uma tarefa, e o `budget_usd` do
+`[reflector]`) são checados contra o preço do modelo antes de cada chamada. Os
+preços vêm da tabela de modelos do Langfuse empacotada no bastion-core — nada é
+baixado em tempo de execução. Cada chamada é precificada pelo modelo que de fato
+respondeu, contando tokens de cache e de raciocínio; um provider que informa o
+próprio custo (OpenRouter) é cobrado por esse custo.
+
+- Um modelo pago que a tabela não conhece é **recusado antes da chamada**, com
+  um erro que nomeia o modelo e esta configuração. Adicione-o num arquivo de
+  override:
+
+```toml
+[pricing]
+overrides = "/etc/bastion/model-prices.json"   # mesmo formato do default-model-prices.json do Langfuse
+# attribute_namespace = "bastion"              # prefixo dos atributos de custo no span
+```
+
+```json
+[{"modelName": "meu-modelo", "matchPattern": "(?i)^meu-modelo$",
+  "pricingTiers": [{"name": "Standard", "isDefault": true, "priority": 0, "conditions": [],
+    "prices": {"input": 0.000001, "output": 0.000002}}]}]
+```
+
+  Preços em USD por token. O override vence a tabela empacotada; um arquivo de
+  override ausente ou inválido impede o boot.
+- Ollama é `local`, e as assinaturas do ChatGPT (Codex) e do Copilot são
+  `subscription`: não precisam de preço, custam `0` e nunca consomem o orçamento
+  diário. O mesmo vale para harnesses (Claude Code, Codex, OpenCode) rodando no
+  próprio login; os tokens continuam registrados.
+- Cada chamada gera um span `chat {modelo}` com os atributos de tokens GenAI e
+  `<ns>.cost.usd`, `<ns>.cost.price_table` (ex.: `langfuse@868fc7d`, ou
+  `…+override`), `<ns>.cost.billing` (`metered`, `subscription`, `local`) e
+  `<ns>.owner`. Os dólares do span são os mesmos cobrados do orçamento.
+
 ## Ajustes principais
 
 | Área | Chave | Finalidade |
