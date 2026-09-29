@@ -114,15 +114,21 @@ and `/connect vertex` print the same steps.
 
 ### Claude Code subscription
 
-Claude Code can serve the conversation under your own Claude login while
-Bastion keeps the permissions, the memory and the record:
+A Claude Pro/Max subscription serves the conversation through Claude Code
+itself — the unmodified `claude` binary, under your own login — while Bastion
+keeps the permissions, the memory and the record. It is not a model provider:
+Bastion never calls Claude with your subscription, never reads `~/.claude`,
+never sees or stores the login token, and never runs a login for you. (For
+Claude in Bastion's own loop use an API key, Bedrock or Vertex, above.)
 
-1. Install Claude Code and log in (`claude auth login`, or `bastion connect
-   claude`).
-2. `/backend use acp_claude` (installer option 2 sets it for a new install).
+1. Install Claude Code where Bastion runs and sign in yourself: `claude auth
+   login` (Docker install: `docker compose exec -it core claude auth login`).
+2. `bastion connect claude` (or `/connect claude`) checks that it is installed
+   and signed in — `claude --version` and `claude auth status`, nothing else.
+3. `/backend use claude` (installer option 2 sets it for a new install).
 
-Bastion speaks ACP to Claude Code directly (`claude-agent-acp` when it is on
-`PATH`, otherwise `npx -y @agentclientprotocol/claude-agent-acp@0.81.2`), so:
+Bastion runs `claude` in its stream-json mode, one process per conversation,
+so:
 
 - **It asks before it acts.** Before Claude writes a file or runs a command,
   the turn stops and shows what it wants to do, with the diff. Reply `sim` to
@@ -130,18 +136,25 @@ Bastion speaks ACP to Claude Code directly (`claude-agent-acp` when it is on
   prompt; with no answer in 10 minutes it is denied. A message from an
   unauthenticated channel never answers it.
 - **It keeps its context** for the whole conversation; the Claude session
-  closes after 30 minutes idle.
-- **It reaches Bastion** — memory, personas, capabilities — through Bastion's
-  own MCP server, on a loopback port with a per-owner token that lives only in
-  the daemon's memory. Capabilities that need approval still ask.
+  closes after 30 minutes idle. The Bastion session is the conversation of
+  record: the Claude session is its child, and after a restart Bastion
+  reattaches it (`claude --resume`).
+- **It reaches Bastion** — memory, personas, goals, capabilities, and your
+  Bastion tasks (read-only) — through Bastion's own MCP server, on a loopback
+  port with a per-owner token that lives only in the daemon's memory and in a
+  private file handed to that session. Every call goes through Bastion's
+  capability policy, egress filter and approval queue.
 - **It does not load your personal Claude Code setup**: no settings or
-  `allow` rules, no hooks, plugins, skills, no MCP servers from your account,
-  no auto memory. Only your login is used.
+  `allow` rules, no hooks, plugins, no MCP servers from your account, no auto
+  memory. No `ANTHROPIC_*` variable or other credential reaches it: only your
+  login is used, and Bastion warns if Claude Code reports anything else.
 - It runs in the sandbox, in `<workspace>/<owner>`, with network (it has to
   reach Anthropic). Each answer ends with a line naming the files it edited.
+  Its token usage is recorded as subscription usage, at no metered cost.
 
-`acpx_claude` is still available; through `acpx`, Claude decides its own
-permissions and Bastion never sees them.
+`acp_claude` and `acpx_claude` (Claude Code through `claude-agent-acp`, an
+Agent SDK application) are no longer offered; a saved selection of either now
+uses `claude`.
 
 ### Workspace
 
@@ -192,12 +205,48 @@ A granted path is seen at its real location (`BASTION_GRANTED_PATH_<n>` holds
 it), and a workspace-scoped extension runs with the workspace as its
 directory.
 
+### Model prices and budgets
+
+`agent.daily_budget_usd` (and a task's `max_cost_usd`, and `[reflector]
+budget_usd`) are checked against model prices before each call. Prices come
+from the Langfuse model table packaged with bastion-core — nothing is fetched at
+run time. Every model call is priced by the model that actually answered,
+including cached and reasoning tokens; a provider that reports its own cost
+(OpenRouter) is charged that cost.
+
+- A metered model the table does not know is **refused before the call**, with
+  an error naming the model and this setting. Add it to an override file:
+
+```toml
+[pricing]
+overrides = "/etc/bastion/model-prices.json"   # same format as Langfuse's default-model-prices.json
+# attribute_namespace = "bastion"              # prefix of the cost span attributes
+```
+
+```json
+[{"modelName": "my-model", "matchPattern": "(?i)^my-model$",
+  "pricingTiers": [{"name": "Standard", "isDefault": true, "priority": 0, "conditions": [],
+    "prices": {"input": 0.000001, "output": 0.000002}}]}]
+```
+
+  Prices are USD per token. Override entries win over the packaged table; a
+  missing or invalid override file stops startup.
+- Ollama is `local` and ChatGPT (Codex) and Copilot subscriptions are
+  `subscription`: they need no price, cost `0` and never consume the daily
+  budget. So do agent harnesses (Claude Code, Codex, OpenCode) running on their
+  own login; their tokens are still recorded.
+- Each model call emits a `chat {model}` span with the GenAI token attributes
+  and `<ns>.cost.usd`, `<ns>.cost.price_table` (e.g. `langfuse@868fc7d`, or
+  `…+override`), `<ns>.cost.billing` (`metered`, `subscription`, `local`) and
+  `<ns>.owner`. The dollars on the span are the dollars charged to the budget.
+
 ## Core settings
 
 | Area | Setting | Purpose |
 | --- | --- | --- |
 | Agent | `agent.default_model` | Provider model name used by the runtime. |
-| Agent | `agent.daily_budget_usd` | Daily budget configured for the agent. |
+| Agent | `agent.daily_budget_usd` | Daily USD budget; metered model calls are priced from the model table and refused once it is spent. |
+| Pricing | `pricing.overrides`, `pricing.attribute_namespace` | Model-price override file and cost span attribute namespace (see above). |
 | Session | `session.db_path` | SQLite session database location. |
 | Session | `session.autocompact_threshold` | Session compaction threshold. |
 | Logging | `logging.log_path` | JSON log file location. |

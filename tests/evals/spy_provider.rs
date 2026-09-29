@@ -63,6 +63,10 @@ impl Provider for SpyProvider {
     fn name(&self) -> &'static str {
         self.name
     }
+
+    fn cost_basis(&self) -> bastion_types::CostBasis {
+        bastion_types::CostBasis::Local
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -124,5 +128,9 @@ impl Provider for MockProvider {
 
     fn name(&self) -> &'static str {
         self.name
+    }
+
+    fn cost_basis(&self) -> bastion_types::CostBasis {
+        bastion_types::CostBasis::Local
     }
 }

@@ -1,11 +1,12 @@
-//! Live: Claude Code as the conversation runtime through `acp_claude`, on the
-//! operator's own login, the way the daemon wires it — the registry probe,
-//! OS confinement when this host has a backend, Bastion's MCP bridge, and a
-//! permission request parked until the owner answers.
+//! Live: Claude Code as the conversation runtime `claude` — the unmodified
+//! `claude` binary on the operator's own subscription login — the way the
+//! daemon wires it: the registry probe, OS confinement when this host has a
+//! backend, Bastion's MCP bridge, and a permission request parked until the
+//! owner answers. (The file keeps its historical name; `acp_claude` itself is
+//! no longer registered.)
 //!
-//! Not run by default: spawns the real Claude Code ACP bridge and spends a few
-//! turns of the operator's subscription. Needs `claude` logged in and `npx`
-//! (or `claude-agent-acp`) on PATH:
+//! Not run by default: spends a few turns of the operator's subscription.
+//! Needs `claude` installed and signed in (`claude auth status`):
 //!
 //! ```text
 //! cargo test --test acp_claude_live -- --ignored --nocapture --test-threads=1
@@ -70,6 +71,9 @@ impl Provider for UnusedProvider {
     fn name(&self) -> &'static str {
         "unused"
     }
+    fn cost_basis(&self) -> bastion_types::CostBasis {
+        bastion_types::CostBasis::Local
+    }
 }
 
 async fn make_loop(db_path: &str) -> AgentLoop {
@@ -107,7 +111,7 @@ async fn make_loop(db_path: &str) -> AgentLoop {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "spawns the real Claude Code ACP bridge and spends subscription turns"]
+#[ignore = "spawns the real claude binary and spends subscription turns"]
 async fn claude_code_asks_bastion_before_writing_and_reaches_the_bridge() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter("bastion=debug,bastion_agent_runtime=debug,rmcp=info")
@@ -124,15 +128,16 @@ async fn claude_code_asks_bastion_before_writing_and_reaches_the_bridge() {
 
     let registry = bastion::agent_runtime_registry::build_runtime_registry(&workspace).await;
     let ids: Vec<&str> = registry.descriptors().iter().map(|d| d.id).collect();
+    assert!(ids.contains(&"claude"), "claude not registered: {ids:?}");
     assert!(
-        ids.contains(&"acp_claude"),
-        "acp_claude not registered: {ids:?}"
+        !ids.contains(&"acp_claude") && !ids.contains(&"acpx_claude"),
+        "an Agent SDK Claude bridge is registered: {ids:?}"
     );
 
     let mut agent = make_loop(db)
         .await
         .with_backend_profile(BackendProfile {
-            conversation: ConversationBackend::Runtime("acp_claude".to_string()),
+            conversation: ConversationBackend::Runtime("claude".to_string()),
             ..Default::default()
         })
         .with_runtime_registry(registry)

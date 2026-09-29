@@ -104,11 +104,13 @@ Everything Bastion runs — agent harnesses, the git pack, extensions,
 sidecars — is confined by the OS sandbox (see [Configuration](configuration.md#sandbox)).
 The daemon refuses to start if this host has no sandbox backend.
 
-Log in to a subscription with `bastion connect claude|codex|opencode` (it runs
-the CLI's own login on your machine) or, for the ChatGPT subscription inside
-Bastion's own loop, `/auth connect codex` with `[subscriptions.codex] login = "browser"`.
-With Claude Code logged in, `/backend use acp_claude` runs the conversation on
-it and every edit it wants to make waits for your `sim` (see
+Log in to a Codex or OpenCode subscription with `bastion connect codex|opencode`
+(it runs the CLI's own login on your machine) or, for the ChatGPT subscription
+inside Bastion's own loop, `/auth connect codex` with `[subscriptions.codex] login = "browser"`.
+For a Claude subscription, sign Claude Code in yourself (`claude auth login`);
+`bastion connect claude` only checks the install and the login. Then
+`/backend use claude` runs the conversation on it and every edit it wants to
+make waits for your `sim` (see
 [Claude Code subscription](configuration.md#claude-code-subscription)).
 
 `bastion update --apply --yes` updates a native install in place (rebuild,

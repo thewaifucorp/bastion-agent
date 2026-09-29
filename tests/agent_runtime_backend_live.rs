@@ -55,6 +55,9 @@ impl Provider for UnusedProvider {
     fn name(&self) -> &'static str {
         "unused"
     }
+    fn cost_basis(&self) -> bastion_types::CostBasis {
+        bastion_types::CostBasis::Local
+    }
 }
 
 fn make_unused_provider() -> SharedProvider {

@@ -57,6 +57,9 @@ async fn compact_skips_when_few_messages() {
         fn name(&self) -> &'static str {
             "mock"
         }
+        fn cost_basis(&self) -> bastion_types::CostBasis {
+            bastion_types::CostBasis::Local
+        }
     }
 
     let dir = tempfile::tempdir().unwrap();
@@ -106,6 +109,9 @@ async fn compact_fires_with_enough_messages() {
         }
         fn name(&self) -> &'static str {
             "mock"
+        }
+        fn cost_basis(&self) -> bastion_types::CostBasis {
+            bastion_types::CostBasis::Local
         }
     }
 

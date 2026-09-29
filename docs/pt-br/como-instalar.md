@@ -89,11 +89,13 @@ sidecars — roda confinado pelo sandbox do sistema (veja
 [Configuração](configuracao.md#sandbox)). O daemon não inicia se o host não
 tiver backend de sandbox.
 
-Faça login numa assinatura com `bastion connect claude|codex|opencode` (roda o
-login do próprio CLI na sua máquina) ou, para a assinatura do ChatGPT no loop do
-próprio Bastion, `/auth connect codex` com `[subscriptions.codex] login = "browser"`.
-Com o Claude Code logado, `/backend use acp_claude` roda a conversa nele e cada
-edição que ele quiser fazer espera o seu `sim` (veja
+Faça login numa assinatura Codex ou OpenCode com `bastion connect codex|opencode`
+(roda o login do próprio CLI na sua máquina) ou, para a assinatura do ChatGPT no
+loop do próprio Bastion, `/auth connect codex` com `[subscriptions.codex] login = "browser"`.
+Para uma assinatura Claude, faça login no Claude Code você mesmo (`claude auth
+login`); o `bastion connect claude` só confere a instalação e o login. Depois,
+`/backend use claude` roda a conversa nele e cada edição que ele quiser fazer
+espera o seu `sim` (veja
 [Assinatura do Claude Code](configuracao.md#assinatura-do-claude-code)).
 
 `bastion update --apply --yes` atualiza a instalação nativa no lugar

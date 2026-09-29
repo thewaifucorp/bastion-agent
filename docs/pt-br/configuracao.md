@@ -76,16 +76,23 @@ passos.
 
 ### Assinatura do Claude Code
 
-O Claude Code pode atender a conversa com o seu próprio login do Claude,
-enquanto o Bastion fica com as permissões, a memória e o registro:
+Uma assinatura Claude Pro/Max atende a conversa pelo próprio Claude Code — o
+binário `claude` sem modificação, com o seu login — enquanto o Bastion fica
+com as permissões, a memória e o registro. Não é um provider de modelo: o
+Bastion nunca chama o Claude com a sua assinatura, nunca lê `~/.claude`, nunca
+vê nem guarda o token de login e nunca faz login por você. (Para o Claude no
+loop do próprio Bastion, use API key, Bedrock ou Vertex, acima.)
 
-1. Instale o Claude Code e faça login (`claude auth login`, ou `bastion connect
-   claude`).
-2. `/backend use acp_claude` (a opção 2 do instalador já configura isso numa
+1. Instale o Claude Code onde o Bastion roda e faça login você mesmo: `claude
+   auth login` (instalação Docker: `docker compose exec -it core claude auth
+   login`).
+2. `bastion connect claude` (ou `/connect claude`) confere que ele está
+   instalado e logado — `claude --version` e `claude auth status`, só isso.
+3. `/backend use claude` (a opção 2 do instalador já configura isso numa
    instalação nova).
 
-O Bastion fala ACP direto com o Claude Code (`claude-agent-acp` quando está no
-`PATH`, senão `npx -y @agentclientprotocol/claude-agent-acp@0.81.2`), então:
+O Bastion roda o `claude` no modo stream-json, um processo por conversa,
+então:
 
 - **Ele pergunta antes de agir.** Antes de o Claude escrever um arquivo ou
   rodar um comando, o turno para e mostra o que ele quer fazer, com o diff.
@@ -93,20 +100,28 @@ O Bastion fala ACP direto com o Claude Code (`claude-agent-acp` quando está no
   nega e vira o seu próximo pedido; sem resposta em 10 minutos, é negado.
   Mensagem de canal não autenticado nunca responde o pedido.
 - **Ele mantém o contexto** durante toda a conversa; a sessão do Claude fecha
-  depois de 30 minutos parada.
-- **Ele alcança o Bastion** — memória, personas, capabilities — pelo próprio
-  servidor MCP do Bastion, numa porta de loopback com um token por owner que só
-  existe na memória do daemon. Capabilities que pedem aprovação continuam
-  pedindo.
+  depois de 30 minutos parada. A sessão do Bastion é a conversa de registro: a
+  do Claude é filha dela e, depois de um restart, o Bastion a retoma
+  (`claude --resume`).
+- **Ele alcança o Bastion** — memória, personas, metas, capabilities e as suas
+  tarefas do Bastion (só leitura) — pelo próprio servidor MCP do Bastion, numa
+  porta de loopback com um token por owner que só existe na memória do daemon
+  e num arquivo privado entregue àquela sessão. Toda chamada passa pela
+  política de capabilities, pelo filtro de egress e pela fila de aprovação do
+  Bastion.
 - **Ele não carrega o seu Claude Code pessoal**: nada de configurações ou
-  regras `allow`, hooks, plugins, skills, servidores MCP da sua conta, nem
-  auto-memória. Só o seu login é usado.
+  regras `allow`, hooks, plugins, servidores MCP da sua conta, nem
+  auto-memória. Nenhuma variável `ANTHROPIC_*` nem outra credencial chega a
+  ele: só o seu login é usado, e o Bastion avisa se o Claude Code disser que
+  usou outra coisa.
 - Ele roda no sandbox, em `<workspace>/<owner>`, com rede (precisa falar com
   a Anthropic). Cada resposta termina com uma linha dizendo que arquivos ele
-  editou.
+  editou. O consumo de tokens é registrado como uso da assinatura, sem custo
+  medido.
 
-O `acpx_claude` continua disponível; pelo `acpx`, o Claude decide as próprias
-permissões e o Bastion nunca as vê.
+`acp_claude` e `acpx_claude` (o Claude Code via `claude-agent-acp`, uma
+aplicação do Agent SDK) não são mais oferecidos; uma seleção salva de qualquer
+um deles agora usa `claude`.
 
 ### Workspace
 
@@ -156,6 +171,42 @@ sempre exigem backend e são recusadas sem ele; a saída explícita
 caminho concedido aparece no local real (`BASTION_GRANTED_PATH_<n>` guarda o
 caminho) e uma extensão com escopo de workspace roda com o workspace como
 diretório.
+
+### Preços de modelo e orçamentos
+
+`agent.daily_budget_usd` (e o `max_cost_usd` de uma tarefa, e o `budget_usd` do
+`[reflector]`) são checados contra o preço do modelo antes de cada chamada. Os
+preços vêm da tabela de modelos do Langfuse empacotada no bastion-core — nada é
+baixado em tempo de execução. Cada chamada é precificada pelo modelo que de fato
+respondeu, contando tokens de cache e de raciocínio; um provider que informa o
+próprio custo (OpenRouter) é cobrado por esse custo.
+
+- Um modelo pago que a tabela não conhece é **recusado antes da chamada**, com
+  um erro que nomeia o modelo e esta configuração. Adicione-o num arquivo de
+  override:
+
+```toml
+[pricing]
+overrides = "/etc/bastion/model-prices.json"   # mesmo formato do default-model-prices.json do Langfuse
+# attribute_namespace = "bastion"              # prefixo dos atributos de custo no span
+```
+
+```json
+[{"modelName": "meu-modelo", "matchPattern": "(?i)^meu-modelo$",
+  "pricingTiers": [{"name": "Standard", "isDefault": true, "priority": 0, "conditions": [],
+    "prices": {"input": 0.000001, "output": 0.000002}}]}]
+```
+
+  Preços em USD por token. O override vence a tabela empacotada; um arquivo de
+  override ausente ou inválido impede o boot.
+- Ollama é `local`, e as assinaturas do ChatGPT (Codex) e do Copilot são
+  `subscription`: não precisam de preço, custam `0` e nunca consomem o orçamento
+  diário. O mesmo vale para harnesses (Claude Code, Codex, OpenCode) rodando no
+  próprio login; os tokens continuam registrados.
+- Cada chamada gera um span `chat {modelo}` com os atributos de tokens GenAI e
+  `<ns>.cost.usd`, `<ns>.cost.price_table` (ex.: `langfuse@868fc7d`, ou
+  `…+override`), `<ns>.cost.billing` (`metered`, `subscription`, `local`) e
+  `<ns>.owner`. Os dólares do span são os mesmos cobrados do orçamento.
 
 ## Ajustes principais
 

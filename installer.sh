@@ -205,9 +205,13 @@ configure_backend() {
       configure_provider
       ;;
     2)
-      env_set BASTION_BACKEND_CONVERSATION runtime:acp_claude
+      env_set BASTION_BACKEND_CONVERSATION runtime:claude
       env_set BASTION_BACKEND_AUTH claude-subscription
-      info "Run 'bastion connect claude' after startup to complete its browser login."
+      if ((NATIVE)); then
+        info "Sign Claude Code in yourself with 'claude auth login', then run 'bastion connect claude' to check it."
+      else
+        info "After startup, sign Claude Code in yourself with 'docker compose exec -it core claude auth login', then run 'bastion connect claude' to check it."
+      fi
       ;;
     3)
       env_set BASTION_BACKEND_CONVERSATION runtime:codex_app_server

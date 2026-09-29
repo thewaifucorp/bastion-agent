@@ -123,6 +123,57 @@ pub struct BastionConfig {
     /// devices (primary or node). See `crate::devices`.
     #[serde(default)]
     pub devices: DevicesConfig,
+    /// Optional `[pricing]` table: the operator's model-price override and
+    /// the cost telemetry namespace. Absent: the price table packaged with
+    /// bastion-core alone, attributes under `bastion.*`.
+    #[serde(default)]
+    pub pricing: PricingConfig,
+}
+
+/// `[pricing]` (BUP-01/02). Budgets are checked against model prices from
+/// the Langfuse table packaged with bastion-core; `overrides` names a file in
+/// the SAME format whose entries win over it — how an operator prices a
+/// model the table lacks (a metered model with no price is refused before
+/// the call) or corrects a price.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PricingConfig {
+    /// Path of the override file (Langfuse `default-model-prices.json`
+    /// format). A configured file that is missing or invalid stops startup.
+    #[serde(default)]
+    pub overrides: Option<std::path::PathBuf>,
+    /// Namespace of the cost span attributes (`<ns>.cost.usd`,
+    /// `<ns>.cost.price_table`, `<ns>.cost.billing`, `<ns>.owner`). Absent:
+    /// `bastion`. Set it to the namespace your telemetry platform expects.
+    #[serde(default)]
+    pub attribute_namespace: Option<String>,
+}
+
+impl PricingConfig {
+    /// Build the kernel's [`bastion_runtime::pricing::Pricing`] from this
+    /// table: the packaged prices, the override file when configured, and
+    /// an error hint that names this config key.
+    pub fn build(
+        &self,
+    ) -> Result<bastion_runtime::pricing::Pricing, bastion_runtime::pricing::PricingError> {
+        let mut pricing = bastion_runtime::pricing::Pricing::bundled();
+        pricing = match &self.overrides {
+            Some(path) => pricing
+                .with_override_file(path)?
+                .with_override_hint(format!("`[pricing] overrides` = {}", path.display())),
+            None => pricing.with_override_hint(
+                "set `[pricing] overrides` in bastion.toml to a file in Langfuse's \
+                 default-model-prices.json format",
+            ),
+        };
+        if let Some(namespace) = self
+            .attribute_namespace
+            .as_deref()
+            .filter(|n| !n.is_empty())
+        {
+            pricing = pricing.with_attribute_namespace(namespace);
+        }
+        Ok(pricing)
+    }
 }
 
 /// `[devices]`. Absent: the daemon is a single-device install, exactly as
@@ -377,7 +428,7 @@ pub fn backend_profile_from_config(
         None | Some("model") | Some("") => ConversationBackend::Model,
         Some(spec) => {
             let id = spec.strip_prefix("runtime:").unwrap_or(spec);
-            ConversationBackend::Runtime(id.to_string())
+            ConversationBackend::Runtime(canonical_runtime_id(id).to_string())
         }
     };
 
@@ -390,9 +441,35 @@ pub fn backend_profile_from_config(
 
     BackendProfile {
         conversation,
-        task_runtime: cfg.task_runtime.clone(),
+        task_runtime: cfg
+            .task_runtime
+            .as_deref()
+            .map(|id| canonical_runtime_id(id).to_string()),
         auth,
         coverage_note: None,
+    }
+}
+
+/// Runtime ids that ran Claude Code through `claude-agent-acp` — an Agent SDK
+/// application in front of Claude Code — on the user's subscription login.
+/// A Claude subscription may only be used through the unmodified `claude`
+/// binary, so both now resolve to the `claude` runtime, which drives it
+/// directly. A saved selection or `[backend]` entry naming either keeps
+/// working instead of failing every turn.
+const RETIRED_CLAUDE_RUNTIMES: &[&str] = &["acp_claude", "acpx_claude"];
+
+/// The runtime id a configured one resolves to (see
+/// [`RETIRED_CLAUDE_RUNTIMES`]); every other id is returned unchanged.
+pub fn canonical_runtime_id(id: &str) -> &str {
+    if RETIRED_CLAUDE_RUNTIMES.contains(&id) {
+        tracing::warn!(
+            event = "backend_runtime_id_migrated",
+            from = %id,
+            to = bastion_agent_runtime::claude_code::RUNTIME_ID,
+        );
+        bastion_agent_runtime::claude_code::RUNTIME_ID
+    } else {
+        id
     }
 }
 
@@ -1110,6 +1187,50 @@ mod tests {
     }
 
     #[test]
+    fn pricing_defaults_to_the_packaged_table() {
+        let absent: super::PricingConfig = toml::from_str("").expect("empty");
+        let pricing = absent.build().expect("packaged table");
+        assert!(pricing.table_version().starts_with("langfuse@"));
+        assert_eq!(pricing.attribute_namespace(), "bastion");
+        let err = pricing
+            .ensure_priced(
+                bastion_types::CostBasis::Metered,
+                false,
+                "no-such-model-xyz",
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("[pricing] overrides"), "{err}");
+    }
+
+    #[test]
+    fn pricing_override_file_prices_an_unlisted_model() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("prices.json");
+        std::fs::write(
+            &path,
+            r#"[{"modelName":"my-model","matchPattern":"(?i)^my-model$","pricingTiers":[
+                {"name":"Standard","isDefault":true,"priority":0,"conditions":[],
+                 "prices":{"input":0.000001,"output":0.000002}}]}]"#,
+        )
+        .unwrap();
+        let cfg: super::PricingConfig = toml::from_str(&format!(
+            "overrides = {:?}\nattribute_namespace = \"acme\"\n",
+            path.display().to_string()
+        ))
+        .expect("pricing table");
+        let pricing = cfg.build().expect("override loads");
+        assert_eq!(pricing.attribute_namespace(), "acme");
+        assert!(pricing
+            .ensure_priced(bastion_types::CostBasis::Metered, false, "my-model")
+            .is_ok());
+
+        let missing: super::PricingConfig =
+            toml::from_str("overrides = \"/definitely/not/here.json\"\n").unwrap();
+        assert!(missing.build().is_err());
+    }
+
+    #[test]
     fn codex_login_defaults_to_device_and_accepts_browser() {
         let absent: super::SubscriptionsConfig = toml::from_str("").expect("empty");
         assert_eq!(absent.codex.login, super::CodexLoginMode::Device);
@@ -1592,24 +1713,46 @@ telegram_chat_id = "222"
     fn test_backend_config_bare_id_without_prefix_maps_to_runtime_id() {
         use bastion_runtime::agent::backend::ConversationBackend;
         let cfg = BackendConfig {
-            conversation: Some("acpx_claude".to_string()),
+            conversation: Some("acpx_opencode".to_string()),
             ..Default::default()
         };
         assert_eq!(
             backend_profile_from_config(&cfg).conversation,
-            ConversationBackend::Runtime("acpx_claude".to_string())
+            ConversationBackend::Runtime("acpx_opencode".to_string())
         );
+    }
+
+    /// The retired Agent-SDK Claude runtimes resolve to `claude`, in both
+    /// the conversation and the delegated-task slot, prefixed or not.
+    #[test]
+    fn retired_claude_runtime_ids_resolve_to_the_claude_runtime() {
+        use bastion_runtime::agent::backend::ConversationBackend;
+        for spec in ["runtime:acp_claude", "acpx_claude", "runtime:claude"] {
+            let cfg = BackendConfig {
+                conversation: Some(spec.to_string()),
+                task_runtime: Some(spec.trim_start_matches("runtime:").to_string()),
+                auth: None,
+            };
+            let profile = backend_profile_from_config(&cfg);
+            assert_eq!(
+                profile.conversation,
+                ConversationBackend::Runtime("claude".to_string()),
+                "{spec}"
+            );
+            assert_eq!(profile.task_runtime.as_deref(), Some("claude"), "{spec}");
+        }
+        assert_eq!(canonical_runtime_id("codex_app_server"), "codex_app_server");
     }
 
     #[test]
     fn test_backend_config_task_runtime_and_auth_pass_through() {
         let cfg = BackendConfig {
             conversation: None,
-            task_runtime: Some("acpx_claude".to_string()),
+            task_runtime: Some("acpx_opencode".to_string()),
             auth: Some("host-claude-login".to_string()),
         };
         let profile = backend_profile_from_config(&cfg);
-        assert_eq!(profile.task_runtime.as_deref(), Some("acpx_claude"));
+        assert_eq!(profile.task_runtime.as_deref(), Some("acpx_opencode"));
         assert_eq!(
             profile.auth.map(|a| a.0),
             Some("host-claude-login".to_string())
@@ -1624,7 +1767,7 @@ telegram_chat_id = "222"
             r#"
 [backend]
 conversation = "runtime:codex_app_server"
-task_runtime = "acpx_claude"
+task_runtime = "acpx_opencode"
 auth = "host-chatgpt-login"
 "#,
         );
@@ -1637,7 +1780,7 @@ auth = "host-chatgpt-login"
             profile.conversation,
             ConversationBackend::Runtime("codex_app_server".to_string())
         );
-        assert_eq!(profile.task_runtime.as_deref(), Some("acpx_claude"));
+        assert_eq!(profile.task_runtime.as_deref(), Some("acpx_opencode"));
     }
 
     /// Fase 2.1: an empty-string `auth` (e.g. round-tripped through a

@@ -92,23 +92,12 @@ enum Command {
     },
     /// Start long-running REPL daemon (reads stdin, responds, loops)
     Daemon,
-    /// Sign in to a subscription runtime inside Bastion's Docker container
+    /// Codex/OpenCode: sign in to the subscription runtime where Bastion
+    /// runs. Claude: check that Claude Code is installed and signed in there
+    /// (signing in is your own `claude auth login`; Bastion never runs it)
     Connect {
         /// claude | codex | opencode
         provider: SubscriptionProvider,
-        /// claude only: run `claude setup-token` instead of `claude auth login`
-        /// (headless-friendly — prints a token to paste rather than a browser flow).
-        #[arg(long)]
-        setup_token: bool,
-        /// One-shot copy of the host's existing CLI credentials into the
-        /// running `core` container (requires the `bastion-home` volume —
-        /// Fase 1.1). NOT a live share: rotating a refresh token on either
-        /// side afterward can desync the two copies.
-        #[arg(long)]
-        import_host: bool,
-        /// Skip the --import-host confirmation prompt (for scripts/CI).
-        #[arg(long)]
-        yes: bool,
     },
     /// Check for a published Bastion release; apply it locally with --apply --yes
     Update {
@@ -343,46 +332,89 @@ fn default_chat_command() -> Command {
 /// Fase 2.6: `program` and its login-verb-args for `bastion connect
 /// <provider>` — kept local to main.rs (the CLI side) since the shared
 /// STATUS-verb table lives in `auth_profile_registry::host_cli_status_args`
-/// and is a different verb set (login vs. status).
-fn connect_login_args(
-    provider: &str,
-    setup_token: bool,
-) -> anyhow::Result<&'static [&'static str]> {
+/// and is a different verb set (login vs. status). Claude has none: for the
+/// Claude subscription Bastion only checks the user's own login.
+fn connect_login_args(provider: &str) -> anyhow::Result<&'static [&'static str]> {
     match provider {
-        "claude" if setup_token => Ok(&["setup-token"]),
-        "claude" => Ok(&["auth", "login"]),
         "codex" => Ok(&["login"]),
         "opencode" => Ok(&["auth", "login"]),
+        "claude" => {
+            anyhow::bail!("Bastion does not sign Claude Code in: run `claude auth login` yourself")
+        }
         _ => anyhow::bail!(
             "unknown subscription '{provider}'; use: bastion connect claude|codex|opencode"
         ),
     }
 }
 
-fn connect_subscription(
-    provider: &str,
-    setup_token: bool,
-    import_host: bool,
-    yes: bool,
+/// `bastion connect claude`: checks that Claude Code is installed and signed
+/// in where Bastion runs (the host for a native install, the `core`
+/// container otherwise) — `claude --version` and `claude auth status`, exit
+/// codes only. It never starts a login, never reads `~/.claude` and never
+/// copies credentials anywhere: the subscription is used only through the
+/// unmodified `claude` binary under the user's own login.
+fn check_claude_subscription(
+    native: bool,
+    project_dir: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
+    use bastion::auth_profile_registry::{claude_connection_message, ClaudeConnection};
+    let run = |args: &[&str]| -> Option<bool> {
+        let mut command = if native {
+            let mut c = ProcessCommand::new("claude");
+            c.args(args);
+            c
+        } else {
+            let mut c = ProcessCommand::new("docker");
+            c.args(["compose", "exec", "-T", "core", "claude"])
+                .args(args);
+            if let Some(dir) = project_dir {
+                c.current_dir(dir);
+            }
+            c
+        };
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .ok()
+            .map(|s| s.success())
+    };
+    let version_ok = run(&["--version"]);
+    let status_ok = if version_ok == Some(true) {
+        run(&["auth", "status"])
+    } else {
+        None
+    };
+    let connection = ClaudeConnection::from_checks(version_ok, status_ok);
+    let login = if native {
+        "claude auth login"
+    } else {
+        "docker compose exec -it core claude auth login"
+    };
+    let message = claude_connection_message(connection, login);
+    if connection == ClaudeConnection::LoggedIn {
+        println!("✔ {message}");
+        Ok(())
+    } else {
+        println!("✘ {message}");
+        anyhow::bail!("Claude Code is not ready for the subscription runtime")
+    }
+}
+
+fn connect_subscription(provider: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         matches!(provider, "claude" | "codex" | "opencode"),
         "unknown subscription '{provider}'; use: bastion connect claude|codex|opencode"
-    );
-    anyhow::ensure!(
-        !setup_token || provider == "claude",
-        "--setup-token only applies to `bastion connect claude`"
     );
 
     // Native install: the CLIs and their logins are the operator's own, on
     // this host — log in directly, no container in between.
     if std::env::var("BASTION_NATIVE").as_deref() == Ok("1") {
-        anyhow::ensure!(
-            !import_host,
-            "--import-host copies host logins into the container; a native install already \
-             uses them"
-        );
-        let login_args = connect_login_args(provider, setup_token)?;
+        if provider == "claude" {
+            return check_claude_subscription(true, None);
+        }
+        let login_args = connect_login_args(provider)?;
         let status = ProcessCommand::new(provider).args(login_args).status()?;
         anyhow::ensure!(status.success(), "{provider} login exited with {status}");
         let (verify_program, verify_args) =
@@ -425,11 +457,11 @@ fn connect_subscription(
         );
     }
 
-    if import_host {
-        return import_host_credentials(&project_dir, yes);
+    if provider == "claude" {
+        return check_claude_subscription(false, Some(&project_dir));
     }
 
-    let login_args = connect_login_args(provider, setup_token)?;
+    let login_args = connect_login_args(provider)?;
     let status = ProcessCommand::new("docker")
         .args(["compose", "exec", "-it", "core", provider])
         .args(login_args)
@@ -505,87 +537,6 @@ async fn self_update(apply: bool, yes: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Fase 2.6 `--import-host`: one-shot copy of the host's existing CLI
-/// credential files into the running `core` container. Deliberately NOT a
-/// live/bind mount — docker-compose.yml never bind-mounts `~/.claude` etc.
-/// live because concurrent refresh-token rotation between the host CLI and
-/// the containerized CLI corrupts the credential file for whichever side
-/// writes second. This copies once; each side owns its own copy afterward.
-fn import_host_credentials(project_dir: &std::path::Path, yes: bool) -> anyhow::Result<()> {
-    let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME is not set"))?;
-    let home = std::path::PathBuf::from(home);
-    let candidates = [".claude", ".claude.json"];
-    let existing: Vec<&str> = candidates
-        .iter()
-        .filter(|name| home.join(name).exists())
-        .copied()
-        .collect();
-    anyhow::ensure!(
-        !existing.is_empty(),
-        "no host credentials found at ~/.claude or ~/.claude.json — nothing to import"
-    );
-
-    if !yes {
-        eprintln!(
-            "◈ security: this copies your host CLI credentials ({}) into the running \
-             container ONE TIME. The container will then be able to act as you on that \
-             subscription. This is a one-shot copy, not a live share — re-run after the \
-             host credentials change (e.g. a fresh login). Re-run with --yes to proceed.",
-            existing.join(", ")
-        );
-        anyhow::bail!("aborted — pass --yes to confirm the import");
-    }
-
-    let mut tar_args: Vec<String> = vec![
-        "-cf".to_string(),
-        "-".to_string(),
-        "-C".to_string(),
-        home.display().to_string(),
-    ];
-    tar_args.extend(existing.iter().map(|s| s.to_string()));
-
-    let mut tar_child = ProcessCommand::new("tar")
-        .args(&tar_args)
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("could not spawn tar: {e}"))?;
-    let tar_stdout = tar_child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("failed to open tar stdout"))?;
-
-    let status = ProcessCommand::new("docker")
-        .args([
-            "compose",
-            "exec",
-            "-T",
-            "core",
-            "tar",
-            "-xf",
-            "-",
-            "-C",
-            "/home/bastion",
-        ])
-        .current_dir(project_dir)
-        .stdin(Stdio::from(tar_stdout))
-        .status()
-        .map_err(|e| anyhow::anyhow!("could not run docker compose exec for import: {e}"))?;
-
-    let tar_status = tar_child
-        .wait()
-        .map_err(|e| anyhow::anyhow!("tar (producer) failed: {e}"))?;
-    anyhow::ensure!(
-        tar_status.success(),
-        "tar (producer) failed with {tar_status}"
-    );
-    anyhow::ensure!(
-        status.success(),
-        "import into container failed (exit {status})"
-    );
-    println!("✔ host credentials imported into the container (one-shot copy).");
-    Ok(())
-}
-
 fn main() -> anyhow::Result<()> {
     // First, before the async runtime or any env/config read: this binary is
     // also the sandbox helper every confined tool and harness starts through.
@@ -642,14 +593,8 @@ async fn async_main() -> anyhow::Result<()> {
         println!("{output}");
         return Ok(());
     }
-    if let Command::Connect {
-        provider,
-        setup_token,
-        import_host,
-        yes,
-    } = &command
-    {
-        return connect_subscription(provider.as_str(), *setup_token, *import_host, *yes);
+    if let Command::Connect { provider } = &command {
+        return connect_subscription(provider.as_str());
     }
     if let Command::Update { apply, yes } = &command {
         return self_update(*apply, *yes).await;
@@ -1009,6 +954,19 @@ async fn async_main() -> anyhow::Result<()> {
         .unwrap_or_else(|| cfg.agent.fallback_models.clone());
 
     let daily_budget = cfg.agent.daily_budget_usd;
+    // BUP-01/02: model prices — the table packaged with bastion-core plus the
+    // operator's `[pricing] overrides` file. A configured override that is
+    // missing or invalid stops startup: prices the operator set must apply.
+    let pricing = std::sync::Arc::new(
+        cfg.pricing
+            .build()
+            .map_err(|e| anyhow::anyhow!("[pricing]: {e}"))?,
+    );
+    tracing::info!(
+        event = "pricing_ready",
+        table = pricing.table_version(),
+        overrides = ?cfg.pricing.overrides,
+    );
 
     // Init persona registry (load from BASTION_PERSONAS_DIR, defaulting to "./personas/";
     // empty if missing — PERS-07)
@@ -1363,6 +1321,7 @@ async fn async_main() -> anyhow::Result<()> {
     let runtime_registry_for_product = runtime_registry.clone();
 
     agent = agent
+        .with_pricing(pricing.clone())
         .with_backend_profile(backend_profile)
         .with_runtime_registry(runtime_registry)
         .with_runtime_workspace_base(workspace_root.clone())
@@ -2867,12 +2826,31 @@ async fn daemon_loop(
             }
         };
 
-        let generator: Arc<dyn bastion_cognition::learn::CandidateGenerator> =
-            Arc::new(bastion_cognition::learn::LlmCandidateGenerator::new(
+        // BUP-01/05: the Reflector's calls are priced, traced and charged to
+        // the daily budget like a turn's (background scope, no session), and
+        // its per-tick `budget_usd` is checked against the model's price.
+        let reflector_meter = Arc::new(
+            bastion_runtime::pricing::CostMeter::new(agent.pricing.clone()).with_ledger(
+                bastion_runtime::session::SessionManager::new(cfg.session.db_path.clone()),
+                cfg.agent.daily_budget_usd,
+            ),
+        );
+        let reflector_provider = bastion_runtime::pricing::MeteredProvider::wrap(
+            reflector_provider,
+            reflector_meter,
+            bastion_runtime::pricing::MeterScope::background(Some(
+                bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string(),
+            )),
+        )
+        .await;
+        let generator: Arc<dyn bastion_cognition::learn::CandidateGenerator> = Arc::new(
+            bastion_cognition::learn::LlmCandidateGenerator::new(
                 reflector_provider,
                 reflector_model,
                 cfg.reflector.allow_cloud,
-            ));
+            )
+            .with_pricing(agent.pricing.clone()),
+        );
 
         let reflector = bastion_cognition::learn::Reflector::new(
             agent.memory.clone(),

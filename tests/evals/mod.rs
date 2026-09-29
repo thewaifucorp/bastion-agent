@@ -928,6 +928,9 @@ async fn cli_session_deterministic_across_turns() {
         fn name(&self) -> &'static str {
             "mock"
         }
+        fn cost_basis(&self) -> bastion_types::CostBasis {
+            bastion_types::CostBasis::Local
+        }
     }
 
     let session = SessionManager::new(&path);

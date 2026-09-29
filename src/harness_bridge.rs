@@ -8,7 +8,10 @@
 //! enable for external clients, on a loopback listener of its own, with one
 //! token per owner minted on first use and kept only in memory.
 //!
-//! Every call the harness makes still goes through `CapabilityRegistry::invoke`
+//! What the harness reaches: the owner's capabilities (memory tools included)
+//! as MCP tools, the owner's memories, personas and goals as resources, and
+//! the owner's Bastion tasks read-only (`get_task`/`list_tasks`). Every call
+//! the harness makes still goes through `CapabilityRegistry::invoke`
 //! — egress policy and the approval queue included — as the token's owner. The
 //! token's privacy tier is `CloudOk` because the harness is itself a cloud
 //! destination the owner chose for this conversation; resources stay filtered
@@ -29,7 +32,7 @@ use bastion_runtime::agent::runtime_turn::RuntimeMcpBridge;
 use bastion_runtime::capability::CapabilityRegistry;
 use rand::RngCore;
 
-use crate::control_plane::scope::ScopeSet;
+use crate::control_plane::scope::{Scope, ScopeSet};
 use crate::mcp::server::{build_mcp_axum_router, TokenPermissions, TokenStore};
 
 /// Name the harness sees the server under.
@@ -132,15 +135,18 @@ async fn log_request(
     response
 }
 
-/// Read-write for capabilities (each still subject to its own approval), no
-/// Control Plane scopes: a harness has no business creating or steering
-/// Bastion tasks.
+/// Read-write for capabilities (each still subject to its own approval) and
+/// read-only for the owner's Bastion tasks (`tasks:read`: `get_task`,
+/// `list_tasks`), so the harness can see what Bastion is already pursuing.
+/// Creating, steering or cancelling tasks stays with the owner: those start
+/// or stop work Bastion runs on its own budget, outside the harness turn the
+/// owner is approving.
 fn permissions_for(owner: &str) -> TokenPermissions {
     TokenPermissions {
         read_only: false,
         owner_id: owner.to_string(),
         privacy_tier: PrivacyTier::CloudOk,
-        control_plane_scopes: ScopeSet::new([]),
+        control_plane_scopes: ScopeSet::new([Scope::TasksRead]),
         control_plane_project: None,
     }
 }
@@ -186,7 +192,10 @@ mod tests {
         let store = bridge.store.read().unwrap();
         assert_eq!(store[&alice].owner_id, "alice");
         assert_eq!(store[&bob].owner_id, "bob");
-        assert!(store[&alice].control_plane_scopes.0.is_empty());
+        let scopes = &store[&alice].control_plane_scopes;
+        assert!(scopes.has(Scope::TasksRead), "tasks are visible");
+        assert!(!scopes.has(Scope::TasksCreate));
+        assert!(!scopes.has(Scope::TasksControl));
     }
 
     #[test]

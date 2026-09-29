@@ -143,7 +143,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_backed_conversation_is_not_applicable() {
         let profile = BackendProfile {
-            conversation: ConversationBackend::Runtime("acpx_claude".to_string()),
+            conversation: ConversationBackend::Runtime("claude".to_string()),
             ..Default::default()
         };
 
@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(
             view.execution_owner,
             ExecutionOwner::ExternalRuntime {
-                runtime_id: "acpx_claude".to_string()
+                runtime_id: "claude".to_string()
             }
         );
         assert_eq!(view.model_status, ModelStatus::NotApplicable);
