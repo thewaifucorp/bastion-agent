@@ -25,6 +25,8 @@ COPY src ./src
 COPY build.rs ./build.rs
 # routes.rs embeds the frozen OpenAPI contract via include_str!.
 COPY docs/en/contracts ./docs/en/contracts
+# extension/trust.rs embeds the official publisher keys via include_str!.
+COPY keys ./keys
 # build.rs embeds the web app when web/dist exists (see webbuilder above).
 COPY --from=webbuilder /web/dist ./web/dist
 # Keep source builds usable on developer machines with limited RAM. CI or

@@ -23,7 +23,11 @@
 //!   `bastion-extension-wasm` crate (§8.7) — this module only wraps it into
 //!   an `ExtensionInstance`/`Capability`.
 //! - [`review`] — `permission_summary`, the owner-facing text an install flow
-//!   shows before committing (M4-09).
+//!   shows before committing (M4-09), with the verified trust tier.
+//! - [`trust`] — BEX-03: the `official` publisher keys compiled into this
+//!   build (`keys/official.pub`), `verify_pack`, and the `Provenance` every
+//!   install/upgrade/rollback records in the lockfile and the persisted
+//!   loadout.
 //! - [`ui`] — extension UI isolation (Loop 3-D, CLD-08): sandboxed asset
 //!   serving + the one mediated `CapabilityRegistry` bridge a served UI may
 //!   use, gated by that extension's own declared `PermissionSet`.
@@ -41,6 +45,7 @@ pub mod mcp_reconciler;
 pub mod persistence;
 pub mod review;
 pub mod subprocess;
+pub mod trust;
 pub mod ui;
 pub mod wasm;
 
@@ -49,3 +54,4 @@ pub use facade::{ExtensionInstance, HostFacade};
 pub use host::{ExtensionHost, Loadout};
 pub use mcp_reconciler::{parse_mcp_dependencies, reconcile_mcp_dependencies, McpDependency};
 pub use persistence::{PersistedExtension, ReconstructKind, SqliteExtensionStore};
+pub use trust::{official_anchors, verify_pack, Provenance};

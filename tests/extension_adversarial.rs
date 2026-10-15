@@ -339,6 +339,7 @@ fn pack_member_exceeding_instance_ceiling_is_blocked_before_any_install() {
         skills: vec![],
         personas: vec![],
         defaults: Default::default(),
+        signature: None,
     };
 
     // Instance ceiling grants both capability names but NOT network_bind —

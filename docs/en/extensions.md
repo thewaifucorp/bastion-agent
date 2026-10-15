@@ -55,6 +55,38 @@ differently:
   clone). Any other `native_crate` reports a clear skip instead of silently
   doing nothing.
 
+## Trust tier: signed packs
+
+Every install shows a trust line, and `/extension list` shows it for each
+installed extension. The tier is derived from a signature, never from what
+the pack says about itself:
+
+| What the pack ships | Tier | Install |
+|---|---|---|
+| no `pack.toml.sig` | `local` (unsigned) | proceeds after your review |
+| `pack.toml.sig` from a publisher this build has no key for | `local` (unknown publisher, not verified) | proceeds after your review |
+| `pack.toml.sig` that verifies against a key in `keys/official.pub` | `official` | proceeds after your review |
+| `pack.toml.sig` that is malformed or does not verify | — | **refused, nothing installed** |
+
+- `pack.toml.sig` is a detached Ed25519 signature over every file in the pack
+  directory (the payload is defined by `bastion-extension-protocol`), so
+  changing any shipped byte — a skill, a persona, a member extension — breaks
+  it. Each member extension inherits the pack's tier. An inline `[signature]`
+  table in `pack.toml` is refused (it would have to cover its own file).
+- The signature is checked when the install is previewed and again right
+  before anything is copied, so a pack edited between the two is refused.
+- The official public keys are compiled in from `keys/official.pub`.
+  Publishers sign with `bastion-sign` in
+  [`bastion-extensions`](https://github.com/thewaifucorp/bastion-extensions)
+  (see its README, "Signing").
+- The tier is recorded in the lockfile and the persisted loadout, so a
+  restart, an upgrade and a rollback keep the tier each version was installed
+  with. Every install/upgrade/rollback/revoke logs an
+  `extension_trust_decision` event.
+- The tier is **informational**: it changes what you are shown, never what an
+  extension may do. An `official` extension is bounded by its declared
+  `PermissionSet` exactly like a `local` one.
+
 ## Why GitHub access is MCP, not a bespoke capability
 
 The official catalog's `github-capability` wraps GitHub's own hosted remote
@@ -85,9 +117,10 @@ a future one without a new Rust type).
 
 ## Known gaps (disclosed, not silently worked around)
 
-- No sqlite-backed loadout yet — a daemon restart loses the installed set.
 - `ExtensionHost`'s own `upgrade`/`rollback` exist but aren't exposed by the
   console command yet.
-- No signed-catalog install (`bastion-extensions`' `catalog.toml` is shaped
-  for it, but no signing key exists and there's no `install-remote` code
-  path) — every install today is from a local checkout.
+- No remote catalog install (`bastion-extensions`' `catalog.toml` is shaped
+  for it, but there's no `install-remote` code path) — every install today is
+  from a local checkout. Signatures are verified on that local checkout.
+- No official key is published in `keys/official.pub` yet, so until one is
+  added every pack installs as `local`.

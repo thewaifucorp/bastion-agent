@@ -10,6 +10,21 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **Verified trust tier for extension packs (BEX-03).** A pack may ship
+  `pack.toml.sig`, a detached Ed25519 signature over every file in the pack
+  directory. It is verified against the `official` keys compiled in from
+  `keys/official.pub`: a verifying signature installs the pack (and every
+  member extension) as `official`; no signature or a publisher with no known
+  key installs as `local`; a malformed or non-verifying signature refuses the
+  install before anything is copied (checked at preview and again at commit).
+  The permission review and `/extension list` show the tier; the lockfile and
+  the persisted loadout record it (new `provenance_json` column, migrated in
+  place), so restart, upgrade and rollback keep each version's tier; every
+  decision emits an `extension_trust_decision` event. The tier stays
+  informational — enforcement never reads it. No official key is published
+  yet, so every pack installs as `local` until one is added. Requires
+  bastion-core with `bastion-extension-protocol` 0.2.0 (bastion-core#39).
+
 - **Model prices for budgets (`[pricing]`, BUP-01..05).** Budgets
   (`agent.daily_budget_usd`, a task's `max_cost_usd`, `[reflector] budget_usd`)
   are priced per model from the Langfuse table packaged with bastion-core,

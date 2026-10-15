@@ -5,6 +5,7 @@
 !src/**
 !build.rs
 !docs/en/contracts/**
+!keys/**
 !web/**
 web/node_modules
 web/dist

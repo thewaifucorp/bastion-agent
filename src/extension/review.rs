@@ -4,36 +4,21 @@
 //! (cockpit command today, a future GUI) can render it without this module
 //! knowing about either.
 //!
-//! Trust tier is INFORMATIONAL ONLY (design doc §1.3) — this module never
-//! feeds it back into enforcement, and `trust_tier_of` is deliberately
-//! conservative: it returns [`TrustTier::Local`] for every manifest this
-//! cycle. Verifying a REAL publisher signature needs a trust-anchor/
-//! key-distribution story that's out of scope this loop (§7: no registry/
-//! catalog yet) — claiming a higher tier off an unverified `signature` field
-//! would be worse than not showing one. Wiring real verification (the
-//! workspace already depends on `ed25519-dalek` for Agent Card signing) is a
-//! documented follow-up, not a silent gap.
+//! The trust line comes from the [`Provenance`] the install flow verified
+//! (`extension::trust::verify_pack`, BEX-03) — never from the manifest's own
+//! `signature` field, which proves nothing until checked. Trust tier is
+//! INFORMATIONAL ONLY (design doc §1.3): this module never feeds it back into
+//! enforcement.
 
-use bastion_extension_protocol::{ExtensionManifest, TrustTier};
-
-/// Always `Local` this cycle — see module docs for why.
-pub fn trust_tier_of(manifest: &ExtensionManifest) -> TrustTier {
-    let _ = manifest; // signature presence is not, by itself, verification
-    TrustTier::without_signature()
-}
+use crate::extension::trust::Provenance;
+use bastion_extension_protocol::ExtensionManifest;
 
 /// Renders the manifest's declared authority as owner-facing text. Every
 /// line here corresponds 1:1 to a field `PermissionSet`/`HostFacade` actually
 /// enforces — this is a REVIEW of real authority, not marketing copy.
-pub fn permission_summary(manifest: &ExtensionManifest) -> String {
+pub fn permission_summary(manifest: &ExtensionManifest, provenance: &Provenance) -> String {
     let p = &manifest.permissions;
-    let tier = trust_tier_of(manifest);
-    let tier_label = match tier {
-        TrustTier::Local => "local (unsigned — reviewed only by you)",
-        TrustTier::Community => "community",
-        TrustTier::Verified => "verified",
-        TrustTier::Official => "official",
-    };
+    let tier_label = provenance.label();
 
     let capabilities = if p.capabilities.is_empty() {
         "(none)".to_string()
@@ -64,11 +49,12 @@ pub fn permission_summary(manifest: &ExtensionManifest) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bastion_extension_protocol::{Entrypoint, ExtensionKind, PermissionSet};
+    use bastion_extension_protocol::{
+        Entrypoint, ExtensionKind, PermissionSet, Signature, TrustTier, Verification,
+    };
 
-    #[test]
-    fn summary_reflects_declared_capabilities_and_local_tier() {
-        let manifest = ExtensionManifest {
+    fn manifest(signature: Option<Signature>) -> ExtensionManifest {
+        ExtensionManifest {
             id: "acme/widget".to_string(),
             version: semver::Version::new(1, 2, 3),
             kind: ExtensionKind::Declarative,
@@ -84,36 +70,40 @@ mod tests {
                 artifact_path: "widget.json".into(),
             },
             migrations: vec![],
-            signature: None,
-        };
+            signature,
+        }
+    }
 
-        let summary = permission_summary(&manifest);
+    #[test]
+    fn summary_reflects_declared_capabilities_and_local_tier() {
+        let summary = permission_summary(&manifest(None), &Provenance::unsigned());
         assert!(summary.contains("acme/widget v1.2.3"));
         assert!(summary.contains("local (unsigned"));
         assert!(summary.contains("acme/widget:read"));
     }
 
     #[test]
-    fn trust_tier_is_always_local_without_real_verification() {
-        let manifest = ExtensionManifest {
-            id: "acme/widget".to_string(),
-            version: semver::Version::new(1, 0, 0),
-            kind: ExtensionKind::Declarative,
-            compat: semver::VersionReq::parse("*").unwrap(),
-            provides: vec![],
-            requires: vec![],
-            permissions: PermissionSet::none(),
-            secrets: vec![],
-            entrypoint: Entrypoint::Declarative {
-                artifact_path: "widget.json".into(),
+    fn summary_shows_the_verified_tier_and_publisher() {
+        let provenance = Provenance {
+            verification: Verification::Verified {
+                publisher: "test-publisher".to_string(),
+                tier: TrustTier::Official,
             },
-            migrations: vec![],
-            signature: Some(bastion_extension_protocol::Signature {
-                publisher: "acme".to_string(),
-                algorithm: "ed25519".to_string(),
-                value: "not-actually-verified".to_string(),
-            }),
+            signature: None,
         };
-        assert_eq!(trust_tier_of(&manifest), TrustTier::Local);
+        let summary = permission_summary(&manifest(None), &provenance);
+        assert!(summary
+            .contains("Trust tier: official (signature verified — publisher 'test-publisher')"));
+    }
+
+    #[test]
+    fn an_unchecked_signature_field_never_raises_the_tier() {
+        let claimed = Signature {
+            publisher: "acme".to_string(),
+            algorithm: "ed25519".to_string(),
+            value: "not-actually-verified".to_string(),
+        };
+        let summary = permission_summary(&manifest(Some(claimed)), &Provenance::unsigned());
+        assert!(summary.contains("Trust tier: local (unsigned"));
     }
 }
