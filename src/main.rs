@@ -652,11 +652,22 @@ async fn async_main() -> anyhow::Result<()> {
     if let Command::Auth { action } = &command {
         let owner_id = std::env::var("BASTION_OWNER_ID")
             .unwrap_or_else(|_| bastion_runtime::agent::loop_::DEFAULT_OWNER.to_string());
-        let service =
-            std::sync::Arc::new(bastion::subscription_auth::SubscriptionAuthService::new(
+        // BMD-32: on a multi-device installation only the current primary
+        // logs in or refreshes; the role comes from the device state on disk.
+        let refresh_authority = if cfg.devices.enabled {
+            bastion::devices::refresh::RefreshAuthority::from_state(
+                &bastion::devices::state::DeviceState::open(cfg.devices.state_dir())?,
+            )?
+        } else {
+            bastion::devices::refresh::RefreshAuthority::Standalone
+        };
+        let service = std::sync::Arc::new(
+            bastion::subscription_auth::SubscriptionAuthService::new(
                 db_path.clone(),
                 std::collections::HashMap::new(),
-            ));
+            )
+            .with_refresh_authority(refresh_authority),
+        );
         service.init_schema().await?;
         let arg = match action {
             AuthAction::Connect {
@@ -2661,11 +2672,25 @@ async fn daemon_loop(
                 as Arc<dyn bastion::subscription_auth::SubscriptionModelProvider>,
         },
     );
-    let subscription_auth_service =
-        Arc::new(bastion::subscription_auth::SubscriptionAuthService::new(
+    // BMD-32: only the primary of the current epoch refreshes. A loaded
+    // primary shares its live fence (closed the moment a node reports a newer
+    // epoch); otherwise the role on disk decides (a node never refreshes).
+    let refresh_authority = match &devices_primary {
+        Some(primary) => {
+            bastion::devices::refresh::RefreshAuthority::Primary(primary.fence().clone())
+        }
+        None if cfg.devices.enabled => bastion::devices::refresh::RefreshAuthority::from_state(
+            &bastion::devices::state::DeviceState::open(cfg.devices.state_dir())?,
+        )?,
+        None => bastion::devices::refresh::RefreshAuthority::Standalone,
+    };
+    let subscription_auth_service = Arc::new(
+        bastion::subscription_auth::SubscriptionAuthService::new(
             cfg.session.db_path.clone(),
             subscription_connectors,
-        ));
+        )
+        .with_refresh_authority(refresh_authority),
+    );
     if let Err(e) = subscription_auth_service.init_schema().await {
         tracing::error!(event = "subscription_auth_service_init_failed", error = %e);
     }

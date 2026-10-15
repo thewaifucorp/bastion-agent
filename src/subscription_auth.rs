@@ -52,6 +52,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bastion_providers::Provider;
 use bastion_runtime::provider_auth::ProviderCredentialLifecycle;
+
+use crate::devices::refresh::RefreshAuthority;
 use bastion_types::provider_auth::{
     ProviderAuthError, ProviderAuthRef, ProviderAuthState, ResolvedProviderCredential,
 };
@@ -297,6 +299,10 @@ impl SqliteProfileLabelStore {
 pub struct SubscriptionAuthService {
     labels: SqliteProfileLabelStore,
     connectors: HashMap<String, ConnectorRegistration>,
+    /// BMD-32: whether this installation may spend a credential upstream
+    /// (refresh, first login, vendor revocation). `Standalone` unless the
+    /// composition root says otherwise.
+    refresh_authority: RefreshAuthority,
 }
 
 impl SubscriptionAuthService {
@@ -307,7 +313,31 @@ impl SubscriptionAuthService {
         Self {
             labels: SqliteProfileLabelStore::new(db_path),
             connectors,
+            refresh_authority: RefreshAuthority::Standalone,
         }
+    }
+
+    /// BMD-32: refuse every upstream credential call unless `authority`
+    /// allows it — a node never refreshes, and a primary stops as soon as its
+    /// epoch fence learns that a newer primary exists.
+    pub fn with_refresh_authority(mut self, authority: RefreshAuthority) -> Self {
+        self.refresh_authority = authority;
+        self
+    }
+
+    /// The BMD-32 gate, checked before every upstream call so a fence that
+    /// closes while the daemon runs takes effect on the next call.
+    fn ensure_may_refresh(&self, reference: &ProviderAuthRef) -> anyhow::Result<()> {
+        self.refresh_authority.check().map_err(|refused| {
+            tracing::warn!(
+                event = "subscription_refresh_refused",
+                owner = %reference.owner_id,
+                provider = %reference.provider_id,
+                profile = %reference.profile_id,
+                reason = %refused,
+            );
+            anyhow::Error::from(refused)
+        })
     }
 
     pub async fn init_schema(&self) -> anyhow::Result<()> {
@@ -343,6 +373,7 @@ impl SubscriptionAuthService {
             )
         })?;
         let reference = ProviderAuthRef::new(owner_id, provider_id, profile_id);
+        self.ensure_may_refresh(&reference)?;
 
         let prompt = registration
             .flow
@@ -423,6 +454,13 @@ impl SubscriptionAuthService {
     ) -> anyhow::Result<()> {
         let reference = ProviderAuthRef::new(owner_id, provider_id, profile_id);
         if let Some(registration) = self.connectors.get(provider_id) {
+            // BMD-32: an ex-primary or a node revoking upstream would withdraw
+            // the token family the current primary is using. Local removal
+            // still happens; only the vendor call is skipped.
+            if self.ensure_may_refresh(&reference).is_err() {
+                registration.lifecycle.forget(&reference).await?;
+                return self.labels.delete(owner_id, provider_id, profile_id).await;
+            }
             if let Err(e) = registration.lifecycle.revoke(&reference).await {
                 tracing::warn!(
                     event = "subscription_disconnect_upstream_revoke_failed",
@@ -469,6 +507,7 @@ impl SubscriptionAuthService {
             )
         })?;
         let reference = ProviderAuthRef::new(owner_id, provider_id, profile_id);
+        self.ensure_may_refresh(&reference)?;
         let credential = registration
             .lifecycle
             .refresh(&reference)
@@ -920,5 +959,188 @@ mod tests {
         let listed = second.list("alice").await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].state, Some(ProviderAuthState::Ready));
+    }
+}
+
+/// BMD-32 at the composition seam: the service never reaches the connector's
+/// refresher (nor its vendor revocation) unless this installation is the
+/// primary of the current epoch.
+#[cfg(test)]
+mod refresh_authority_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::fakes::{FakeFlow, FakeProviderFactory};
+    use super::*;
+    use crate::devices::refresh::RefreshRefused;
+    use bastion_mesh::devices::fence::EpochFence;
+    use bastion_runtime::provider_auth::{
+        ExponentialBackoff, ProviderCredentialRefresher, SystemClock,
+    };
+    use bastion_types::provider_auth::{CredentialKind, ResolvedProviderCredential};
+    use bastion_types::SecretValue;
+    use tempfile::NamedTempFile;
+
+    /// Counts every upstream call, so a test can prove none happened.
+    #[derive(Default)]
+    struct CountingRefresher {
+        refreshes: AtomicUsize,
+        revokes: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ProviderCredentialRefresher for CountingRefresher {
+        async fn refresh(
+            &self,
+            reference: &ProviderAuthRef,
+        ) -> Result<ResolvedProviderCredential, ProviderAuthError> {
+            self.refreshes.fetch_add(1, Ordering::SeqCst);
+            Ok(ResolvedProviderCredential::new(
+                reference.clone(),
+                CredentialKind::OAuthSubscription,
+                SecretValue::new("CANARY-do-not-leak"),
+            ))
+        }
+
+        async fn revoke(&self, _reference: &ProviderAuthRef) -> Result<(), ProviderAuthError> {
+            self.revokes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    async fn service(
+        db_path: &str,
+        authority: RefreshAuthority,
+    ) -> (SubscriptionAuthService, Arc<CountingRefresher>) {
+        let store =
+            Arc::new(crate::provider_credential_state::SqliteCredentialStateStore::new(db_path));
+        store.init_schema().await.unwrap();
+        let refresher = Arc::new(CountingRefresher::default());
+        let lifecycle = Arc::new(ProviderCredentialLifecycle::new(
+            store,
+            refresher.clone(),
+            Arc::new(SystemClock),
+            Arc::new(ExponentialBackoff::new_default()),
+        ));
+        let mut connectors = HashMap::new();
+        connectors.insert(
+            "codex".to_string(),
+            ConnectorRegistration {
+                flow: Arc::new(FakeFlow {
+                    outcome: Ok(()),
+                    prompt: "visit https://example.test/device".to_string(),
+                }),
+                lifecycle,
+                provider_factory: Arc::new(FakeProviderFactory),
+            },
+        );
+        let service =
+            SubscriptionAuthService::new(db_path, connectors).with_refresh_authority(authority);
+        service.init_schema().await.unwrap();
+        (service, refresher)
+    }
+
+    fn refused(err: &anyhow::Error) -> Option<RefreshRefused> {
+        err.downcast_ref::<RefreshRefused>().copied()
+    }
+
+    #[tokio::test]
+    async fn an_ex_primary_does_not_refresh() {
+        let f = NamedTempFile::new().unwrap();
+        let fence = Arc::new(EpochFence::new(1));
+        let (service, refresher) = service(
+            f.path().to_str().unwrap(),
+            RefreshAuthority::Primary(fence.clone()),
+        )
+        .await;
+
+        // As the current primary it refreshes normally.
+        service
+            .connect("alice", "codex", "default", "Work")
+            .await
+            .unwrap();
+        service
+            .resolve_provider("alice", "codex", "default", "gpt-5")
+            .await
+            .unwrap();
+        assert_eq!(refresher.refreshes.load(Ordering::SeqCst), 2);
+
+        // Another device was promoted to epoch 2: this one is an ex-primary.
+        fence.observe(2);
+        let Err(err) = service
+            .resolve_provider("alice", "codex", "default", "gpt-5")
+            .await
+        else {
+            panic!("an ex-primary must not resolve a credential");
+        };
+        assert_eq!(
+            refused(&err),
+            Some(RefreshRefused::SupersededPrimary { epoch: 1 })
+        );
+        let Err(err) = service.connect("alice", "codex", "other", "Other").await else {
+            panic!("an ex-primary must not log in");
+        };
+        assert!(refused(&err).is_some());
+        assert_eq!(
+            refresher.refreshes.load(Ordering::SeqCst),
+            2,
+            "no refresh may reach the connector after the fence closed"
+        );
+
+        // Promoted back: refresh resumes.
+        fence.promote_to(3);
+        service
+            .resolve_provider("alice", "codex", "default", "gpt-5")
+            .await
+            .unwrap();
+        assert_eq!(refresher.refreshes.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn a_node_neither_logs_in_nor_refreshes() {
+        let f = NamedTempFile::new().unwrap();
+        let (service, refresher) =
+            service(f.path().to_str().unwrap(), RefreshAuthority::Node).await;
+
+        let Err(err) = service.connect("alice", "codex", "default", "Work").await else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(refused(&err), Some(RefreshRefused::Node));
+        assert!(service.list("alice").await.unwrap().is_empty());
+        let Err(err) = service
+            .resolve_provider("alice", "codex", "default", "gpt-5")
+            .await
+        else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(refused(&err), Some(RefreshRefused::Node));
+        assert_eq!(refresher.refreshes.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn an_ex_primary_disconnects_locally_without_revoking_upstream() {
+        let f = NamedTempFile::new().unwrap();
+        let fence = Arc::new(EpochFence::new(1));
+        let (service, refresher) = service(
+            f.path().to_str().unwrap(),
+            RefreshAuthority::Primary(fence.clone()),
+        )
+        .await;
+        service
+            .connect("alice", "codex", "default", "Work")
+            .await
+            .unwrap();
+
+        fence.observe(2);
+        service
+            .disconnect("alice", "codex", "default")
+            .await
+            .unwrap();
+
+        assert!(service.list("alice").await.unwrap().is_empty());
+        assert_eq!(
+            refresher.revokes.load(Ordering::SeqCst),
+            0,
+            "revoking upstream would withdraw the current primary's tokens"
+        );
     }
 }

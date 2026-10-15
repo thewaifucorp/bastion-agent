@@ -90,6 +90,13 @@ A época cerca o primário antigo: no instante em que ele descobre que existe um
 mais nova, para de aceitar escrita, então dois primários nunca escrevem na
 mesma época.
 
+Credenciais de assinatura seguem a mesma cerca (BMD-32): só o primário da
+época corrente faz login, refresh ou revogação no provedor (`/auth`, `bastion
+auth`, o conector Codex). Um nó nunca faz, e um primário antigo
+para no instante em que descobre uma época mais nova, então nunca gasta o
+refresh token do primário novo nem dispara a detecção de reuso do provedor.
+Ali, `disconnect` remove o perfil localmente sem chamar o fornecedor.
+
 ## Segredos
 
 Por padrão **nenhuma** credencial (API key, token) é copiada para um nó. Você

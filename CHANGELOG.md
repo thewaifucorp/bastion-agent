@@ -71,6 +71,14 @@ for how that differs from the library crates it depends on).
 
 ### Changed
 
+- **Only the current primary refreshes subscription credentials (BMD-32).**
+  On a multi-device installation the subscription service checks the
+  primary's epoch fence (`EpochFence::may_refresh`) before every login,
+  refresh and upstream revocation: a node never makes them, and an ex-primary
+  stops as soon as it learns a newer epoch exists (`RefreshRefused`), so the
+  provider's refresh-token reuse detection cannot revoke the new primary's
+  token family. `disconnect` on such a device removes the profile locally only.
+  Single-device installations are unchanged.
 - **`bastion connect claude` and `/connect claude` only check** that Claude
   Code is installed and signed in (`claude --version`, `claude auth status`,
   exit codes only) and say how to sign in (`claude auth login`, or its
