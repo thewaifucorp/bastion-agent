@@ -1066,20 +1066,19 @@ mod refresh_authority_tests {
 
         // Another device was promoted to epoch 2: this one is an ex-primary.
         fence.observe(2);
-        let err = service
+        let Err(err) = service
             .resolve_provider("alice", "codex", "default", "gpt-5")
             .await
-            .err()
-            .expect("an ex-primary must not resolve a credential");
+        else {
+            panic!("an ex-primary must not resolve a credential");
+        };
         assert_eq!(
             refused(&err),
             Some(RefreshRefused::SupersededPrimary { epoch: 1 })
         );
-        let err = service
-            .connect("alice", "codex", "other", "Other")
-            .await
-            .err()
-            .expect("an ex-primary must not log in");
+        let Err(err) = service.connect("alice", "codex", "other", "Other").await else {
+            panic!("an ex-primary must not log in");
+        };
         assert!(refused(&err).is_some());
         assert_eq!(
             refresher.refreshes.load(Ordering::SeqCst),
@@ -1102,18 +1101,17 @@ mod refresh_authority_tests {
         let (service, refresher) =
             service(f.path().to_str().unwrap(), RefreshAuthority::Node).await;
 
-        let err = service
-            .connect("alice", "codex", "default", "Work")
-            .await
-            .err()
-            .unwrap();
+        let Err(err) = service.connect("alice", "codex", "default", "Work").await else {
+            panic!("expected a refusal");
+        };
         assert_eq!(refused(&err), Some(RefreshRefused::Node));
         assert!(service.list("alice").await.unwrap().is_empty());
-        let err = service
+        let Err(err) = service
             .resolve_provider("alice", "codex", "default", "gpt-5")
             .await
-            .err()
-            .unwrap();
+        else {
+            panic!("expected a refusal");
+        };
         assert_eq!(refused(&err), Some(RefreshRefused::Node));
         assert_eq!(refresher.refreshes.load(Ordering::SeqCst), 0);
     }
