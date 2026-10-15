@@ -90,6 +90,13 @@ you decide).
 An epoch fences the old primary: the moment it learns a newer one exists it
 stops accepting writes, so two primaries never both write in one epoch.
 
+Subscription credentials follow the same fence (BMD-32): only the primary of
+the current epoch logs in, refreshes or revokes upstream (`/auth`, `bastion
+auth`, the Codex connector). A node never does, and an old primary
+stops the moment it learns of a newer epoch, so it never spends the new
+primary's refresh token and trips the provider's reuse detection. `disconnect`
+there removes the profile locally without calling the vendor.
+
 ## Secrets
 
 By default **no** credential (API key, token) is copied to a node. You can let
