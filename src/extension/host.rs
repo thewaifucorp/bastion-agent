@@ -9,9 +9,10 @@
 //! reports was ACTUALLY registered, never the manifest's own claims.
 
 use crate::extension::facade::{ExtensionInstance, HostFacade};
+use crate::extension::trust::{official_anchors, Provenance};
 use bastion_extension_protocol::{
     digest_hex, ExtensionError, ExtensionManifest, LoadoutLock, LockEntry, PackManifest,
-    PermissionSet,
+    PermissionSet, TrustAnchors,
 };
 use bastion_runtime::capability::CapabilityRegistry;
 use semver::Version;
@@ -26,6 +27,8 @@ struct InstalledExtension {
     /// truth `revoke`/`upgrade` clean up, independent of `manifest.provides`.
     registered: Vec<String>,
     owner: String,
+    /// How this version's trust tier was established (BEX-03).
+    provenance: Provenance,
 }
 
 /// A previously-active version of an extension, kept so `rollback` can
@@ -39,6 +42,9 @@ struct HistorySnapshot {
     manifest: ExtensionManifest,
     instance: Arc<dyn ExtensionInstance>,
     owner: String,
+    /// Restored with the version on rollback — a rollback never changes the
+    /// tier that version was installed with.
+    provenance: Provenance,
 }
 
 /// Resolved set of active extensions+versions for one agent instance
@@ -57,6 +63,10 @@ pub struct ExtensionHost {
     installed: BTreeMap<String, InstalledExtension>,
     history: BTreeMap<String, Vec<HistorySnapshot>>,
     lock: LoadoutLock,
+    /// Publisher keys signatures are verified against before an install
+    /// (`extension::trust::verify_pack`). Defaults to this build's
+    /// `official` keys.
+    trust_anchors: TrustAnchors,
 }
 
 impl Default for ExtensionHost {
@@ -72,7 +82,24 @@ impl ExtensionHost {
             installed: BTreeMap::new(),
             history: BTreeMap::new(),
             lock: LoadoutLock::default(),
+            trust_anchors: official_anchors(),
         }
+    }
+
+    /// Replace the trust anchors (tests, or an embedding host with its own
+    /// publisher keys).
+    pub fn with_trust_anchors(mut self, anchors: TrustAnchors) -> Self {
+        self.trust_anchors = anchors;
+        self
+    }
+
+    pub fn trust_anchors(&self) -> &TrustAnchors {
+        &self.trust_anchors
+    }
+
+    /// How the installed version of `id` got its trust tier.
+    pub fn provenance(&self, id: &str) -> Option<&Provenance> {
+        self.installed.get(id).map(|e| &e.provenance)
     }
 
     pub fn registry(&self) -> &CapabilityRegistry {
@@ -97,14 +124,32 @@ impl ExtensionHost {
         }
     }
 
-    fn lock_entry_for(manifest: &ExtensionManifest) -> LockEntry {
+    fn lock_entry_for(manifest: &ExtensionManifest, provenance: &Provenance) -> LockEntry {
         let bytes = serde_json::to_vec(manifest).unwrap_or_default();
         LockEntry {
             id: manifest.id.clone(),
             version: manifest.version.clone(),
             hash: digest_hex(&bytes),
-            signature: manifest.signature.clone(),
+            signature: provenance.signature.clone(),
+            tier: provenance.tier(),
         }
+    }
+
+    /// The auditable record of a trust decision: which version of what got
+    /// which tier, from which publisher, through which action.
+    fn audit_trust(action: &'static str, manifest: &ExtensionManifest, provenance: &Provenance) {
+        let publisher = provenance
+            .signature
+            .as_ref()
+            .map_or("", |s| s.publisher.as_str());
+        tracing::info!(
+            event = "extension_trust_decision",
+            action,
+            id = %manifest.id,
+            version = %manifest.version,
+            tier = provenance.tier().as_str(),
+            publisher,
+        );
     }
 
     /// Install a fresh extension. Atomic: if `activate` fails partway, every
@@ -114,11 +159,27 @@ impl ExtensionHost {
     /// `instance_ceiling` is the instance's own grant (e.g. from
     /// `AgentDefinition`) — `manifest.permissions` must be a subset of it
     /// (design doc §4) or this is rejected before anything is touched.
+    ///
+    /// Records the extension as `local` (nothing verified); a caller that
+    /// verified a signature uses [`Self::install_with_provenance`].
     pub async fn install(
         &mut self,
         instance: Arc<dyn ExtensionInstance>,
         owner: &str,
         instance_ceiling: &PermissionSet,
+    ) -> Result<(), ExtensionError> {
+        self.install_with_provenance(instance, owner, instance_ceiling, Provenance::unsigned())
+            .await
+    }
+
+    /// [`Self::install`], recording `provenance` (the verified trust tier
+    /// and the signature behind it) in the lockfile and the installed set.
+    pub async fn install_with_provenance(
+        &mut self,
+        instance: Arc<dyn ExtensionInstance>,
+        owner: &str,
+        instance_ceiling: &PermissionSet,
+        provenance: Provenance,
     ) -> Result<(), ExtensionError> {
         let manifest = instance.manifest().clone();
         manifest.validate_self_consistent()?;
@@ -149,7 +210,9 @@ impl ExtensionHost {
             return Err(e);
         }
 
-        self.lock.upsert(Self::lock_entry_for(&manifest));
+        self.lock
+            .upsert(Self::lock_entry_for(&manifest, &provenance));
+        Self::audit_trust("install", &manifest, &provenance);
         self.installed.insert(
             manifest.id.clone(),
             InstalledExtension {
@@ -157,6 +220,7 @@ impl ExtensionHost {
                 instance,
                 registered,
                 owner: owner.to_string(),
+                provenance,
             },
         );
         Ok(())
@@ -173,10 +237,26 @@ impl ExtensionHost {
     /// this deactivate the old version and activate the new one. If the new
     /// version's `activate` fails, the old version is reactivated — the
     /// loadout never ends up with neither version registered.
+    ///
+    /// The new version is recorded as `local`; see
+    /// [`Self::upgrade_with_provenance`].
     pub async fn upgrade(
         &mut self,
         new_instance: Arc<dyn ExtensionInstance>,
         instance_ceiling: &PermissionSet,
+    ) -> Result<(), ExtensionError> {
+        self.upgrade_with_provenance(new_instance, instance_ceiling, Provenance::unsigned())
+            .await
+    }
+
+    /// [`Self::upgrade`], recording `provenance` for the new version. The
+    /// old version keeps its own provenance in the rollback history; a
+    /// failed upgrade restores it unchanged.
+    pub async fn upgrade_with_provenance(
+        &mut self,
+        new_instance: Arc<dyn ExtensionInstance>,
+        instance_ceiling: &PermissionSet,
+        provenance: Provenance,
     ) -> Result<(), ExtensionError> {
         let new_manifest = new_instance.manifest().clone();
         new_manifest.validate_self_consistent()?;
@@ -225,7 +305,7 @@ impl ExtensionHost {
         }
 
         // Every guard above passed — ONLY NOW do we touch the active loadout.
-        let (old_manifest, old_instance, old_registered, owner) = {
+        let (old_manifest, old_instance, old_registered, owner, old_provenance) = {
             let cur = self
                 .installed
                 .get(&new_manifest.id)
@@ -235,6 +315,7 @@ impl ExtensionHost {
                 cur.instance.clone(),
                 cur.registered.clone(),
                 cur.owner.clone(),
+                cur.provenance.clone(),
             )
         };
 
@@ -261,8 +342,11 @@ impl ExtensionHost {
                         manifest: old_manifest,
                         instance: old_instance,
                         owner: owner.clone(),
+                        provenance: old_provenance,
                     });
-                self.lock.upsert(Self::lock_entry_for(&new_manifest));
+                self.lock
+                    .upsert(Self::lock_entry_for(&new_manifest, &provenance));
+                Self::audit_trust("upgrade", &new_manifest, &provenance);
                 self.installed.insert(
                     new_manifest.id.clone(),
                     InstalledExtension {
@@ -270,6 +354,7 @@ impl ExtensionHost {
                         instance: new_instance,
                         registered,
                         owner,
+                        provenance,
                     },
                 );
                 Ok(())
@@ -290,6 +375,7 @@ impl ExtensionHost {
                         instance: old_instance,
                         registered: restored,
                         owner,
+                        provenance: old_provenance,
                     },
                 );
                 Err(e)
@@ -322,7 +408,9 @@ impl ExtensionHost {
         target.instance.activate(&mut facade).await?;
         let registered = facade.registered_capabilities().to_vec();
 
-        self.lock.upsert(Self::lock_entry_for(&target.manifest));
+        self.lock
+            .upsert(Self::lock_entry_for(&target.manifest, &target.provenance));
+        Self::audit_trust("rollback", &target.manifest, &target.provenance);
         self.installed.insert(
             id.to_string(),
             InstalledExtension {
@@ -330,6 +418,7 @@ impl ExtensionHost {
                 instance: target.instance,
                 registered,
                 owner: target.owner,
+                provenance: target.provenance,
             },
         );
         Ok(())
@@ -358,6 +447,7 @@ impl ExtensionHost {
         }
         self.lock.remove(id);
         self.history.remove(id);
+        Self::audit_trust("revoke", &installed.manifest, &installed.provenance);
         Ok(())
     }
 
@@ -613,6 +703,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tier_is_recorded_and_preserved_across_upgrade_rollback_and_revoke() {
+        use bastion_extension_protocol::{Signature, TrustTier, Verification};
+
+        let official = Provenance {
+            verification: Verification::Verified {
+                publisher: "test-publisher".to_string(),
+                tier: TrustTier::Official,
+            },
+            signature: Some(Signature::sign_ed25519("test-publisher", &[1; 32], b"p")),
+        };
+        let mut host = ExtensionHost::new();
+        let v1 = manifest_with(
+            "acme/widget",
+            (1, 0, 0),
+            vec!["acme/widget:read".to_string()],
+            vec![],
+        );
+        host.install_with_provenance(declarative(v1), "alice", &full_ceiling(), official.clone())
+            .await
+            .unwrap();
+        let entry = host.lock().find("acme/widget").unwrap();
+        assert_eq!(entry.tier, TrustTier::Official);
+        assert_eq!(entry.signature, official.signature);
+        assert_eq!(host.provenance("acme/widget"), Some(&official));
+
+        // An unverified upgrade is recorded as local...
+        let v2 = manifest_with(
+            "acme/widget",
+            (2, 0, 0),
+            vec!["acme/widget:read".to_string()],
+            vec![],
+        );
+        host.upgrade(declarative(v2), &full_ceiling())
+            .await
+            .unwrap();
+        assert_eq!(
+            host.lock().find("acme/widget").unwrap().tier,
+            TrustTier::Local
+        );
+
+        // ...and rolling back restores v1 with the tier it was installed with.
+        host.rollback("acme/widget").await.unwrap();
+        let entry = host.lock().find("acme/widget").unwrap();
+        assert_eq!(entry.version, Version::new(1, 0, 0));
+        assert_eq!(entry.tier, TrustTier::Official);
+        assert_eq!(host.provenance("acme/widget"), Some(&official));
+
+        host.revoke("acme/widget").await.unwrap();
+        assert!(host.lock().find("acme/widget").is_none());
+        assert!(host.provenance("acme/widget").is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_upgrade_keeps_the_old_tier() {
+        use bastion_extension_protocol::{TrustTier, Verification};
+
+        let official = Provenance {
+            verification: Verification::Verified {
+                publisher: "test-publisher".to_string(),
+                tier: TrustTier::Official,
+            },
+            signature: None,
+        };
+        let mut host = ExtensionHost::new();
+        let v1 = manifest_with(
+            "acme/widget",
+            (1, 0, 0),
+            vec!["acme/widget:read".to_string()],
+            vec![],
+        );
+        host.install_with_provenance(declarative(v1), "alice", &full_ceiling(), official.clone())
+            .await
+            .unwrap();
+        let mut v2 = manifest_with(
+            "acme/widget",
+            (2, 0, 0),
+            vec!["acme/widget:read".to_string()],
+            vec![],
+        );
+        v2.compat = semver::VersionReq::parse(">=99").unwrap();
+        assert!(host
+            .upgrade_with_provenance(declarative(v2), &full_ceiling(), Provenance::unsigned())
+            .await
+            .is_err());
+        assert_eq!(host.provenance("acme/widget"), Some(&official));
+        assert_eq!(
+            host.lock().find("acme/widget").unwrap().tier,
+            TrustTier::Official
+        );
+    }
+
+    #[tokio::test]
     async fn rollback_restores_previous_version_after_upgrade() {
         let mut host = ExtensionHost::new();
         let v1 = manifest_with(
@@ -686,6 +868,7 @@ mod tests {
             skills: vec![],
             personas: vec![],
             defaults: Default::default(),
+            signature: None,
         };
 
         // Instance ceiling grants NOTHING — the pack's member exceeds it.
@@ -717,6 +900,7 @@ mod tests {
             skills: vec![],
             personas: vec![],
             defaults: Default::default(),
+            signature: None,
         };
 
         let resolved = ExtensionHost::resolve_pack(&pack, &catalog, &full_ceiling())

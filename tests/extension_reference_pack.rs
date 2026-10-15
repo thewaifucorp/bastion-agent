@@ -252,6 +252,7 @@ async fn life_os_developer_pack_full_lifecycle_with_zero_orphan() {
                 BUDGET_CALC_ID.to_string(),
             ],
         },
+        signature: None,
     };
 
     let resolved = ExtensionHost::resolve_pack(&pack, &catalog, &ceiling)
@@ -260,7 +261,10 @@ async fn life_os_developer_pack_full_lifecycle_with_zero_orphan() {
 
     // --- Step 2: permission review (M4-09) — BEFORE installing anything ----
     for instance in &resolved {
-        let summary = permission_summary(instance.manifest());
+        let summary = permission_summary(
+            instance.manifest(),
+            &bastion::extension::Provenance::unsigned(),
+        );
         assert!(summary.contains(&instance.manifest().id));
         assert!(summary.contains("Trust tier:"));
         assert!(summary.contains("capabilities:"));
@@ -450,6 +454,7 @@ async fn pack_cannot_smuggle_in_a_member_exceeding_the_instance_ceiling() {
         skills: vec![],
         personas: vec![],
         defaults: Default::default(),
+        signature: None,
     };
 
     let result = ExtensionHost::resolve_pack(&pack, &catalog, &instance_ceiling());

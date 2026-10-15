@@ -1,0 +1,14 @@
+# Trust anchors for the `official` tier, compiled into bastion-agent
+# (src/extension/trust.rs). One key per line:
+#
+#   <publisher> ed25519 <standard base64 of the 32-byte Ed25519 public key>
+#
+# A pack whose pack.toml.sig verifies against one of these keys installs as
+# `official`; anything else installs as `local`, and a signature that does not
+# verify is refused. Several lines for the same publisher are allowed (key
+# rotation). Only PUBLIC keys belong here; the private key never enters a
+# repository. See bastion-extensions' README ("Signing") for how the key pair
+# is generated and how packs are signed.
+#
+# No official key has been published yet: until a line is added below, every
+# pack installs as `local`.

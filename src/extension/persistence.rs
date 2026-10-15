@@ -11,6 +11,7 @@
 //! activation mechanism. `extension_command.rs::reload_persisted` is the
 //! only reader that turns rows back into live extensions.
 
+use crate::extension::trust::Provenance;
 use bastion_extension_protocol::ExtensionManifest;
 use rusqlite::Connection;
 use tokio::task::spawn_blocking;
@@ -32,6 +33,11 @@ const SCHEMA_SQL: &str = "
         manifest_json TEXT NOT NULL
     );
 ";
+
+/// Column added with BEX-03 trust tiers: the JSON `Provenance` a row was
+/// installed with. `NULL` (rows from before the column existed) reads back
+/// as unsigned/`local` — the same tier those installs always had.
+const PROVENANCE_COLUMN: &str = "provenance_json";
 
 /// Which reconstruction path a persisted row needs at boot — mirrors the
 /// only two `Arc<dyn ExtensionInstance>` constructors
@@ -64,11 +70,18 @@ impl ReconstructKind {
     }
 }
 
+/// One raw row: owner, kind, manifest JSON, provenance JSON (`NULL` for rows
+/// written before trust tiers were recorded).
+pub type RawRow = (String, String, String, Option<String>);
+
 /// One row, already parsed back into the shape `reload_persisted` needs.
 pub struct PersistedExtension {
     pub owner: String,
     pub manifest: ExtensionManifest,
     pub kind: ReconstructKind,
+    /// The trust tier and signature recorded at install time, restored as-is
+    /// on reload (the pack directory may no longer exist to re-verify).
+    pub provenance: Provenance,
 }
 
 /// Sqlite-backed record of what's installed. `save`/`remove` are called at
@@ -90,6 +103,17 @@ impl SqliteExtensionStore {
         spawn_blocking(move || {
             let conn = open_conn(&path)?;
             conn.execute_batch(SCHEMA_SQL)?;
+            let has_provenance = conn
+                .prepare("SELECT name FROM pragma_table_info('installed_extension')")?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?
+                .iter()
+                .any(|name| name == PROVENANCE_COLUMN);
+            if !has_provenance {
+                conn.execute_batch(&format!(
+                    "ALTER TABLE installed_extension ADD COLUMN {PROVENANCE_COLUMN} TEXT"
+                ))?;
+            }
             Ok::<_, anyhow::Error>(())
         })
         .await?
@@ -106,20 +130,24 @@ impl SqliteExtensionStore {
         owner: &str,
         manifest: &ExtensionManifest,
         kind: ReconstructKind,
+        provenance: &Provenance,
     ) -> anyhow::Result<()> {
         let path = self.db_path.clone();
         let id = manifest.id.clone();
         let owner = owner.to_string();
         let manifest_json = serde_json::to_string(manifest)?;
+        let provenance_json = serde_json::to_string(provenance)?;
         let kind_str = kind.as_str();
         spawn_blocking(move || {
             let conn = open_conn(&path)?;
             conn.execute(
-                "INSERT INTO installed_extension (id, owner, kind, manifest_json) \
-                 VALUES (?1, ?2, ?3, ?4) \
+                "INSERT INTO installed_extension \
+                     (id, owner, kind, manifest_json, provenance_json) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) \
                  ON CONFLICT(id) DO UPDATE SET owner = excluded.owner, \
-                     kind = excluded.kind, manifest_json = excluded.manifest_json",
-                rusqlite::params![id, owner, kind_str, manifest_json],
+                     kind = excluded.kind, manifest_json = excluded.manifest_json, \
+                     provenance_json = excluded.provenance_json",
+                rusqlite::params![id, owner, kind_str, manifest_json, provenance_json],
             )?;
             Ok::<_, anyhow::Error>(())
         })
@@ -147,18 +175,20 @@ impl SqliteExtensionStore {
     /// recognizes, or whose `manifest_json` no longer deserializes, is
     /// logged and skipped by the caller (`reload_persisted`) rather than
     /// failing the whole load — one corrupt record must never block boot.
-    pub async fn load_all(&self) -> anyhow::Result<Vec<(String, String, String)>> {
+    pub async fn load_all(&self) -> anyhow::Result<Vec<RawRow>> {
         let path = self.db_path.clone();
         spawn_blocking(move || {
             let conn = open_conn(&path)?;
-            let mut stmt =
-                conn.prepare("SELECT owner, kind, manifest_json FROM installed_extension")?;
+            let mut stmt = conn.prepare(
+                "SELECT owner, kind, manifest_json, provenance_json FROM installed_extension",
+            )?;
             let rows = stmt
                 .query_map([], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
                     ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -173,7 +203,7 @@ impl SqliteExtensionStore {
     pub async fn load_all_parsed(&self) -> anyhow::Result<Vec<PersistedExtension>> {
         let raw = self.load_all().await?;
         let mut out = Vec::with_capacity(raw.len());
-        for (owner, kind_str, manifest_json) in raw {
+        for (owner, kind_str, manifest_json, provenance_json) in raw {
             let Some(kind) = ReconstructKind::parse(&kind_str) else {
                 tracing::warn!(
                     event = "extension_persistence_unknown_kind",
@@ -188,10 +218,25 @@ impl SqliteExtensionStore {
                     continue;
                 }
             };
+            // A row whose provenance no longer parses falls back to `local`:
+            // the safe direction (never a higher tier than verified).
+            let provenance = match provenance_json.as_deref().map(serde_json::from_str) {
+                None => Provenance::unsigned(),
+                Some(Ok(p)) => p,
+                Some(Err(e)) => {
+                    tracing::warn!(
+                        event = "extension_persistence_bad_provenance",
+                        id = %manifest.id,
+                        error = %e,
+                    );
+                    Provenance::unsigned()
+                }
+            };
             out.push(PersistedExtension {
                 owner,
                 manifest,
                 kind,
+                provenance,
             });
         }
         Ok(out)
@@ -223,6 +268,7 @@ impl SqliteExtensionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extension::trust::Provenance;
     use bastion_extension_protocol::{Entrypoint, ExtensionKind, PermissionSet};
     use semver::Version;
     use tempfile::NamedTempFile;
@@ -256,15 +302,75 @@ mod tests {
     async fn save_then_load_round_trips_manifest_and_kind() {
         let (_f, s) = store().await;
         let m = manifest("acme/widget");
-        s.save("alice", &m, ReconstructKind::Declarative)
-            .await
-            .unwrap();
+        s.save(
+            "alice",
+            &m,
+            ReconstructKind::Declarative,
+            &Provenance::unsigned(),
+        )
+        .await
+        .unwrap();
 
         let loaded = s.load_all_parsed().await.unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].owner, "alice");
         assert_eq!(loaded[0].manifest.id, "acme/widget");
         assert_eq!(loaded[0].kind, ReconstructKind::Declarative);
+        assert_eq!(loaded[0].provenance, Provenance::unsigned());
+    }
+
+    #[tokio::test]
+    async fn provenance_round_trips_so_a_restart_keeps_the_tier() {
+        use bastion_extension_protocol::{Signature, TrustTier, Verification};
+        let (_f, s) = store().await;
+        let official = Provenance {
+            verification: Verification::Verified {
+                publisher: "test-publisher".to_string(),
+                tier: TrustTier::Official,
+            },
+            signature: Some(Signature::sign_ed25519("test-publisher", &[1; 32], b"p")),
+        };
+        s.save(
+            "alice",
+            &manifest("acme/widget"),
+            ReconstructKind::Declarative,
+            &official,
+        )
+        .await
+        .unwrap();
+        let loaded = s.load_all_parsed().await.unwrap();
+        assert_eq!(loaded[0].provenance, official);
+        assert_eq!(loaded[0].provenance.tier(), TrustTier::Official);
+    }
+
+    #[tokio::test]
+    async fn a_database_from_before_trust_tiers_migrates_and_reads_as_local() {
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE installed_extension (id TEXT NOT NULL PRIMARY KEY, \
+                 owner TEXT NOT NULL, kind TEXT NOT NULL, manifest_json TEXT NOT NULL);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO installed_extension VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    "acme/widget",
+                    "alice",
+                    "declarative",
+                    serde_json::to_string(&manifest("acme/widget")).unwrap()
+                ],
+            )
+            .unwrap();
+        }
+        let s = SqliteExtensionStore::new(path);
+        s.init_schema().await.unwrap();
+        s.init_schema().await.unwrap(); // idempotent
+        let loaded = s.load_all_parsed().await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].provenance, Provenance::unsigned());
     }
 
     #[tokio::test]
@@ -274,6 +380,7 @@ mod tests {
             "alice",
             &manifest("acme/widget"),
             ReconstructKind::Declarative,
+            &Provenance::unsigned(),
         )
         .await
         .unwrap();
@@ -281,6 +388,7 @@ mod tests {
             "bob",
             &manifest("acme/widget"),
             ReconstructKind::GitCapability,
+            &Provenance::unsigned(),
         )
         .await
         .unwrap();
@@ -298,6 +406,7 @@ mod tests {
             "alice",
             &manifest("acme/widget"),
             ReconstructKind::Declarative,
+            &Provenance::unsigned(),
         )
         .await
         .unwrap();
@@ -323,6 +432,7 @@ mod tests {
             "alice",
             &manifest("acme/widget"),
             ReconstructKind::Declarative,
+            &Provenance::unsigned(),
         )
         .await
         .unwrap();
@@ -330,6 +440,7 @@ mod tests {
             "alice",
             &manifest("bastion/git-capability"),
             ReconstructKind::GitCapability,
+            &Provenance::unsigned(),
         )
         .await
         .unwrap();
@@ -350,6 +461,7 @@ mod tests {
                 "alice",
                 &manifest("acme/widget"),
                 ReconstructKind::Declarative,
+                &Provenance::unsigned(),
             )
             .await
             .unwrap();
