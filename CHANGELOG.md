@@ -8,6 +8,21 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-15
+
+Pins `bastion-core` at `v0.8.0` (`daa1560`): model pricing and metered calls
+that fail closed (bastion-types 0.4.0, bastion-runtime 0.5.0), the `claude`
+runtime (bastion-agent-runtime 0.4.0), signed extension packs
+(bastion-extension-protocol 0.2.0), and the multi-device mesh from `v0.7.0`.
+
+Minor, not patch (bastion-core `docs/VERSIONING.md` §7.2): upgrading is not
+transparent — `acp_claude`/`acpx_claude` selections migrate to `claude`,
+`bastion connect claude --setup-token`/`--import-host` are gone, a metered
+model with no price is now refused before the call (`[pricing] overrides`),
+`[devices]`, `[pricing]`, `[sandbox]`, `[workspace]` and `[sidecars]` are new
+configuration sections, git writes need approval, and the extension loadout
+table gains a `provenance_json` column (migrated in place).
+
 ### Added
 
 - **Verified trust tier for extension packs (BEX-03).** A pack may ship
@@ -83,78 +98,8 @@ for how that differs from the library crates it depends on).
     them.
   - New Windows CI job for the daemon's device code and the UI helper.
   - Docs: [Devices](docs/en/devices.md) / [Dispositivos](docs/pt-br/dispositivos.md).
-
-### Changed
-
-- **Only the current primary refreshes subscription credentials (BMD-32).**
-  On a multi-device installation the subscription service checks the
-  primary's epoch fence (`EpochFence::may_refresh`) before every login,
-  refresh and upstream revocation: a node never makes them, and an ex-primary
-  stops as soon as it learns a newer epoch exists (`RefreshRefused`), so the
-  provider's refresh-token reuse detection cannot revoke the new primary's
-  token family. `disconnect` on such a device removes the profile locally only.
-  Single-device installations are unchanged.
-- **`bastion connect claude` and `/connect claude` only check** that Claude
-  Code is installed and signed in (`claude --version`, `claude auth status`,
-  exit codes only) and say how to sign in (`claude auth login`, or its
-  `docker compose exec` form). They no longer run the login; the TUI no
-  longer suspends to run it either. Codex and OpenCode are unchanged.
-- **Removed `bastion connect claude --setup-token` and `--import-host`.** The
-  first minted a long-lived Claude token, the second copied `~/.claude` into
-  the container; neither is compatible with using the subscription only
-  through the user's own login in the unmodified binary.
-- **`acp_claude` and `acpx_claude` are no longer registered.** Both ran
-  Claude Code through `claude-agent-acp`, an Agent SDK application, on the
-  subscription login. A saved `/backend` selection, `[backend]`
-  conversation/task runtime, or `/backend use` naming either resolves to
-  `claude`. The installer's Claude option now selects `runtime:claude`.
-- The harness MCP bridge token now carries `tasks:read` (`get_task`,
-  `list_tasks`); creating, steering and cancelling tasks stay with the owner.
-- A runtime session reattached after a restart gets the MCP bridge again
-  (bastion-core `ResumeSpec::mcp_bridge`).
-
-- Pins `bastion-core` at `v0.6.1` (`c478c0b`): Claude on Bedrock/Vertex in
-  the native loop, `memory_store`/`memory_revoke`, direct-API fixes
-  (bastion-providers 0.2.7, bastion-cognition 0.2.2, bastion-runtime 0.4.1).
-- **Claude in the native loop through a cloud account.** `/model
-  bedrock/<model id>` and `/model vertex/<model id>` (catalog entries for the
-  4.5 family; any id works), `/connect bedrock` and `/connect vertex` with the
-  credential steps, and the `/connect` overview says whether a Bedrock region
-  or Vertex project is set. See Configuration → "Claude in Bastion's own loop".
-- **The agent can finally save its identity.** `memory_store` and
-  `memory_revoke` are registered: the onboarding had been asking for a tool
-  that did not exist, so every agent asked for an identity forever (and a
-  harness answered by writing its own memory files). Core beliefs are only
-  the identity; revoking asks the owner.
-- The direct Anthropic provider no longer prints every token to the daemon's
-  stdout and no longer drops server-sent events split across network reads.
-
-- Pins `bastion-core` at `v0.6.0` (`4af1d42`): governed runtime-backed
-  conversation (parked permission requests, live harness sessions, MCP
-  bridge), `acp_claude` isolation from the operator's Claude Code setup
-  (bastion-runtime 0.4.0, bastion-agent-runtime 0.3.0).
-- **The installer's Claude Code option and `/connect claude` now point at
-  `acp_claude`** (was `acpx_claude`). Existing selections are kept.
-- **Bastion MCP server:** a token in the `x-bastion-token` header or
-  `Authorization: Bearer` now authenticates (standard MCP clients cannot set
-  `_meta`); `bastion://memories` and `bastion://goals` are read as the token's
-  owner instead of the daemon's local owner; the HTTP transport lists its
-  tools (rmcp's `Router` wrapper used to answer `tools/list` with none).
-
-- Pins `bastion-core` at `v0.5.0` (`b8073c9`): `bastion-sandbox`, confined
-  harnesses (`HarnessConfinement`), MCP over Unix sockets, runtime workspace
-  base — what the sandbox, sidecar and native-install entries below build on.
-
-- Pins `bastion-core` at `v0.4.0` (`ea2ece1`): the direct ACP adapter
-  (`AcpAgentRuntime`, bastion-agent-runtime 0.2.0), proposed diffs on
-  `RuntimeEvent::PermissionRequest`, and STABLE/VOLATILE system-prompt caching
-  (bastion-types 0.3.0, bastion-runtime 0.2.6). No behavior change for an
-  existing deployment; test fixtures that build `PermissionRequest` now set
-  `edits`.
-
-### Added
-
-- **Claude Code as a governed conversation runtime — `acp_claude`.** With the
+- **Claude Code as a governed conversation runtime — `acp_claude`** (superseded
+  within this release by the `claude` runtime; see Changed). With the
   `claude` CLI installed and logged in, the runtime registry offers
   `acp_claude`: Bastion speaks ACP to Claude Code directly
   (`claude-agent-acp` on `PATH`, else `npx -y
@@ -213,6 +158,62 @@ for how that differs from the library crates it depends on).
 - `docs/{en/configuration.md,pt-br/configuracao.md}` document the subscription
   flow end to end (`/auth connect`, `/model codex/<model>@<profile>`,
   `/model status`) and how it differs from the TUI's `/connect codex`.
+
+### Changed
+
+- **Only the current primary refreshes subscription credentials (BMD-32).**
+  On a multi-device installation the subscription service checks the
+  primary's epoch fence (`EpochFence::may_refresh`) before every login,
+  refresh and upstream revocation: a node never makes them, and an ex-primary
+  stops as soon as it learns a newer epoch exists (`RefreshRefused`), so the
+  provider's refresh-token reuse detection cannot revoke the new primary's
+  token family. `disconnect` on such a device removes the profile locally only.
+  Single-device installations are unchanged.
+- **`bastion connect claude` and `/connect claude` only check** that Claude
+  Code is installed and signed in (`claude --version`, `claude auth status`,
+  exit codes only) and say how to sign in (`claude auth login`, or its
+  `docker compose exec` form). They no longer run the login; the TUI no
+  longer suspends to run it either. Codex and OpenCode are unchanged.
+- **Removed `bastion connect claude --setup-token` and `--import-host`.** The
+  first minted a long-lived Claude token, the second copied `~/.claude` into
+  the container; neither is compatible with using the subscription only
+  through the user's own login in the unmodified binary.
+- **`acp_claude` and `acpx_claude` are no longer registered.** Both ran
+  Claude Code through `claude-agent-acp`, an Agent SDK application, on the
+  subscription login. A saved `/backend` selection, `[backend]`
+  conversation/task runtime, or `/backend use` naming either resolves to
+  `claude`. The installer's Claude option now selects `runtime:claude`.
+- The harness MCP bridge token now carries `tasks:read` (`get_task`,
+  `list_tasks`); creating, steering and cancelling tasks stay with the owner.
+- A runtime session reattached after a restart gets the MCP bridge again
+  (bastion-core `ResumeSpec::mcp_bridge`).
+- **Core pin advances from `v0.3.3` (`aece48b`) to `v0.8.0`** through `v0.4.0`
+  (`ea2ece1`: direct ACP adapter, proposed diffs on permission requests,
+  STABLE/VOLATILE prompt caching), `v0.5.0` (`b8073c9`: `bastion-sandbox`,
+  confined harnesses, MCP over Unix sockets), `v0.6.0` (`4af1d42`: governed
+  runtime-backed conversation, MCP bridge), `v0.6.1` (`c478c0b`: Claude on
+  Bedrock/Vertex in the native loop, `memory_store`/`memory_revoke`) and
+  `v0.7.0` (`277627b`: multi-device mesh). Test fixtures that build
+  `PermissionRequest` now set `edits`.
+- **Claude in the native loop through a cloud account.** `/model
+  bedrock/<model id>` and `/model vertex/<model id>` (catalog entries for the
+  4.5 family; any id works), `/connect bedrock` and `/connect vertex` with the
+  credential steps, and the `/connect` overview says whether a Bedrock region
+  or Vertex project is set. See Configuration → "Claude in Bastion's own loop".
+- **The agent can finally save its identity.** `memory_store` and
+  `memory_revoke` are registered: the onboarding had been asking for a tool
+  that did not exist, so every agent asked for an identity forever (and a
+  harness answered by writing its own memory files). Core beliefs are only
+  the identity; revoking asks the owner.
+- The direct Anthropic provider no longer prints every token to the daemon's
+  stdout and no longer drops server-sent events split across network reads.
+- **The installer's Claude Code option and `/connect claude` now point at
+  `acp_claude`** (was `acpx_claude`). Existing selections are kept.
+- **Bastion MCP server:** a token in the `x-bastion-token` header or
+  `Authorization: Bearer` now authenticates (standard MCP clients cannot set
+  `_meta`); `bastion://memories` and `bastion://goals` are read as the token's
+  owner instead of the daemon's local owner; the HTTP transport lists its
+  tools (rmcp's `Router` wrapper used to answer `tools/list` with none).
 
 ### Security
 
@@ -1397,7 +1398,10 @@ Depends on [bastion-core](https://github.com/thewaifucorp/bastion-core) for
 the runtime substrate (agent loop, capabilities, memory, cognition,
 personas, mesh, providers, extension protocol).
 
-[Unreleased]: https://github.com/thewaifucorp/bastion-agent/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/thewaifucorp/bastion-agent/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/thewaifucorp/bastion-agent/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/thewaifucorp/bastion-agent/compare/v0.2.4...v0.3.0
+[0.2.4]: https://github.com/thewaifucorp/bastion-agent/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/thewaifucorp/bastion-agent/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/thewaifucorp/bastion-agent/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/thewaifucorp/bastion-agent/compare/v0.2.0...v0.2.1
