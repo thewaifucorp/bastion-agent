@@ -337,12 +337,18 @@ mod tests {
             Some(RuleDecision::Remote),
             "an allow-all after a pattern must not let an unchecked input through"
         );
-        assert_eq!(decision(&[remote.clone()]), Some(RuleDecision::Remote));
+        assert_eq!(
+            decision(std::slice::from_ref(&remote)),
+            Some(RuleDecision::Remote)
+        );
         assert_eq!(
             decision(&[rule("Bash", Some("ls*"), RuleDecision::Allow)]),
             Some(RuleDecision::Ask)
         );
-        assert_eq!(decision(&[allow_all.clone()]), Some(RuleDecision::Allow));
+        assert_eq!(
+            decision(std::slice::from_ref(&allow_all)),
+            Some(RuleDecision::Allow)
+        );
         assert_eq!(decision(&[rule("Read", None, RuleDecision::Allow)]), None);
         assert_eq!(
             decide(&[deny], "Bash", &RuleInput::Full("rm -rf x".into())).map(|(d, _)| d),
