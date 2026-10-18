@@ -75,10 +75,11 @@ pub fn rule_reason(rule: &PresenceRule) -> String {
 /// Bastion's decision on a call, with the reason the host shows. `None`:
 /// no rule covers it, the host decides.
 ///
-/// An input too long to check cannot be matched against patterns, so it is
-/// decided conservatively among the rules for that tool: a `deny` pattern
-/// wins (it might have matched), then the first rule that needs no input,
-/// then `remote` if any pattern asked for it, else `ask`.
+/// An input too long to check cannot be matched against patterns. When no
+/// rule for the tool has a pattern, the input does not matter and the
+/// normal first match applies. Otherwise the strictest decision among all
+/// the tool's rules wins (deny > remote > ask), and never `allow`: an
+/// unchecked input is never let through by a rule it might not satisfy.
 pub fn decide(
     rules: &[PresenceRule],
     tool: &str,
@@ -89,27 +90,31 @@ pub fn decide(
         RuleInput::Full(text) => evaluate(rules, tool, Some(text)).map(named),
         RuleInput::None => evaluate(rules, tool, None).map(named),
         RuleInput::TooLong => {
-            const WHY: &str = "the call's input is too long to check against the rules";
             let matching: Vec<&PresenceRule> =
                 rules.iter().filter(|r| glob_match(&r.tool, tool)).collect();
-            if matching.is_empty() {
-                return None;
+            if matching.iter().all(|r| r.input.is_none()) {
+                return matching.first().map(|r| named(r));
             }
-            if let Some(rule) = matching
-                .iter()
-                .find(|r| r.input.is_some() && r.decision == RuleDecision::Deny)
-            {
-                return Some((RuleDecision::Deny, format!("{} — {WHY}", rule_reason(rule))));
-            }
-            if let Some(rule) = matching.iter().find(|r| r.input.is_none()) {
-                return Some(named(rule));
-            }
-            let decision = if matching.iter().any(|r| r.decision == RuleDecision::Remote) {
-                RuleDecision::Remote
-            } else {
-                RuleDecision::Ask
+            let strictness = |d: RuleDecision| match d {
+                RuleDecision::Deny => 3,
+                RuleDecision::Remote => 2,
+                RuleDecision::Ask => 1,
+                RuleDecision::Allow => 0,
             };
-            Some((decision, format!("Bastion: {WHY}")))
+            let strictest = matching
+                .iter()
+                .map(|r| r.decision)
+                .max_by_key(|d| strictness(*d))
+                .unwrap_or(RuleDecision::Ask);
+            let decision = if strictest == RuleDecision::Allow {
+                RuleDecision::Ask
+            } else {
+                strictest
+            };
+            Some((
+                decision,
+                "Bastion: the call's input is too long to check against the rules".to_string(),
+            ))
         }
     }
 }
@@ -329,13 +334,15 @@ mod tests {
         );
         assert_eq!(
             decision(&[remote.clone(), allow_all.clone()]),
-            Some(RuleDecision::Allow)
+            Some(RuleDecision::Remote),
+            "an allow-all after a pattern must not let an unchecked input through"
         );
         assert_eq!(decision(&[remote.clone()]), Some(RuleDecision::Remote));
         assert_eq!(
             decision(&[rule("Bash", Some("ls*"), RuleDecision::Allow)]),
             Some(RuleDecision::Ask)
         );
+        assert_eq!(decision(&[allow_all.clone()]), Some(RuleDecision::Allow));
         assert_eq!(decision(&[rule("Read", None, RuleDecision::Allow)]), None);
         assert_eq!(
             decide(&[deny], "Bash", &RuleInput::Full("rm -rf x".into())).map(|(d, _)| d),
