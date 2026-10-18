@@ -72,6 +72,20 @@ fn load_session() -> Option<Session> {
     serde_json::from_str(&raw).ok()
 }
 
+/// The token `bastion chat` saved after signing in — what a host agent's
+/// hooks (`bastion hook`, `crate::presence::hook`) fall back to when no
+/// token is in the environment.
+pub(crate) fn saved_session_token() -> Option<String> {
+    load_session()
+        .map(|session| session.jwt)
+        .filter(|jwt| !jwt.trim().is_empty())
+}
+
+/// Whether `base_url` points at this machine (see `is_local_url`).
+pub(crate) fn is_local_daemon_url(base_url: &str) -> bool {
+    is_local_url(base_url)
+}
+
 fn save_session(session: &Session) -> Result<()> {
     let path = token_path();
     if let Some(dir) = path.parent() {

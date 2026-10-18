@@ -119,6 +119,17 @@ enum Command {
         #[command(subcommand)]
         action: CompanionAction,
     },
+    /// Bastion mode: run as a host agent's hook (reads the hook payload on
+    /// stdin, answers on stdout, always exits 0 so the host never breaks)
+    Hook {
+        /// The host agent; supported: claude-code
+        host: String,
+    },
+    /// Presence: running agent sessions, approvals, persona, paired devices
+    Presence {
+        #[command(subcommand)]
+        action: PresenceAction,
+    },
     /// Generate a shell completion script (Fase 3.6)
     Completions {
         /// bash | zsh | fish | powershell | elvish
@@ -185,6 +196,32 @@ enum NodeAction {
     Run,
     /// Promote this node to primary (owner action, done locally).
     Promote,
+}
+
+#[derive(Subcommand)]
+enum PresenceAction {
+    /// Show agent sessions, pending approvals and the active persona
+    Status,
+    /// Set the persona host agents act as (no name: back to the default)
+    Persona { name: Option<String> },
+    /// Approve a pending tool call (id from `bastion presence status`)
+    Approve { id: String },
+    /// Deny a pending tool call
+    Deny { id: String },
+    /// Pair a presence device with the code on its screen
+    Pair {
+        /// The device's address, e.g. 192.168.0.42
+        addr: String,
+        /// The 4-digit code shown on the device
+        code: String,
+        /// A name for the device
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// List paired presence devices
+    Devices,
+    /// Remove a paired presence device
+    Unpair { id: String },
 }
 
 #[derive(Subcommand)]
@@ -589,6 +626,25 @@ async fn async_main() -> anyhow::Result<()> {
             CompanionAction::Care { action } => {
                 bastion::tui::companion_care(action.as_str()).await?
             }
+        };
+        println!("{output}");
+        return Ok(());
+    }
+    if let Command::Hook { host } = &command {
+        return bastion::presence::hook::run(host).await;
+    }
+    if let Command::Presence { action } = &command {
+        use bastion::presence::cli;
+        let output = match action {
+            PresenceAction::Status => cli::status().await?,
+            PresenceAction::Persona { name } => cli::persona(name.as_deref()).await?,
+            PresenceAction::Approve { id } => cli::answer(id, true).await?,
+            PresenceAction::Deny { id } => cli::answer(id, false).await?,
+            PresenceAction::Pair { addr, code, name } => {
+                cli::pair(addr, code, name.as_deref()).await?
+            }
+            PresenceAction::Devices => cli::devices().await?,
+            PresenceAction::Unpair { id } => cli::unpair(id).await?,
         };
         println!("{output}");
         return Ok(());
@@ -1351,6 +1407,10 @@ async fn async_main() -> anyhow::Result<()> {
         Command::Chat { .. } => unreachable!("chat is handled before daemon initialization"),
         Command::Companion { .. } => {
             unreachable!("companion is handled before daemon initialization")
+        }
+        Command::Hook { .. } => unreachable!("hook is handled before daemon initialization"),
+        Command::Presence { .. } => {
+            unreachable!("presence is handled before daemon initialization")
         }
         Command::Connect { .. } => unreachable!("connect is handled before daemon initialization"),
         Command::Auth { .. } => unreachable!("auth is handled before daemon initialization"),
@@ -2126,6 +2186,35 @@ async fn daemon_loop(
             // block) carries it instead — `loadout_handler` overlays that
             // live value onto this otherwise-frozen snapshot at request
             // time. See `loadout::LoadoutState::extensions_live`.
+            // Presence (docs/en/presence.md): the snapshot/action contract
+            // every surface shares, the routes the Bastion-mode pack's hooks
+            // call, and the pusher feeding paired devices. Merged into the
+            // loadout router below — same owner auth, same listener.
+            let presence_routes = if cfg.presence.enabled {
+                let service = bastion::presence::PresenceService::new(
+                    cfg.presence.clone(),
+                    events_tx.clone(),
+                    companion_handle.clone(),
+                    bastion::presence::context::ContextSources {
+                        memory: agent.memory.clone(),
+                        personas: Arc::new(registry_for_product.clone()),
+                        goals: goals_for_product.clone(),
+                    },
+                );
+                service.start_device_pusher();
+                tracing::info!(
+                    event = "presence_mounted",
+                    rules = cfg.presence.rules.len(),
+                    devices = service.devices.all().len(),
+                );
+                Some(bastion::presence::routes::router(
+                    service,
+                    owner_map.clone(),
+                    jwt_secret.clone(),
+                ))
+            } else {
+                None
+            };
             let loadout_routes = Some(bastion::loadout::router(
                 bastion::loadout::snapshot(
                     registry_for_product
@@ -2201,7 +2290,11 @@ async fn daemon_loop(
                 // all share one in-process writer.
                 companion_handle,
                 extensions_live_for_webhook,
-            ));
+            ))
+            .map(|routes| match presence_routes {
+                Some(presence) => routes.merge(presence),
+                None => routes,
+            });
             // Extension UI: the mechanism (`extension::ui::router`) shipped
             // with its isolation contract already tested, but was never
             // mounted — `provides: Ui` extensions had nowhere to be served
@@ -3882,6 +3975,27 @@ mod cli_tests {
             Some(Command::Companion {
                 action: CompanionAction::Event { kind: EventKind::Activity, ref source }
             }) if source == "codex"
+        ));
+    }
+
+    #[test]
+    fn hook_and_presence_subcommands_parse() {
+        let cli = Cli::try_parse_from(["bastion", "hook", "claude-code"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Hook { ref host }) if host == "claude-code"));
+        let cli =
+            Cli::try_parse_from(["bastion", "presence", "pair", "192.168.0.42", "4827"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Presence {
+                action: PresenceAction::Pair { ref addr, ref code, name: None }
+            }) if addr == "192.168.0.42" && code == "4827"
+        ));
+        let cli = Cli::try_parse_from(["bastion", "presence", "persona"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Presence {
+                action: PresenceAction::Persona { name: None }
+            })
         ));
     }
 

@@ -16,6 +16,7 @@ Welcome. These guides describe the code in this repository—not an older hosted
 - [Personas](personas.md) — organize agent behavior with personas.
 - [Observability](observability.md) — the `/ui` dashboard, `/events` vocabulary, and `/credential`.
 - [Terminal companion](companion.md) — themes, animated pets, care, progression, and extension packs.
+- [Presence and Bastion mode](presence.md) — the snapshot/action contract, approvals from any surface, desk devices, and the Claude Code pack.
 - [Devices](devices.md) — one brain across your machines: primary, nodes, replica, promotion.
 - [Mobile companion](mobile-app.md) — build and pair the Flutter client.
 - [FAQ](faq.md) — common operational questions.

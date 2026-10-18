@@ -90,6 +90,9 @@ bastion companion event session-stop --source codex
 O servidor MCP também expõe a ferramenta local `bastion_companion_event`, com
 os argumentos `event` e `source`. Hooks/plugins ainda precisam chamar uma dessas
 pontes; o Bastion não finge observar um processo independente sem integração.
+Para o Claude Code essa integração vem com o Bastion: o
+[pack do Claude Code](../../packs/claude-code/README.md) alimenta o companion
+pelos hooks dele (veja [Presença](presenca.md)).
 
 ## Pet packs customizados
 

@@ -8,6 +8,29 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+### Added
+
+- **Presence** (`docs/en/presence.md`): one contract for every surface —
+  `GET /presence/snapshot` (compact, cut to a device's capacity),
+  `POST /presence/action` (approve, deny, persona, care, note) and
+  `presence.updated` / `approval.*` / `presence.persona` on `/events`.
+  Configured by `[presence]`; routes are owner-authenticated like
+  `/companion`, and paired devices get their own scoped token.
+- **Bastion mode for Claude Code** (`packs/claude-code`): a plugin whose hooks
+  run `bastion hook claude-code`. Claude receives the active persona, core and
+  relevant memories and goals (egress-checked: `local_only` never leaves),
+  `[[presence.rules]]` decide its tool calls (`allow`/`deny`/`ask`/`remote`),
+  a `remote` rule waits for an approval from any surface, sessions feed the
+  companion, and each turn leaves a `local_only` journal belief.
+- `bastion presence status|persona|approve|deny|pair|devices|unpair`.
+- Presence devices: `bastion presence pair <ip> <code>`, snapshot push with a
+  heartbeat, and reference firmware for GeekMagic SmallTV Ultra (ESP8266) and
+  Pro (ESP32, touch to approve) in `firmware/smalltv`.
+- Web Buddy view and mobile app: sessions, approvals with countdown, persona
+  switch, devices.
+- CI: `firmware` job (PlatformIO) and `linux-binary` artifact for trying a
+  branch without a local build.
+
 ## [0.4.0] — 2026-10-15
 
 Pins `bastion-core` at `v0.8.0` (`daa1560`): model pricing and metered calls

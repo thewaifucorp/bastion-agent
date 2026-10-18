@@ -91,3 +91,51 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash scripts/check-scope-and-scrub.sh
+
+  # Reference firmware for the desk device (two PlatformIO envs). Build only:
+  # nothing here flashes hardware.
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/smalltv/platformio.ini') }}
+      - run: pip install platformio==6.1.16
+      - run: pio run -d firmware/smalltv -e ultra -e pro
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smalltv-firmware
+          path: |
+            firmware/smalltv/.pio/build/ultra/firmware.bin
+            firmware/smalltv/.pio/build/pro/firmware.bin
+
+  # A Linux binary of this exact commit, web app embedded, uploaded so a
+  # change can be tried (e.g. the Claude Code pack in packs/claude-code)
+  # without building it locally. Not a release: no signing, no packaging.
+  linux-binary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libssl-dev pkg-config
+      - run: cargo build --release --bin bastion
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bastion-linux-x86_64
+          path: target/release/bastion
+          retention-days: 14

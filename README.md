@@ -193,6 +193,13 @@ The TUI includes a responsive Tamagotchi-like companion. Run `/pet game on` to
 opt into cosmetic progression and wellbeing reminders, or select a declarative
 pet pack supplied by an extension. See the [companion guide](docs/en/companion.md).
 
+**Bastion mode** turns Claude Code into your Bastion: install the
+[Claude Code pack](packs/claude-code/README.md) and Claude acts as your persona,
+with Bastion's memory, goals, companion and tool rules. Every session shows up
+on the web app, the mobile app, `bastion presence status` and paired desk
+devices ([SmallTV firmware](firmware/smalltv/README.md)), and a `remote` rule
+lets you approve a tool call from any of them. See [Presence](docs/en/presence.md).
+
 `bastion.toml` controls non-secret behavior; `.env` contains credentials. A channel
 starts only when it is enabled in TOML and its required secret exists. Before exposing
 one, map its sender to a canonical owner and read the security model.
@@ -207,6 +214,7 @@ one, map its sender to a canonical owner and read the security model.
 | [Adaptive Execution](docs/en/adaptive-execution.md) | [Execução adaptativa](docs/pt-br/execucao-adaptativa.md) |
 | [Channels](docs/en/channels.md) | [Canais](docs/pt-br/canais.md) |
 | [Terminal companion](docs/en/companion.md) | [Companion de terminal](docs/pt-br/companion.md) |
+| [Presence and Bastion mode](docs/en/presence.md) | [Presença e modo Bastion](docs/pt-br/presenca.md) |
 | [Security model](docs/en/security.md) | [Modelo de segurança](docs/pt-br/seguranca.md) |
 | [All docs](docs/en/README.md) | [Toda a documentação](docs/pt-br/README.md) |
 

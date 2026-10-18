@@ -1,0 +1,9 @@
+{
+  "name": "bastion",
+  "version": "0.1.0",
+  "description": "Bastion mode for Claude Code: Claude acts as your Bastion — its persona, memory, goals, companion and tool rules — with approvals answerable from the Bastion app, web, CLI or a desk device.",
+  "author": { "name": "Bastion" },
+  "homepage": "https://github.com/thewaifucorp/bastion-agent",
+  "license": "MIT",
+  "keywords": ["bastion", "memory", "persona", "approvals", "companion"]
+}

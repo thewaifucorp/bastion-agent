@@ -349,6 +349,113 @@ export const companionApi = {
     }),
 };
 
+// ── /presence (owner token) ─────────────────────────────────────────────
+// One snapshot for every surface that shows Bastion or acts on it; see
+// docs/en/presence.md. Empty or unknown values are omitted by the daemon,
+// so every optional field here may be absent.
+
+export type PresenceStatus = "working" | "waiting" | "idle" | "done" | "error";
+
+export interface PresenceSession {
+  id: string;
+  /** Host agent that owns the session (e.g. `claude-code`). */
+  src: string;
+  name?: string;
+  st: PresenceStatus;
+  tool?: string;
+  /** At most 48 characters of the tool call's main input. */
+  det?: string;
+  /** Unix seconds. */
+  since?: number;
+  model?: string;
+}
+
+export type PresenceAlertKind = "approval" | "question" | "error";
+
+export interface PresenceAlert {
+  id: string;
+  kind: PresenceAlertKind;
+  sid?: string;
+  tool?: string;
+  det?: string;
+  /** Unix seconds; only approvals expire. */
+  exp?: number;
+}
+
+export interface PresencePet {
+  level: number;
+  xp: number;
+  needs: CompanionNeeds;
+  /** Name of the care action currently due. */
+  cue?: string;
+}
+
+export interface PresenceNote {
+  text: string;
+  /** Unix seconds. */
+  exp?: number;
+}
+
+export interface PresenceToday {
+  turns?: number;
+  tools?: number;
+  errors?: number;
+}
+
+export interface PresenceSnapshot {
+  v: number;
+  seq: number;
+  /** Unix seconds. */
+  now: number;
+  host?: string;
+  persona?: string;
+  pet?: PresencePet;
+  sessions?: PresenceSession[];
+  /** Sessions dropped by a device's size cap. */
+  more?: number;
+  alerts?: PresenceAlert[];
+  note?: PresenceNote;
+  today?: PresenceToday;
+}
+
+export type PresenceCare = "water" | "feed" | "play" | "sleep";
+
+export type PresenceActionBody =
+  | { action: "approve"; id: string }
+  | { action: "deny"; id: string }
+  | { action: "persona"; persona: string | null }
+  | { action: "care"; care: PresenceCare }
+  | { action: "note"; text: string; minutes: number };
+
+export interface PresenceDevice {
+  id: string;
+  name?: string;
+  addr?: string;
+  caps?: {
+    w?: number;
+    h?: number;
+    touch?: boolean;
+    max_bytes?: number;
+    max_sessions?: number;
+  };
+  [k: string]: unknown;
+}
+
+export const presenceApi = {
+  getSnapshot: () =>
+    request<PresenceSnapshot>(tokens.owner, "/presence/snapshot"),
+  action: (body: PresenceActionBody) =>
+    request<PresenceSnapshot>(tokens.owner, "/presence/action", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  getDevices: () =>
+    request<{ items?: PresenceDevice[]; devices?: PresenceDevice[] }>(
+      tokens.owner,
+      "/presence/devices",
+    ),
+};
+
 // ── /status (unauthenticated, booleans-only) ────────────────────────────
 
 export interface RuntimeStatusRow {

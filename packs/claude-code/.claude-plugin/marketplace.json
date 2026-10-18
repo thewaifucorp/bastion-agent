@@ -1,0 +1,12 @@
+{
+  "name": "bastion",
+  "owner": { "name": "Bastion" },
+  "description": "Bastion packs for host agents.",
+  "plugins": [
+    {
+      "name": "bastion",
+      "source": "./",
+      "description": "Bastion mode for Claude Code: persona, memory, goals, companion and tool rules from your Bastion."
+    }
+  ]
+}
