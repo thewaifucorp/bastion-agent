@@ -219,13 +219,6 @@ struct ApprovalRequest {
     tool_input: Option<Value>,
 }
 
-fn rule_reason(rule: &policy::PresenceRule) -> String {
-    match &rule.input {
-        Some(input) => format!("Bastion rule: {} \"{input}\"", rule.tool),
-        None => format!("Bastion rule: {}", rule.tool),
-    }
-}
-
 async fn approval_handler(
     State(state): State<PresenceState>,
     headers: HeaderMap,
@@ -236,31 +229,15 @@ async fn approval_handler(
     if let Err(e) = validate_ids(&req.source, &req.session_id) {
         return error(StatusCode::BAD_REQUEST, e.to_string());
     }
-    let rules = &state.service.config.rules;
     // Rules see the whole input; the cut copy is only for showing the call.
-    let main = match policy::rule_input(req.tool_input.as_ref()) {
-        policy::RuleInput::Full(text) => Some(text),
-        policy::RuleInput::None => None,
-        policy::RuleInput::TooLong => {
-            if rules
-                .iter()
-                .any(|r| policy::glob_match(&r.tool, &req.tool_name))
-            {
-                return Json(json!({
-                    "decision": "ask",
-                    "reason": "Bastion: this call's input is too long to check against the rules",
-                }))
-                .into_response();
-            }
-            None
-        }
-    };
+    let rule_input = policy::rule_input(req.tool_input.as_ref());
     let input = policy::sanitize_tool_input(req.tool_input.as_ref());
-    let Some(rule) = policy::evaluate(rules, &req.tool_name, main.as_deref()) else {
+    let Some((decision, reason)) =
+        policy::decide(&state.service.config.rules, &req.tool_name, &rule_input)
+    else {
         return Json(json!({ "decision": "none" })).into_response();
     };
-    let reason = rule_reason(rule);
-    let (decision, reason) = match rule.decision {
+    let (decision, reason) = match decision {
         RuleDecision::Allow => ("allow", reason),
         RuleDecision::Deny => ("deny", reason),
         RuleDecision::Ask => ("ask", reason),

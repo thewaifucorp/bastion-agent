@@ -64,6 +64,56 @@ pub fn evaluate<'a>(
     })
 }
 
+/// How a rule is named to the person, as the host shows the decision.
+pub fn rule_reason(rule: &PresenceRule) -> String {
+    match &rule.input {
+        Some(input) => format!("Bastion rule: {} \"{input}\"", rule.tool),
+        None => format!("Bastion rule: {}", rule.tool),
+    }
+}
+
+/// Bastion's decision on a call, with the reason the host shows. `None`:
+/// no rule covers it, the host decides.
+///
+/// An input too long to check cannot be matched against patterns, so it is
+/// decided conservatively among the rules for that tool: a `deny` pattern
+/// wins (it might have matched), then the first rule that needs no input,
+/// then `remote` if any pattern asked for it, else `ask`.
+pub fn decide(
+    rules: &[PresenceRule],
+    tool: &str,
+    input: &RuleInput,
+) -> Option<(RuleDecision, String)> {
+    let named = |rule: &PresenceRule| (rule.decision, rule_reason(rule));
+    match input {
+        RuleInput::Full(text) => evaluate(rules, tool, Some(text)).map(named),
+        RuleInput::None => evaluate(rules, tool, None).map(named),
+        RuleInput::TooLong => {
+            const WHY: &str = "the call's input is too long to check against the rules";
+            let matching: Vec<&PresenceRule> =
+                rules.iter().filter(|r| glob_match(&r.tool, tool)).collect();
+            if matching.is_empty() {
+                return None;
+            }
+            if let Some(rule) = matching
+                .iter()
+                .find(|r| r.input.is_some() && r.decision == RuleDecision::Deny)
+            {
+                return Some((RuleDecision::Deny, format!("{} — {WHY}", rule_reason(rule))));
+            }
+            if let Some(rule) = matching.iter().find(|r| r.input.is_none()) {
+                return Some(named(rule));
+            }
+            let decision = if matching.iter().any(|r| r.decision == RuleDecision::Remote) {
+                RuleDecision::Remote
+            } else {
+                RuleDecision::Ask
+            };
+            Some((decision, format!("Bastion: {WHY}")))
+        }
+    }
+}
+
 /// Only the whitelisted fields of a tool call, each cut to
 /// [`TOOL_INPUT_MAX`]. `None` when nothing is left.
 pub fn sanitize_tool_input(input: Option<&Value>) -> Option<Value> {
@@ -264,6 +314,33 @@ mod tests {
         let huge = json!({ "command": "y".repeat(RULE_INPUT_MAX) });
         assert_eq!(rule_input(Some(&huge)), RuleInput::TooLong);
         assert_eq!(rule_input(None), RuleInput::None);
+    }
+
+    #[test]
+    fn an_unreadable_input_is_decided_conservatively() {
+        let deny = rule("Bash", Some("*rm -rf*"), RuleDecision::Deny);
+        let remote = rule("Bash", Some("git push*"), RuleDecision::Remote);
+        let allow_all = rule("Bash", None, RuleDecision::Allow);
+        let decision =
+            |rules: &[PresenceRule]| decide(rules, "Bash", &RuleInput::TooLong).map(|(d, _)| d);
+        assert_eq!(
+            decision(&[allow_all.clone(), deny.clone()]),
+            Some(RuleDecision::Deny)
+        );
+        assert_eq!(
+            decision(&[remote.clone(), allow_all.clone()]),
+            Some(RuleDecision::Allow)
+        );
+        assert_eq!(decision(&[remote.clone()]), Some(RuleDecision::Remote));
+        assert_eq!(
+            decision(&[rule("Bash", Some("ls*"), RuleDecision::Allow)]),
+            Some(RuleDecision::Ask)
+        );
+        assert_eq!(decision(&[rule("Read", None, RuleDecision::Allow)]), None);
+        assert_eq!(
+            decide(&[deny], "Bash", &RuleInput::Full("rm -rf x".into())).map(|(d, _)| d),
+            Some(RuleDecision::Deny)
+        );
     }
 
     #[test]
