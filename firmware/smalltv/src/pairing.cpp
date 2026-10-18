@@ -78,6 +78,8 @@ void handlePair(WebSrv& s) {
   snprintf(want, sizeof(want), "%04u", (unsigned)pairCode);
   String got = d["code"].as<String>();
   if (got != want) {
+    // A fresh code after every miss: guesses never accumulate on one code.
+    rotate();
     if (++wrong >= MAX_WRONG) {
       wrong = 0;
       lockedUntil = deadlineIn(LOCKOUT_MS);

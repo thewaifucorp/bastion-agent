@@ -1,5 +1,6 @@
 #include "net.h"
 #include "store.h"
+#include "pairing.h"
 #include <DNSServer.h>
 
 namespace net {
@@ -181,8 +182,12 @@ void loop() {
 
   mdnsUp = false;
   if (!offlineSince) offlineSince = deadlineIn(0);
-  // Keep retrying the saved network, but reopen the portal after 5 min offline.
-  if (haveCreds && !portal && millis() - offlineSince > OFFLINE_REOPEN_MS) startPortal();
+  // Keep retrying the saved network, but reopen the portal after 5 min offline
+  // — only while unpaired. A paired device never reopens an open setup portal
+  // by itself (anyone nearby could repoint it and capture its Bastion token);
+  // re-setup takes the physical factory reset (6 quick power cycles).
+  if (haveCreds && !portal && !pairing::paired() && millis() - offlineSince > OFFLINE_REOPEN_MS)
+    startPortal();
 }
 
 bool connected() { return WiFi.status() == WL_CONNECTED; }

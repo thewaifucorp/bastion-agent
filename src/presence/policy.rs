@@ -19,8 +19,14 @@ pub const TOOL_INPUT_FIELDS: &[&str] = &[
     "description",
 ];
 
-/// Each kept field is cut to this many characters.
+/// Each kept field is cut to this many characters for display and storage.
 pub const TOOL_INPUT_MAX: usize = 200;
+
+/// Rules see the whole field up to this size (never the display cut, or a
+/// command padded past 200 characters would slip past a pattern). A larger
+/// field is not evaluated at all: the host asks the person
+/// (`RuleCheck::TooLong`).
+pub const RULE_INPUT_MAX: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -61,19 +67,48 @@ pub fn evaluate<'a>(
 /// Only the whitelisted fields of a tool call, each cut to
 /// [`TOOL_INPUT_MAX`]. `None` when nothing is left.
 pub fn sanitize_tool_input(input: Option<&Value>) -> Option<Value> {
+    select_tool_input(input, TOOL_INPUT_MAX)
+}
+
+/// The whitelisted fields, each cut to `max` characters.
+pub fn select_tool_input(input: Option<&Value>, max: usize) -> Option<Value> {
     let object = input?.as_object()?;
     let mut out = serde_json::Map::new();
     for field in TOOL_INPUT_FIELDS {
         if let Some(text) = object.get(*field).and_then(Value::as_str) {
             if !text.is_empty() {
-                out.insert(
-                    (*field).to_string(),
-                    Value::String(cut(text, TOOL_INPUT_MAX)),
-                );
+                out.insert((*field).to_string(), Value::String(cut(text, max)));
             }
         }
     }
     (!out.is_empty()).then_some(Value::Object(out))
+}
+
+/// The main input as a rule must see it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RuleInput {
+    None,
+    Full(String),
+    /// Longer than [`RULE_INPUT_MAX`]: not evaluated.
+    TooLong,
+}
+
+/// The untruncated main input, for rule evaluation only.
+pub fn rule_input(input: Option<&Value>) -> RuleInput {
+    let Some(object) = input.and_then(Value::as_object) else {
+        return RuleInput::None;
+    };
+    let text = TOOL_INPUT_FIELDS.iter().find_map(|field| {
+        object
+            .get(*field)
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+    });
+    match text {
+        None => RuleInput::None,
+        Some(text) if text.chars().count() >= RULE_INPUT_MAX => RuleInput::TooLong,
+        Some(text) => RuleInput::Full(text.to_string()),
+    }
 }
 
 /// The one field a rule and a surface look at: the command of a shell call,
@@ -209,6 +244,26 @@ mod tests {
             main_input(Some(&json!({ "file_path": "/a/b.rs", "description": "d" }))),
             Some("/a/b.rs".into())
         );
+    }
+
+    #[test]
+    fn rules_see_the_whole_input_not_the_display_cut() {
+        let padded = format!("{}; rm -rf /", "x".repeat(300));
+        let rules = vec![rule("Bash", Some("*rm -rf /*"), RuleDecision::Deny)];
+        let input = json!({ "command": padded });
+        let RuleInput::Full(full) = rule_input(Some(&input)) else {
+            panic!("full input expected");
+        };
+        assert_eq!(
+            evaluate(&rules, "Bash", Some(&full)).map(|r| r.decision),
+            Some(RuleDecision::Deny)
+        );
+        // The display cut alone would have missed it.
+        let shown = main_input(Some(&input)).unwrap();
+        assert!(evaluate(&rules, "Bash", Some(&shown)).is_none());
+        let huge = json!({ "command": "y".repeat(RULE_INPUT_MAX) });
+        assert_eq!(rule_input(Some(&huge)), RuleInput::TooLong);
+        assert_eq!(rule_input(None), RuleInput::None);
     }
 
     #[test]

@@ -34,7 +34,7 @@ approval_wait_secs = 45   # quanto uma aprovação remota espera antes de devolv
 journal = true            # anota no diário local quando um turno do hospedeiro termina
 context_max_chars = 6000  # limite do contexto injetado no hospedeiro
 advertise_url = ""        # URL que os aparelhos usam para chegar ao daemon
-device_approvals = true   # aparelhos com toque podem aprovar/negar
+device_approvals = false  # aparelhos com toque podem aprovar/negar (veja abaixo)
 
 [[presence.rules]]
 tool = "Bash"             # glob no nome da ferramenta
@@ -63,6 +63,11 @@ bastion presence pair 192.168.0.42 4827   # o código mostrado no aparelho
 bastion presence devices
 bastion presence unpair bastion-4f2a
 ```
+
+O tráfego dos aparelhos é HTTP sem criptografia na rede local: quem lê esse
+tráfego pode copiar o token de um aparelho. Por isso `device_approvals` vem
+desligado; ligue só numa rede em que você confia. Tudo na presença é separado
+por dono: cada dono só vê e só responde o que é seu.
 
 O firmware de referência para o GeekMagic SmallTV (Ultra e Pro) está em
 [`firmware/smalltv`](../../firmware/smalltv/README.md).

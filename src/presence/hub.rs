@@ -181,19 +181,19 @@ struct Today {
 
 #[derive(Default, Serialize, Deserialize)]
 struct Persisted {
+    /// Active persona per owner.
     #[serde(default)]
-    persona: Option<String>,
+    personas: HashMap<String, String>,
 }
 
 struct Inner {
     sessions: HashMap<String, Session>,
     alerts: Vec<Alert>,
     approvals: HashMap<String, PendingApproval>,
-    next_approval: u64,
     seq: u64,
-    persona: Option<String>,
-    note: Option<(String, u64)>,
-    today: Today,
+    personas: HashMap<String, String>,
+    notes: HashMap<String, (String, u64)>,
+    today: HashMap<String, Today>,
     /// The persona each session was last given, so a switch mid-session
     /// re-sends the persona frame on the next prompt.
     injected: HashMap<String, Option<String>>,
@@ -214,16 +214,37 @@ pub fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// The id a surface knows a session by: 8 hex digits of a SHA-256 of
-/// `<source>:<session_id>`, so ids from different hosts never collide and
-/// the host's own id never leaves the daemon.
+/// The id a surface knows a session by: 8 hex digits of a SHA-256 of its
+/// key, so ids from different owners and hosts never collide and the host's
+/// own id never leaves the daemon.
 pub fn short_id(key: &str) -> String {
     let digest = Sha256::digest(key.as_bytes());
     digest.iter().take(4).map(|b| format!("{b:02x}")).collect()
 }
 
-fn session_key(source: &str, session_id: &str) -> String {
-    format!("{source}:{session_id}")
+/// Separates the owner from the rest of a session key; never valid in a
+/// `source` (see `validate_ids`).
+const OWNER_SEP: char = '\u{1f}';
+
+/// `<owner>␟<source>:<session_id>` — every session, alert and approval is
+/// scoped to the owner who reported it, and only that owner (or that owner's
+/// devices) sees or answers it.
+fn session_key(owner: &str, source: &str, session_id: &str) -> String {
+    format!("{owner}{OWNER_SEP}{source}:{session_id}")
+}
+
+fn owned_by(key: &str, owner: &str) -> bool {
+    key.split_once(OWNER_SEP).is_some_and(|(o, _)| o == owner)
+}
+
+/// An approval id nobody can guess or enumerate.
+fn new_approval_id(taken: &HashMap<String, PendingApproval>) -> String {
+    loop {
+        let id = format!("ap-{:08x}", rand::random::<u32>());
+        if !taken.contains_key(&id) {
+            return id;
+        }
+    }
 }
 
 /// The folder a session works in, as its display name.
@@ -271,11 +292,10 @@ impl PresenceHub {
                 sessions: HashMap::new(),
                 alerts: Vec::new(),
                 approvals: HashMap::new(),
-                next_approval: 1,
                 seq: 0,
-                persona: persisted.persona,
-                note: None,
-                today: Today::default(),
+                personas: persisted.personas,
+                notes: HashMap::new(),
+                today: HashMap::new(),
                 injected: HashMap::new(),
             }),
             events_tx,
@@ -307,8 +327,14 @@ impl PresenceHub {
 
     /// Records that `persona` was just given to a host session; `true` when
     /// it differs from what that session had (or it had nothing yet).
-    pub fn mark_injected(&self, source: &str, session_id: &str, persona: Option<&str>) -> bool {
-        let key = session_key(source, session_id);
+    pub fn mark_injected(
+        &self,
+        owner: &str,
+        source: &str,
+        session_id: &str,
+        persona: Option<&str>,
+    ) -> bool {
+        let key = session_key(owner, source, session_id);
         let mut inner = self.lock();
         let persona = persona.map(str::to_string);
         let changed = inner.injected.get(&key) != Some(&persona);
@@ -317,10 +343,15 @@ impl PresenceHub {
     }
 
     /// The persona a host session was last given (`None`: never given one).
-    pub fn injected_persona(&self, source: &str, session_id: &str) -> Option<Option<String>> {
+    pub fn injected_persona(
+        &self,
+        owner: &str,
+        source: &str,
+        session_id: &str,
+    ) -> Option<Option<String>> {
         self.lock()
             .injected
-            .get(&session_key(source, session_id))
+            .get(&session_key(owner, source, session_id))
             .cloned()
     }
 
@@ -336,19 +367,22 @@ impl PresenceHub {
         self.bump(&mut inner);
     }
 
-    pub fn persona(&self) -> Option<String> {
-        self.lock().persona.clone()
+    pub fn persona(&self, owner: &str) -> Option<String> {
+        self.lock().personas.get(owner).cloned()
     }
 
-    pub fn set_persona(&self, persona: Option<String>) {
+    pub fn set_persona(&self, owner: &str, persona: Option<String>) {
         let mut inner = self.lock();
-        inner.persona = persona.clone();
+        match &persona {
+            Some(name) => inner.personas.insert(owner.to_string(), name.clone()),
+            None => inner.personas.remove(owner),
+        };
         if let Some(path) = &self.state_path {
             if let Some(dir) = path.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
             let body = serde_json::to_string(&Persisted {
-                persona: persona.clone(),
+                personas: inner.personas.clone(),
             })
             .unwrap_or_default();
             if let Err(e) = std::fs::write(path, body) {
@@ -357,26 +391,30 @@ impl PresenceHub {
         }
         let _ = self
             .events_tx
-            .send(json!({ "event": "presence.persona", "persona": persona }).to_string());
+            .send(json!({ "event": "presence.persona" }).to_string());
         self.bump(&mut inner);
     }
 
-    pub fn set_note(&self, text: &str, minutes: u64) {
+    pub fn set_note(&self, owner: &str, text: &str, minutes: u64) {
         let mut inner = self.lock();
         let text = text.trim();
-        inner.note = (!text.is_empty()).then(|| {
+        if text.is_empty() {
+            inner.notes.remove(owner);
+        } else {
             let minutes = minutes.clamp(1, 24 * 60);
-            (cut(text, NOTE_MAX_CHARS), now_secs() + minutes * 60)
-        });
+            inner.notes.insert(
+                owner.to_string(),
+                (cut(text, NOTE_MAX_CHARS), now_secs() + minutes * 60),
+            );
+        }
         self.bump(&mut inner);
     }
 
     /// Applies one host event. Returns the new `seq`.
-    pub fn record(&self, event: &HostEvent) -> u64 {
+    pub fn record(&self, owner: &str, event: &HostEvent) -> u64 {
         let now = now_secs();
-        let key = session_key(&event.source, &event.session_id);
+        let key = session_key(owner, &event.source, &event.session_id);
         let mut inner = self.lock();
-        roll_day(&mut inner.today, now);
         prune(&mut inner, now);
 
         if event.event == "SessionEnd" {
@@ -477,10 +515,11 @@ impl PresenceHub {
         }
         let (tool, det) = (session.tool.clone(), session.det.clone());
 
+        let today = today_for(&mut inner.today, owner, now);
         match event.event.as_str() {
-            "Stop" => inner.today.turns += 1,
-            "PostToolUse" | "PostToolUseFailure" => inner.today.tools += 1,
-            "StopFailure" => inner.today.errors += 1,
+            "Stop" => today.turns += 1,
+            "PostToolUse" | "PostToolUseFailure" => today.tools += 1,
+            "StopFailure" => today.errors += 1,
             _ => {}
         }
         if clear_questions {
@@ -522,8 +561,10 @@ impl PresenceHub {
     /// Opens a `remote` approval and waits for a surface to answer, at most
     /// `wait`. The session shows as waiting meanwhile; on timeout the
     /// approval is withdrawn and the host asks the person itself.
+    #[allow(clippy::too_many_arguments)]
     pub async fn request_approval(
         &self,
+        owner: &str,
         source: &str,
         session_id: &str,
         cwd: Option<&str>,
@@ -532,13 +573,12 @@ impl PresenceHub {
         wait: Duration,
     ) -> (String, ApprovalOutcome) {
         let now = now_secs();
-        let key = session_key(source, session_id);
+        let key = session_key(owner, source, session_id);
         let (tx, rx) = oneshot::channel();
         let id = {
             let mut inner = self.lock();
             prune(&mut inner, now);
-            let id = format!("ap-{}", inner.next_approval);
-            inner.next_approval += 1;
+            let id = new_approval_id(&inner.approvals);
             let det = describe(input, cwd);
             let alert = Alert {
                 id: id.clone(),
@@ -553,13 +593,14 @@ impl PresenceHub {
                 session.since = now;
                 session.updated = now;
             }
-            let row = alert_json(&alert);
             inner
                 .approvals
                 .insert(id.clone(), PendingApproval { alert, reply: tx });
+            // Only the id: `/events` is one feed for every owner, so the call
+            // itself is read from each owner's own snapshot.
             let _ = self
                 .events_tx
-                .send(json!({ "event": "approval.requested", "approval": row }).to_string());
+                .send(json!({ "event": "approval.requested", "id": id }).to_string());
             self.bump(&mut inner);
             id
         };
@@ -585,9 +626,24 @@ impl PresenceHub {
         (id, outcome)
     }
 
-    /// Answers a pending approval. `by`: `owner` or `device:<id>`.
-    pub fn resolve(&self, id: &str, resolution: Resolution, by: &str) -> anyhow::Result<()> {
+    /// Answers one of `owner`'s pending approvals. `by`: `owner` or
+    /// `device:<id>`. Another owner's approval is indistinguishable from a
+    /// missing one.
+    pub fn resolve(
+        &self,
+        owner: &str,
+        id: &str,
+        resolution: Resolution,
+        by: &str,
+    ) -> anyhow::Result<()> {
         let mut inner = self.lock();
+        if !inner
+            .approvals
+            .get(id)
+            .is_some_and(|p| owned_by(&p.alert.session_key, owner))
+        {
+            anyhow::bail!("no pending approval '{id}'");
+        }
         let pending = inner
             .approvals
             .remove(id)
@@ -607,21 +663,29 @@ impl PresenceHub {
         Ok(())
     }
 
-    /// Whether `id` is a pending approval (for a device's scope check).
-    pub fn has_approval(&self, id: &str) -> bool {
-        self.lock().approvals.contains_key(id)
-    }
-
-    /// The snapshot (see `docs/en/presence.md`). `pet` is the companion's
-    /// reduced view, `None` to leave it out. `max_sessions`/`max_bytes` cut
-    /// it to a surface's capacity; alerts survive the cut first.
-    pub fn snapshot(&self, pet: Option<Value>, max_sessions: usize, max_bytes: usize) -> Value {
+    /// `owner`'s snapshot (see `docs/en/presence.md`). `pet` is the
+    /// companion's reduced view, `None` to leave it out.
+    /// `max_sessions`/`max_bytes` cut it to a surface's capacity; alerts
+    /// survive the cut first.
+    pub fn snapshot(
+        &self,
+        owner: &str,
+        pet: Option<Value>,
+        max_sessions: usize,
+        max_bytes: usize,
+    ) -> Value {
         let now = now_secs();
         let mut inner = self.lock();
-        roll_day(&mut inner.today, now);
         prune(&mut inner, now);
+        let today = today_for(&mut inner.today, owner, now);
+        let today = json!({ "turns": today.turns, "tools": today.tools, "errors": today.errors });
 
-        let mut sessions: Vec<&Session> = inner.sessions.values().collect();
+        let mut sessions: Vec<&Session> = inner
+            .sessions
+            .iter()
+            .filter(|(k, _)| owned_by(k, owner))
+            .map(|(_, s)| s)
+            .collect();
         sessions.sort_by(|a, b| {
             a.state
                 .rank()
@@ -634,11 +698,21 @@ impl PresenceHub {
             .map(|(k, s)| (k.as_str(), s.short.as_str()))
             .collect();
 
-        let mut approvals: Vec<&Alert> = inner.approvals.values().map(|p| &p.alert).collect();
-        approvals.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut approvals: Vec<&Alert> = inner
+            .approvals
+            .values()
+            .map(|p| &p.alert)
+            .filter(|a| owned_by(&a.session_key, owner))
+            .collect();
+        approvals.sort_by(|a, b| a.exp.cmp(&b.exp).then(a.id.cmp(&b.id)));
         let alerts: Vec<Value> = approvals
             .into_iter()
-            .chain(inner.alerts.iter())
+            .chain(
+                inner
+                    .alerts
+                    .iter()
+                    .filter(|a| owned_by(&a.session_key, owner)),
+            )
             .take(MAX_ALERTS)
             .map(|a| {
                 let mut row = alert_json(a);
@@ -649,7 +723,7 @@ impl PresenceHub {
             })
             .collect();
 
-        let mut rows: Vec<Value> = sessions.iter().map(|s| session_json(s)).collect();
+        let mut rows: Vec<Value> = sessions.iter().copied().map(session_json).collect();
         let total = rows.len();
         rows.truncate(max_sessions);
         let mut snapshot = json!({
@@ -660,19 +734,15 @@ impl PresenceHub {
             "sessions": rows,
             "more": total.saturating_sub(max_sessions),
             "alerts": alerts,
-            "today": {
-                "turns": inner.today.turns,
-                "tools": inner.today.tools,
-                "errors": inner.today.errors,
-            },
+            "today": today,
         });
-        if let Some(persona) = &inner.persona {
+        if let Some(persona) = inner.personas.get(owner) {
             snapshot["persona"] = json!(persona);
         }
         if let Some(pet) = pet {
             snapshot["pet"] = pet;
         }
-        if let Some((text, exp)) = &inner.note {
+        if let Some((text, exp)) = inner.notes.get(owner) {
             snapshot["note"] = json!({ "text": text, "exp": exp });
         }
         trim_to_bytes(snapshot, max_bytes)
@@ -692,14 +762,17 @@ fn restore_working(inner: &mut Inner, key: &str) {
     }
 }
 
-fn roll_day(today: &mut Today, now: u64) {
+/// `owner`'s counters for the current (UTC) day, reset when the day turns.
+fn today_for<'a>(all: &'a mut HashMap<String, Today>, owner: &str, now: u64) -> &'a mut Today {
     let day = now / 86_400;
+    let today = all.entry(owner.to_string()).or_default();
     if today.day != day {
         *today = Today {
             day,
             ..Today::default()
         };
     }
+    today
 }
 
 /// Drops sessions silent for [`SESSION_TTL_SECS`] (and their alerts),
@@ -726,9 +799,7 @@ fn prune(inner: &mut Inner, now: u64) {
             session.since = now;
         }
     }
-    if inner.note.as_ref().is_some_and(|(_, exp)| *exp <= now) {
-        inner.note = None;
-    }
+    inner.notes.retain(|_, (_, exp)| *exp > now);
 }
 
 fn session_json(s: &Session) -> Value {
@@ -790,6 +861,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    const OWNER: &str = "alice";
+
     fn hub() -> PresenceHub {
         let (tx, _) = broadcast::channel(64);
         PresenceHub::new(tx, "workstation".into(), None)
@@ -805,6 +878,10 @@ mod tests {
         }
     }
 
+    fn snap(hub: &PresenceHub) -> Value {
+        hub.snapshot(OWNER, None, 10, 8192)
+    }
+
     fn only_session(snapshot: &Value) -> Value {
         snapshot["sessions"][0].clone()
     }
@@ -812,55 +889,52 @@ mod tests {
     #[test]
     fn a_turn_moves_through_working_waiting_and_done() {
         let hub = hub();
-        hub.record(&event("SessionStart"));
-        let snap = hub.snapshot(None, 10, 8192);
-        assert_eq!(only_session(&snap)["st"], "idle");
-        assert_eq!(only_session(&snap)["name"], "project");
-        assert_eq!(only_session(&snap)["src"], "claude-code");
+        hub.record(OWNER, &event("SessionStart"));
+        let s = snap(&hub);
+        assert_eq!(only_session(&s)["st"], "idle");
+        assert_eq!(only_session(&s)["name"], "project");
+        assert_eq!(only_session(&s)["src"], "claude-code");
 
-        hub.record(&event("UserPromptSubmit"));
+        hub.record(OWNER, &event("UserPromptSubmit"));
         let mut pre = event("PreToolUse");
         pre.tool_name = Some("Bash".into());
-        pre.tool_input =
-            Some(json!({ "command": "cargo test --all\nsecond line", "content": "x" }));
-        hub.record(&pre);
-        let snap = hub.snapshot(None, 10, 8192);
-        assert_eq!(only_session(&snap)["st"], "working");
-        assert_eq!(only_session(&snap)["tool"], "Bash");
-        assert_eq!(only_session(&snap)["det"], "cargo test --all");
+        pre.tool_input = Some(json!({ "command": "cargo test --all\nsecond line" }));
+        hub.record(OWNER, &pre);
+        let s = snap(&hub);
+        assert_eq!(only_session(&s)["st"], "working");
+        assert_eq!(only_session(&s)["tool"], "Bash");
+        assert_eq!(only_session(&s)["det"], "cargo test --all");
 
         let mut note = event("Notification");
         note.notification_type = Some("permission_prompt".into());
-        hub.record(&note);
-        let snap = hub.snapshot(None, 10, 8192);
-        assert_eq!(only_session(&snap)["st"], "waiting");
-        assert_eq!(snap["alerts"][0]["kind"], "question");
-        assert_eq!(snap["alerts"][0]["sid"], only_session(&snap)["id"]);
+        hub.record(OWNER, &note);
+        let s = snap(&hub);
+        assert_eq!(only_session(&s)["st"], "waiting");
+        assert_eq!(s["alerts"][0]["kind"], "question");
+        assert_eq!(s["alerts"][0]["sid"], only_session(&s)["id"]);
 
-        hub.record(&event("PostToolUse"));
-        let snap = hub.snapshot(None, 10, 8192);
-        assert_eq!(snap["alerts"].as_array().unwrap().len(), 0);
+        hub.record(OWNER, &event("PostToolUse"));
+        assert_eq!(snap(&hub)["alerts"].as_array().unwrap().len(), 0);
 
-        hub.record(&event("Stop"));
-        let snap = hub.snapshot(None, 10, 8192);
-        assert_eq!(only_session(&snap)["st"], "done");
-        assert_eq!(snap["today"]["turns"], 1);
-        assert_eq!(snap["today"]["tools"], 1);
+        hub.record(OWNER, &event("Stop"));
+        let s = snap(&hub);
+        assert_eq!(only_session(&s)["st"], "done");
+        assert_eq!(s["today"]["turns"], 1);
+        assert_eq!(s["today"]["tools"], 1);
 
-        hub.record(&event("SessionEnd"));
-        let snap = hub.snapshot(None, 10, 8192);
-        assert_eq!(snap["sessions"].as_array().unwrap().len(), 0);
+        hub.record(OWNER, &event("SessionEnd"));
+        assert_eq!(snap(&hub)["sessions"].as_array().unwrap().len(), 0);
     }
 
     #[test]
     fn a_stop_failure_raises_an_error_alert() {
         let hub = hub();
-        hub.record(&event("UserPromptSubmit"));
-        hub.record(&event("StopFailure"));
-        let snap = hub.snapshot(None, 10, 8192);
-        assert_eq!(only_session(&snap)["st"], "error");
-        assert_eq!(snap["alerts"][0]["kind"], "error");
-        assert_eq!(snap["today"]["errors"], 1);
+        hub.record(OWNER, &event("UserPromptSubmit"));
+        hub.record(OWNER, &event("StopFailure"));
+        let s = snap(&hub);
+        assert_eq!(only_session(&s)["st"], "error");
+        assert_eq!(s["alerts"][0]["kind"], "error");
+        assert_eq!(s["today"]["errors"], 1);
     }
 
     #[test]
@@ -869,21 +943,19 @@ mod tests {
         let mut pre = event("PreToolUse");
         pre.tool_name = Some("Edit".into());
         pre.tool_input = Some(json!({ "file_path": "/home/dev/project/src/main.rs" }));
-        hub.record(&pre);
-        assert_eq!(
-            only_session(&hub.snapshot(None, 10, 8192))["det"],
-            "src/main.rs"
-        );
+        hub.record(OWNER, &pre);
+        assert_eq!(only_session(&snap(&hub))["det"], "src/main.rs");
     }
 
     #[tokio::test]
     async fn an_approval_is_answered_from_a_surface() {
         let hub = std::sync::Arc::new(hub());
-        hub.record(&event("UserPromptSubmit"));
+        hub.record(OWNER, &event("UserPromptSubmit"));
         let waiter = {
             let hub = hub.clone();
             tokio::spawn(async move {
                 hub.request_approval(
+                    OWNER,
                     "claude-code",
                     "s-1",
                     Some("/home/dev/project"),
@@ -895,21 +967,65 @@ mod tests {
             })
         };
         let id = loop {
-            let snap = hub.snapshot(None, 10, 8192);
-            if let Some(alert) = snap["alerts"].as_array().and_then(|a| a.first()) {
+            let s = snap(&hub);
+            if let Some(alert) = s["alerts"].as_array().and_then(|a| a.first()) {
                 assert_eq!(alert["kind"], "approval");
                 assert_eq!(alert["det"], "git push origin main");
-                assert_eq!(only_session(&snap)["st"], "waiting");
+                assert_eq!(only_session(&s)["st"], "waiting");
                 break alert["id"].as_str().unwrap().to_string();
             }
             tokio::task::yield_now().await;
         };
-        hub.resolve(&id, Resolution::Approve, "owner").unwrap();
+        assert!(
+            id.starts_with("ap-") && id.len() == 11,
+            "unguessable id: {id}"
+        );
+        hub.resolve(OWNER, &id, Resolution::Approve, "owner")
+            .unwrap();
         let (_, outcome) = waiter.await.unwrap();
         assert_eq!(outcome, ApprovalOutcome::Approved);
-        let snap = hub.snapshot(None, 10, 8192);
-        assert_eq!(only_session(&snap)["st"], "working");
-        assert!(hub.resolve(&id, Resolution::Deny, "owner").is_err());
+        assert_eq!(only_session(&snap(&hub))["st"], "working");
+        assert!(hub.resolve(OWNER, &id, Resolution::Deny, "owner").is_err());
+    }
+
+    #[tokio::test]
+    async fn owners_never_see_or_answer_each_other() {
+        let hub = std::sync::Arc::new(hub());
+        hub.record("bob", &event("UserPromptSubmit"));
+        hub.set_persona("bob", Some("grace".into()));
+        hub.set_note("bob", "lunch", 30);
+        let waiter = {
+            let hub = hub.clone();
+            tokio::spawn(async move {
+                hub.request_approval(
+                    "bob",
+                    "claude-code",
+                    "s-1",
+                    None,
+                    "Bash",
+                    None,
+                    Duration::from_millis(300),
+                )
+                .await
+            })
+        };
+        let id = loop {
+            let bob = hub.snapshot("bob", None, 10, 8192);
+            if let Some(id) = bob["alerts"][0]["id"].as_str() {
+                break id.to_string();
+            }
+            tokio::task::yield_now().await;
+        };
+        let alice = snap(&hub);
+        assert_eq!(alice["sessions"].as_array().unwrap().len(), 0);
+        assert_eq!(alice["alerts"].as_array().unwrap().len(), 0);
+        assert!(alice.get("persona").is_none());
+        assert!(alice.get("note").is_none());
+        assert!(hub
+            .resolve(OWNER, &id, Resolution::Approve, "owner")
+            .is_err());
+        let (_, outcome) = waiter.await.unwrap();
+        assert_eq!(outcome, ApprovalOutcome::TimedOut);
     }
 
     #[tokio::test]
@@ -917,6 +1033,7 @@ mod tests {
         let hub = hub();
         let (_, outcome) = hub
             .request_approval(
+                OWNER,
                 "claude-code",
                 "s-1",
                 None,
@@ -926,13 +1043,7 @@ mod tests {
             )
             .await;
         assert_eq!(outcome, ApprovalOutcome::TimedOut);
-        assert_eq!(
-            hub.snapshot(None, 10, 8192)["alerts"]
-                .as_array()
-                .unwrap()
-                .len(),
-            0
-        );
+        assert_eq!(snap(&hub)["alerts"].as_array().unwrap().len(), 0);
     }
 
     #[test]
@@ -942,12 +1053,12 @@ mod tests {
             let mut e = event("UserPromptSubmit");
             e.session_id = format!("s-{i}");
             e.cwd = Some(format!("/work/project-number-{i}"));
-            hub.record(&e);
+            hub.record(OWNER, &e);
         }
-        let snap = hub.snapshot(None, 5, 100_000);
-        assert_eq!(snap["sessions"].as_array().unwrap().len(), 5);
-        assert_eq!(snap["more"], 7);
-        let small = hub.snapshot(None, 12, 700);
+        let s = hub.snapshot(OWNER, None, 5, 100_000);
+        assert_eq!(s["sessions"].as_array().unwrap().len(), 5);
+        assert_eq!(s["more"], 7);
+        let small = hub.snapshot(OWNER, None, 12, 700);
         assert!(serde_json::to_vec(&small).unwrap().len() <= 700);
         assert_eq!(
             small["sessions"].as_array().unwrap().len() as u64 + small["more"].as_u64().unwrap(),
@@ -961,18 +1072,23 @@ mod tests {
         let path = dir.path().join("state.json");
         let (tx, mut rx) = broadcast::channel(64);
         let hub = PresenceHub::new(tx.clone(), "h".into(), Some(path.clone()));
-        hub.set_persona(Some("ada".into()));
-        hub.set_note("back in 10 minutes, grabbing a coffee downstairs", 30);
-        let snap = hub.snapshot(None, 10, 8192);
-        assert_eq!(snap["persona"], "ada");
+        hub.set_persona(OWNER, Some("ada".into()));
+        hub.set_note(
+            OWNER,
+            "back in 10 minutes, grabbing a coffee downstairs",
+            30,
+        );
+        let s = snap(&hub);
+        assert_eq!(s["persona"], "ada");
         assert_eq!(
-            snap["note"]["text"].as_str().unwrap().chars().count(),
+            s["note"]["text"].as_str().unwrap().chars().count(),
             NOTE_MAX_CHARS
         );
         let first: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
         assert_eq!(first["event"], "presence.persona");
         let reopened = PresenceHub::new(tx, "h".into(), Some(path));
-        assert_eq!(reopened.persona().as_deref(), Some("ada"));
+        assert_eq!(reopened.persona(OWNER).as_deref(), Some("ada"));
+        assert_eq!(reopened.persona("bob"), None);
     }
 
     #[test]
@@ -983,6 +1099,6 @@ mod tests {
         bad.event = "Stop".into();
         bad.source = "has space".into();
         assert!(bad.validate().is_err());
-        assert_eq!(short_id("claude-code:s-1").len(), 8);
+        assert_eq!(short_id("alice\u{1f}claude-code:s-1").len(), 8);
     }
 }

@@ -29,7 +29,7 @@ approval_wait_secs = 45   # how long a remote approval waits before falling back
 journal = true            # record a local-only journal entry when a host turn ends
 context_max_chars = 6000  # cap for the context injected into a host agent
 advertise_url = ""        # URL devices use to reach this daemon (e.g. http://192.168.0.10:8080)
-device_approvals = true   # paired devices with a touch input may approve/deny
+device_approvals = false  # paired devices with a touch input may approve/deny (see Devices)
 
 # Rules for the host agent's tool calls. First match wins; no match = the host decides.
 [[presence.rules]]
@@ -88,9 +88,18 @@ counted in `more`; alerts are kept first).
 Each is one JSON string on the existing SSE feed:
 
 - `{"event":"presence.updated","seq":42}` — anything changed; refetch the snapshot.
-- `{"event":"approval.requested","approval":{...alert}}`
-- `{"event":"approval.resolved","id":"ap-7","decision":"approve|deny|timeout","by":"owner|device:<id>"}`
-- `{"event":"presence.persona","persona":"ada"}`
+- `{"event":"approval.requested","id":"ap-1f3a9c2e"}`
+- `{"event":"approval.resolved","id":"ap-1f3a9c2e","decision":"approve|deny|timeout","by":"owner|device:<id>"}`
+- `{"event":"presence.persona"}`
+
+`/events` is one feed for every owner of the daemon, so these carry no
+content: a surface reads the details from its own snapshot.
+
+Everything in presence is scoped to an owner. Sessions, alerts, approvals,
+the active persona, the note and the day's counters belong to the owner whose
+token reported them; a snapshot shows only the caller's, an approval can only
+be answered by its owner (or that owner's devices), and approval ids are
+random (`ap-` + 8 hex digits).
 
 ## Actions
 
@@ -164,8 +173,15 @@ removes one.
 
 Bastion pushes on every change (debounced) and every 10 seconds as a
 heartbeat; a device that hears nothing for 30 seconds shows "disconnected".
-The code rotates after every successful pairing; five wrong codes lock pairing
-for a minute.
+The code rotates after every pairing attempt, right or wrong; five wrong codes
+lock pairing for a minute. A paired device never reopens its open Wi-Fi setup
+portal by itself — re-setup takes the physical factory reset.
+
+**Device traffic is plain HTTP on the local network.** Anyone who can read
+that traffic can copy a device's token and replay it. That is why
+`device_approvals` is off by default: with it off, a device token can only
+read its owner's snapshot and care for the companion. Turn it on only on a
+network you trust.
 
 The reference firmware for GeekMagic SmallTV boards lives in
 [`firmware/smalltv`](../../firmware/smalltv/README.md).

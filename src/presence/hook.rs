@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use super::policy::{cut, sanitize_tool_input};
+use super::policy::{cut, sanitize_tool_input, select_tool_input, RULE_INPUT_MAX};
 
 const SOURCE_CLAUDE_CODE: &str = "claude-code";
 const TRANSCRIPT_TAIL_BYTES: u64 = 512 * 1024;
@@ -272,8 +272,10 @@ async fn claude_code(daemon: &Daemon, payload: &Value) -> Option<Value> {
             if let Some(cwd) = text(payload, "cwd") {
                 request["cwd"] = json!(cwd);
             }
-            if let Some(input) = event_body.get("tool_input") {
-                request["tool_input"] = input.clone();
+            // Untruncated (whitelisted fields only): a rule must see the whole
+            // command, not the 200-character copy surfaces display.
+            if let Some(input) = select_tool_input(payload.get("tool_input"), RULE_INPUT_MAX) {
+                request["tool_input"] = input;
             }
             // A `remote` rule waits for a person: the host's own hook timeout
             // (pack `hooks.json`) is the real bound, this one only a backstop.

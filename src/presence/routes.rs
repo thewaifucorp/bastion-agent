@@ -45,8 +45,19 @@ struct PresenceState {
 }
 
 enum Caller {
-    Owner,
+    Owner(String),
     Device(DeviceRecord),
+}
+
+impl Caller {
+    /// The owner whose presence this caller sees and acts on — a device
+    /// only ever its pairing owner's.
+    fn owner(&self) -> &str {
+        match self {
+            Caller::Owner(owner) => owner,
+            Caller::Device(device) => &device.owner,
+        }
+    }
 }
 
 fn error(status: StatusCode, message: impl Into<String>) -> Response {
@@ -82,7 +93,7 @@ fn caller(
                 error(StatusCode::UNAUTHORIZED, "unauthorized")
             });
     }
-    owner(state, headers, event).map(|_| Caller::Owner)
+    owner(state, headers, event).map(Caller::Owner)
 }
 
 fn parse<T: DeserializeOwned>(body: &Bytes) -> Result<T, Response> {
@@ -107,7 +118,7 @@ struct SnapshotQuery {
 
 fn limits(caller: &Caller, query: &SnapshotQuery) -> (usize, usize) {
     let (sessions, bytes) = match caller {
-        Caller::Owner => (OWNER_MAX_SESSIONS, OWNER_MAX_BYTES),
+        Caller::Owner(_) => (OWNER_MAX_SESSIONS, OWNER_MAX_BYTES),
         Caller::Device(d) => (d.caps.max_sessions, d.caps.max_bytes),
     };
     (
@@ -123,7 +134,7 @@ async fn snapshot_handler(
 ) -> Response {
     let caller = tri!(caller(&state, &headers, "presence_snapshot_unauthorized"));
     let (sessions, bytes) = limits(&caller, &query);
-    Json(state.service.snapshot(sessions, bytes)).into_response()
+    Json(state.service.snapshot(caller.owner(), sessions, bytes)).into_response()
 }
 
 async fn event_handler(
@@ -131,13 +142,13 @@ async fn event_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    tri!(owner(&state, &headers, "presence_event_unauthorized"));
+    let owner = tri!(owner(&state, &headers, "presence_event_unauthorized"));
     let mut event: HostEvent = tri!(parse(&body));
     if let Err(e) = event.validate() {
         return error(StatusCode::BAD_REQUEST, e.to_string());
     }
     event.tool_input = policy::sanitize_tool_input(event.tool_input.as_ref());
-    let seq = state.service.record(&event);
+    let seq = state.service.record(&owner, &event);
     Json(json!({ "ok": true, "seq": seq })).into_response()
 }
 
@@ -167,10 +178,13 @@ async fn context_handler(
         Some(other) => return error(StatusCode::BAD_REQUEST, format!("unknown kind '{other}'")),
     };
     let hub = &state.service.hub;
-    let chosen = hub.persona();
+    let chosen = hub.persona(&owner);
     // A prompt in a session that was given another persona (switched since)
     // gets the whole frame again, so the switch takes effect right away.
-    let kind = match (kind, hub.injected_persona(&req.source, &req.session_id)) {
+    let kind = match (
+        kind,
+        hub.injected_persona(&owner, &req.source, &req.session_id),
+    ) {
         (ContextKind::Prompt, Some(given))
             if given
                 != context::resolve_persona(&state.service.context.personas, chosen.as_deref()) =>
@@ -189,7 +203,7 @@ async fn context_handler(
     )
     .await;
     if kind == ContextKind::Session {
-        hub.mark_injected(&req.source, &req.session_id, persona.as_deref());
+        hub.mark_injected(&owner, &req.source, &req.session_id, persona.as_deref());
     }
     Json(json!({ "context": text, "persona": persona })).into_response()
 }
@@ -217,15 +231,32 @@ async fn approval_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    tri!(owner(&state, &headers, "presence_approval_unauthorized"));
+    let owner = tri!(owner(&state, &headers, "presence_approval_unauthorized"));
     let req: ApprovalRequest = tri!(parse(&body));
     if let Err(e) = validate_ids(&req.source, &req.session_id) {
         return error(StatusCode::BAD_REQUEST, e.to_string());
     }
+    let rules = &state.service.config.rules;
+    // Rules see the whole input; the cut copy is only for showing the call.
+    let main = match policy::rule_input(req.tool_input.as_ref()) {
+        policy::RuleInput::Full(text) => Some(text),
+        policy::RuleInput::None => None,
+        policy::RuleInput::TooLong => {
+            if rules
+                .iter()
+                .any(|r| policy::glob_match(&r.tool, &req.tool_name))
+            {
+                return Json(json!({
+                    "decision": "ask",
+                    "reason": "Bastion: this call's input is too long to check against the rules",
+                }))
+                .into_response();
+            }
+            None
+        }
+    };
     let input = policy::sanitize_tool_input(req.tool_input.as_ref());
-    let main = policy::main_input(input.as_ref());
-    let Some(rule) = policy::evaluate(&state.service.config.rules, &req.tool_name, main.as_deref())
-    else {
+    let Some(rule) = policy::evaluate(rules, &req.tool_name, main.as_deref()) else {
         return Json(json!({ "decision": "none" })).into_response();
     };
     let reason = rule_reason(rule);
@@ -239,6 +270,7 @@ async fn approval_handler(
                 .service
                 .hub
                 .request_approval(
+                    &owner,
                     &req.source,
                     &req.session_id,
                     req.cwd.as_deref(),
@@ -386,7 +418,7 @@ async fn action_handler(
                 );
             };
             let by = match &caller {
-                Caller::Owner => "owner".to_string(),
+                Caller::Owner(_) => "owner".to_string(),
                 Caller::Device(d) => {
                     if !(service.config.device_approvals && d.caps.touch) {
                         return error(
@@ -402,12 +434,12 @@ async fn action_handler(
             } else {
                 Resolution::Deny
             };
-            if let Err(e) = service.hub.resolve(id, resolution, &by) {
+            if let Err(e) = service.hub.resolve(caller.owner(), id, resolution, &by) {
                 return error(StatusCode::NOT_FOUND, e.to_string());
             }
         }
         "persona" => {
-            if !matches!(caller, Caller::Owner) {
+            if !matches!(caller, Caller::Owner(_)) {
                 return owner_only();
             }
             let persona = req
@@ -420,7 +452,9 @@ async fn action_handler(
                     return error(StatusCode::BAD_REQUEST, format!("unknown persona '{name}'"));
                 }
             }
-            service.hub.set_persona(persona.map(str::to_string));
+            service
+                .hub
+                .set_persona(caller.owner(), persona.map(str::to_string));
         }
         "care" => {
             let Some(care) = req.care.as_deref() else {
@@ -435,10 +469,11 @@ async fn action_handler(
             service.hub.touch();
         }
         "note" => {
-            if !matches!(caller, Caller::Owner) {
+            if !matches!(caller, Caller::Owner(_)) {
                 return owner_only();
             }
             service.hub.set_note(
+                caller.owner(),
                 req.text.as_deref().unwrap_or_default(),
                 req.minutes.unwrap_or(30),
             );
@@ -446,7 +481,7 @@ async fn action_handler(
         other => return error(StatusCode::BAD_REQUEST, format!("unknown action '{other}'")),
     }
     let (sessions, bytes) = limits(&caller, &query);
-    Json(service.snapshot(sessions, bytes)).into_response()
+    Json(service.snapshot(caller.owner(), sessions, bytes)).into_response()
 }
 
 async fn devices_list_handler(State(state): State<PresenceState>, headers: HeaderMap) -> Response {
@@ -875,7 +910,7 @@ mod tests {
         let rules = vec![
             PresenceRule {
                 tool: "Bash".into(),
-                input: Some("rm -rf*".into()),
+                input: Some("*rm -rf*".into()),
                 decision: RuleDecision::Deny,
             },
             PresenceRule {
@@ -901,6 +936,17 @@ mod tests {
             "/presence/approval",
             Some("tok-alice"),
             ask("rm -rf build"),
+        )
+        .await;
+        assert_eq!(v["decision"], "deny");
+        // Padding past the display cut does not hide the call from a rule.
+        let padded = format!("{} && rm -rf build", "true ".repeat(80));
+        let (_, v) = call(
+            &f.app,
+            "POST",
+            "/presence/approval",
+            Some("tok-alice"),
+            ask(&padded),
         )
         .await;
         assert_eq!(v["decision"], "deny");

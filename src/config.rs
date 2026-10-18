@@ -156,8 +156,10 @@ pub struct PresenceConfig {
     /// `BASTION_WEBHOOK_ADDR` at pairing time.
     #[serde(default)]
     pub advertise_url: String,
-    /// Paired devices that declared a touch input may approve or deny.
-    #[serde(default = "default_true")]
+    /// Paired devices that declared a touch input may approve or deny. Off
+    /// by default: device traffic is plain HTTP on the local network, so
+    /// anyone who can sniff it could replay a device's token.
+    #[serde(default)]
     pub device_approvals: bool,
     /// Tool-call rules for host agents, first match wins.
     #[serde(default)]
@@ -172,7 +174,7 @@ impl Default for PresenceConfig {
             journal: true,
             context_max_chars: default_presence_context_max_chars(),
             advertise_url: String::new(),
-            device_approvals: true,
+            device_approvals: false,
             rules: Vec::new(),
         }
     }

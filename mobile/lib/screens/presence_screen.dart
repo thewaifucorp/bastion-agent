@@ -119,11 +119,23 @@ class _PresenceScreenState extends State<PresenceScreen> {
         if (id != null && id == _bannerId) _clearBanner();
         _scheduleRefresh();
       case 'approval.requested':
-        final a = data['approval'];
-        if (a is Map && mounted) {
-          _showBanner(PresenceAlert.fromJson(Map<String, dynamic>.from(a)));
-        }
+        // The event carries only the id (/events is shared by every owner);
+        // the call itself comes from this owner's own snapshot.
+        final id = data['id']?.toString();
+        if (id != null) _showBannerFor(id);
         _scheduleRefresh();
+    }
+  }
+
+  Future<void> _showBannerFor(String id) async {
+    try {
+      final s = await widget.api.getPresenceSnapshot();
+      if (!mounted) return;
+      setState(() => _apply(s));
+      final match = s.approvals.where((a) => a.id == id);
+      if (match.isNotEmpty) _showBanner(match.first);
+    } catch (_) {
+      // Not this owner's approval, or the daemon is gone: no banner.
     }
   }
 

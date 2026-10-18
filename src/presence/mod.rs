@@ -27,7 +27,7 @@ use crate::config::PresenceConfig;
 use crate::tui::CompanionHandle;
 
 use self::context::ContextSources;
-use self::devices::{DeviceCaps, DeviceRegistry};
+use self::devices::{DeviceRecord, DeviceRegistry};
 use self::hub::{HostEvent, PresenceHub};
 
 /// Where presence keeps its files: `$BASTION_DATA_DIR/presence`, else
@@ -107,19 +107,25 @@ impl PresenceService {
         Some(pet)
     }
 
-    pub fn snapshot(&self, max_sessions: usize, max_bytes: usize) -> Value {
-        self.hub.snapshot(self.pet(), max_sessions, max_bytes)
+    pub fn snapshot(&self, owner: &str, max_sessions: usize, max_bytes: usize) -> Value {
+        self.hub
+            .snapshot(owner, self.pet(), max_sessions, max_bytes)
     }
 
-    pub fn snapshot_for(&self, caps: &DeviceCaps) -> Value {
-        self.snapshot(caps.max_sessions, caps.max_bytes)
+    /// What a paired device is shown: its owner's snapshot, cut to its caps.
+    pub fn snapshot_for(&self, device: &DeviceRecord) -> Value {
+        self.snapshot(
+            &device.owner,
+            device.caps.max_sessions,
+            device.caps.max_bytes,
+        )
     }
 
     /// Records a host event and lets the companion feel it: a session
     /// starting or ending, and activity on prompts, tool results and turn
     /// ends. A companion error never fails the event.
-    pub fn record(&self, event: &HostEvent) -> u64 {
-        let seq = self.hub.record(event);
+    pub fn record(&self, owner: &str, event: &HostEvent) -> u64 {
+        let seq = self.hub.record(owner, event);
         let kind = match event.event.as_str() {
             "SessionStart" => Some("session-start"),
             "SessionEnd" => Some("session-stop"),
@@ -143,7 +149,7 @@ impl PresenceService {
         devices::spawn_pusher(
             Arc::clone(&self.devices),
             self.hub.subscribe_changes(),
-            move |caps| service.snapshot_for(caps),
+            move |device| service.snapshot_for(device),
         );
     }
 }

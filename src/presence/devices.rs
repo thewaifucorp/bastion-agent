@@ -300,13 +300,14 @@ pub async fn pair(
 
 /// Pushes the snapshot to every paired device on each change (debounced)
 /// and on a heartbeat, so a device can tell "nothing new" from "Bastion is
-/// gone". `snapshot_for` builds the snapshot cut to one device's caps.
+/// gone". `snapshot_for` builds one device's snapshot: its owner's, cut to
+/// its caps.
 pub fn spawn_pusher<F>(
     registry: Arc<DeviceRegistry>,
     mut changes: tokio::sync::watch::Receiver<u64>,
     snapshot_for: F,
 ) where
-    F: Fn(&DeviceCaps) -> Value + Send + Sync + 'static,
+    F: Fn(&DeviceRecord) -> Value + Send + Sync + 'static,
 {
     tokio::spawn(async move {
         let client = reqwest::Client::new();
@@ -323,7 +324,7 @@ pub fn spawn_pusher<F>(
                 _ = tokio::time::sleep(HEARTBEAT) => {}
             }
             for device in registry.all() {
-                let body = snapshot_for(&device.caps);
+                let body = snapshot_for(&device);
                 let result = client
                     .post(format!("http://{}/api/state", device.addr))
                     .bearer_auth(&device.push_token)
