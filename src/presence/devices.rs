@@ -185,19 +185,15 @@ impl DeviceRegistry {
             .collect()
     }
 
-    /// Adds or replaces (same owner, same id) a device. An id another owner
-    /// holds is refused: that owner must unpair it first.
+    /// Adds or replaces a device. Records are keyed by (owner, id): one
+    /// owner never touches another's, and an id cannot be squatted. A
+    /// physical device answers only its last pairing's token, so an older
+    /// record elsewhere just has its pushes refused.
     pub fn upsert(&self, record: DeviceRecord) -> anyhow::Result<()> {
         let mut devices = self
             .devices
             .write()
             .map_err(|_| anyhow::anyhow!("device registry lock poisoned"))?;
-        if devices
-            .iter()
-            .any(|d| d.id == record.id && d.owner != record.owner)
-        {
-            anyhow::bail!("device '{}' is paired to another owner", record.id);
-        }
         devices.retain(|d| !(d.id == record.id && d.owner == record.owner));
         devices.push(record);
         self.save(&devices)
@@ -415,19 +411,21 @@ mod tests {
     }
 
     #[test]
-    fn an_id_held_by_another_owner_cannot_be_taken_over() {
+    fn records_are_keyed_by_owner_and_id() {
         let registry = DeviceRegistry::load(None);
         registry
             .upsert(record("bastion-4f2a", "alice", "a"))
             .unwrap();
-        assert!(registry.upsert(record("bastion-4f2a", "bob", "b")).is_err());
+        registry.upsert(record("bastion-4f2a", "bob", "b")).unwrap();
         assert_eq!(registry.by_token("a").unwrap().owner, "alice");
-        // The same owner re-pairing replaces its own record.
+        assert_eq!(registry.by_token("b").unwrap().owner, "bob");
+        // The same owner re-pairing replaces only its own record.
         registry
             .upsert(record("bastion-4f2a", "alice", "a2"))
             .unwrap();
         assert_eq!(registry.list("alice").len(), 1);
         assert!(registry.by_token("a").is_none());
+        assert_eq!(registry.list("bob").len(), 1);
         assert!(valid_device_id("bastion-4f2a"));
         assert!(!valid_device_id("../x"));
         assert!(!valid_device_id(""));
