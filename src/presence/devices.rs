@@ -134,6 +134,15 @@ pub fn validate_addr(addr: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `[A-Za-z0-9._-]{1,64}` — what a device may call itself.
+fn valid_device_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
 pub struct DeviceRegistry {
     path: Option<PathBuf>,
     devices: RwLock<Vec<DeviceRecord>>,
@@ -176,13 +185,20 @@ impl DeviceRegistry {
             .collect()
     }
 
-    /// Adds or replaces (same id) a device.
+    /// Adds or replaces (same owner, same id) a device. An id another owner
+    /// holds is refused: that owner must unpair it first.
     pub fn upsert(&self, record: DeviceRecord) -> anyhow::Result<()> {
         let mut devices = self
             .devices
             .write()
             .map_err(|_| anyhow::anyhow!("device registry lock poisoned"))?;
-        devices.retain(|d| d.id != record.id);
+        if devices
+            .iter()
+            .any(|d| d.id == record.id && d.owner != record.owner)
+        {
+            anyhow::bail!("device '{}' is paired to another owner", record.id);
+        }
+        devices.retain(|d| !(d.id == record.id && d.owner == record.owner));
         devices.push(record);
         self.save(&devices)
     }
@@ -280,7 +296,7 @@ pub async fn pair(
         .await
         .map_err(|e| anyhow::anyhow!("the device sent an unexpected pairing answer: {e}"))?;
     anyhow::ensure!(
-        !answer.token.is_empty() && answer.id.len() <= 64,
+        !answer.token.is_empty() && valid_device_id(&answer.id),
         "the device sent an unexpected pairing answer"
     );
     Ok(DeviceRecord {
@@ -396,6 +412,25 @@ mod tests {
         );
         assert!(reloaded.remove("_local", "bastion-4f2a").unwrap());
         assert!(reloaded.by_token("secret-a").is_none());
+    }
+
+    #[test]
+    fn an_id_held_by_another_owner_cannot_be_taken_over() {
+        let registry = DeviceRegistry::load(None);
+        registry
+            .upsert(record("bastion-4f2a", "alice", "a"))
+            .unwrap();
+        assert!(registry.upsert(record("bastion-4f2a", "bob", "b")).is_err());
+        assert_eq!(registry.by_token("a").unwrap().owner, "alice");
+        // The same owner re-pairing replaces its own record.
+        registry
+            .upsert(record("bastion-4f2a", "alice", "a2"))
+            .unwrap();
+        assert_eq!(registry.list("alice").len(), 1);
+        assert!(registry.by_token("a").is_none());
+        assert!(valid_device_id("bastion-4f2a"));
+        assert!(!valid_device_id("../x"));
+        assert!(!valid_device_id(""));
     }
 
     #[test]
