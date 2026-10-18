@@ -107,9 +107,22 @@ impl PresenceService {
         Some(pet)
     }
 
+    /// `persona` is the one host agents act as: the owner's choice, else
+    /// the registry's default (see `context::resolve_persona`).
     pub fn snapshot(&self, owner: &str, max_sessions: usize, max_bytes: usize) -> Value {
-        self.hub
-            .snapshot(owner, self.pet(), max_sessions, max_bytes)
+        let mut snapshot = self
+            .hub
+            .snapshot(owner, self.pet(), max_sessions, max_bytes);
+        let chosen = snapshot["persona"].as_str().map(str::to_string);
+        match context::resolve_persona(&self.context.personas, chosen.as_deref()) {
+            Some(persona) => snapshot["persona"] = json!(persona),
+            None => {
+                if let Some(map) = snapshot.as_object_mut() {
+                    map.remove("persona");
+                }
+            }
+        }
+        snapshot
     }
 
     /// What a paired device is shown: its owner's snapshot, cut to its caps.
