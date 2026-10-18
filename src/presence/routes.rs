@@ -68,8 +68,8 @@ fn owner(
     state: &PresenceState,
     headers: &HeaderMap,
     event: &'static str,
-) -> Result<String, Response> {
-    resolve_owner_or_401(headers, &state.owner_map, &state.jwt_secret, event).map_err(|r| *r)
+) -> Result<String, Box<Response>> {
+    resolve_owner_or_401(headers, &state.owner_map, &state.jwt_secret, event)
 }
 
 /// A device token, when one is presented, must be valid — it never falls
@@ -78,7 +78,7 @@ fn caller(
     state: &PresenceState,
     headers: &HeaderMap,
     event: &'static str,
-) -> Result<Caller, Response> {
+) -> Result<Caller, Box<Response>> {
     if let Some(token) = headers
         .get("x-bastion-device-token")
         .and_then(|v| v.to_str().ok())
@@ -90,22 +90,22 @@ fn caller(
             .map(Caller::Device)
             .ok_or_else(|| {
                 tracing::warn!(event, reason = "unknown device token");
-                error(StatusCode::UNAUTHORIZED, "unauthorized")
+                Box::new(error(StatusCode::UNAUTHORIZED, "unauthorized"))
             });
     }
     owner(state, headers, event).map(Caller::Owner)
 }
 
-fn parse<T: DeserializeOwned>(body: &Bytes) -> Result<T, Response> {
+fn parse<T: DeserializeOwned>(body: &Bytes) -> Result<T, Box<Response>> {
     serde_json::from_slice(body)
-        .map_err(|e| error(StatusCode::BAD_REQUEST, format!("invalid body: {e}")))
+        .map_err(|e| Box::new(error(StatusCode::BAD_REQUEST, format!("invalid body: {e}"))))
 }
 
 macro_rules! tri {
     ($e:expr) => {
         match $e {
             Ok(v) => v,
-            Err(resp) => return resp,
+            Err(resp) => return *resp,
         }
     };
 }

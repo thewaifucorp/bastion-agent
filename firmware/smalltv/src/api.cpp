@@ -51,8 +51,14 @@ static void onUpdateOpen() {
 
 void begin(WebSrv& srv) {
   S = &srv;
+#if defined(ESP8266)
+  // ESP8266 core 3.x takes the header names as variadic arguments
+  // (Authorization is always collected by the core itself).
+  S->collectHeaders("Content-Length");
+#else
   static const char* headers[] = {"Authorization", "Content-Length"};
   S->collectHeaders(headers, 2);
+#endif
   S->on("/api/info", HTTP_GET, onInfo);
   S->on("/api/pair", HTTP_POST, onPair);
   S->on("/api/pair/open", HTTP_POST, onPairOpen);
