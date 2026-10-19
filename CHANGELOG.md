@@ -10,6 +10,17 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
+- **Bastion pack** (`packs/bastion`): makes any agent act as Bastion with no
+  daemon. Six agentskills-format skills (`bastion`, `bastion-personas`,
+  `bastion-memory`, `bastion-skill-forge`, `bastion-reminders`,
+  `bastion-cabinet`) over one standard-library Python CLI: personas in
+  Bastion's `SOUL.md` contract with keyword routing and weight history,
+  memory in SQLite + FTS5 with the memupalace knowledge graph and soft
+  forgetting, reminders with repeats and optional desktop notifications,
+  skills the agent writes, logs, versions and rolls back, Cabinet briefs, and
+  a status-line companion. Also a Claude Code plugin (`bastion-pack`) whose
+  hooks add the session brief and per-prompt routing, memories and due
+  reminders. Data in `~/.bastion`; `local-only` memories never reach hooks.
 - **Presence** (`docs/en/presence.md`): one contract for every surface —
   `GET /presence/snapshot` (compact, cut to a device's capacity),
   `POST /presence/action` (approve, deny, persona, care, note) and

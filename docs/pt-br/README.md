@@ -15,6 +15,7 @@ Bem-vindo. Estes guias descrevem o código deste repositório — não uma vers�
 - [Personas](personas.md) — organize o comportamento do agente com personas.
 - [Companion de terminal](companion.md) — temas, pets animados, cuidado, progressão e extension packs.
 - [Presença e modo Bastion](presenca.md) — o contrato de snapshot e ações, aprovações de qualquer superfície, aparelhos de mesa e o pack do Claude Code.
+- [Pack do Bastion](pack.md) — skills que fazem qualquer agente agir como o Bastion sem daemon: personas, memória local, lembretes, skills que ele mesmo escreve, Cabinet, companion.
 - [Dispositivos](dispositivos.md) — um cérebro nas suas máquinas: primário, nós, réplica, promoção.
 - [App mobile](app-mobile.md) — compile e pareie o cliente Flutter.
 - [FAQ](faq.md) — dúvidas operacionais comuns.
