@@ -8,6 +8,22 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-19
+
+Bastion beyond its own console. **Presence** is one contract every surface
+reads and acts on — the TUI, the web app, the mobile app, the desktop tray
+and a desk device — and **Bastion mode** lets Claude Code work as your
+Bastion, with tool calls you approve from any of those surfaces. The
+**Bastionizer** does the opposite: no daemon at all, a set of skills that
+makes any agent act as Bastion.
+
+Minor, not patch: a new `[presence]` config section and new
+owner-authenticated `/presence/*` routes. Presence is on by
+default (`[presence] enabled = false` turns it off); with no
+`[[presence.rules]]` and no host plugin installed, nothing changes for
+existing setups. Paired devices approve nothing until
+`device_approvals = true`.
+
 ### Added
 
 - **Bastionizer** (`extras/bastionizer`): makes any agent act as Bastion with no
@@ -40,8 +56,15 @@ for how that differs from the library crates it depends on).
   Pro (ESP32, touch to approve) in `firmware/smalltv`.
 - Web Buddy view and mobile app: sessions, approvals with countdown, persona
   switch, devices.
+- Terminal UI: agents and approvals from presence — a highlighted bar shows
+  the whole pending call (Ctrl+Y approve, Ctrl+N deny; approve only when the
+  call is complete and fully on screen), `/agents`, `/approve`, `/deny`.
+- Desktop shell (tray): agent status, attention icon, notifications, and
+  Approve/Deny menus — or "Review in Bastion…" when a call can't be shown
+  whole.
 - CI: `firmware` job (PlatformIO) and `linux-binary` artifact for trying a
-  branch without a local build.
+  branch without a local build;
+  `bastionizer` job (Python 3.9 and 3.12).
 
 ## [0.4.0] — 2026-10-15
 
