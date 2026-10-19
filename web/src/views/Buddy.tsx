@@ -272,8 +272,12 @@ export default function Buddy({
         : personaList;
     const sessionName = (sid: string | undefined) =>
       sessions.find((s) => s.id === sid)?.name;
+    // Approvals show the whole call (`input`), never only the display cut.
     const alertDesc = (a: PresenceAlert) =>
-      [a.tool, a.det, sessionName(a.sid)].filter(Boolean).join(" · ");
+      [a.input ?? a.det, sessionName(a.sid)].filter(Boolean).join(" · ") +
+      (a.kind === "approval" && !a.input_complete
+        ? " — too long to show whole: approve where you can read it"
+        : "");
 
     return (
       <>
@@ -360,7 +364,7 @@ export default function Buddy({
                   <div className="care-actions">
                     <button
                       className="primary"
-                      disabled={acting !== null}
+                      disabled={acting !== null || !a.input_complete}
                       onClick={() =>
                         act(`approve:${a.id}`, { action: "approve", id: a.id })
                       }

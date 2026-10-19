@@ -104,3 +104,9 @@ ANSI são rejeitados, e o arquivo não executa código nem solicita autoridade.
 Use a skill incluída `bastion-pet-pack` para gerar e validar um pack. Uma
 extension pode distribuir `ui/pet.toml` como `Provided::Ui("pet")` com conjunto
 de permissões vazio.
+
+## Agentes e aprovações
+
+A TUI também mostra os agentes em modo Bastion ao lado do companion e uma
+barra de aprovação (`Ctrl+Y` / `Ctrl+N`, `/agents`) enquanto uma chamada de
+ferramenta espera por você — veja [Presença](presenca.md).

@@ -64,6 +64,27 @@ pub const CATALOG: &[CommandSpec] = &[
         aliases: &[],
     },
     CommandSpec {
+        name: "/agents",
+        usage: "/agents",
+        desc: "host agents in Bastion mode and the approvals waiting for you",
+        scope: Scope::TuiLocal,
+        aliases: &[],
+    },
+    CommandSpec {
+        name: "/approve",
+        usage: "/approve <id>",
+        desc: "approve a pending agent tool call (id from /agents; Ctrl+Y for the first)",
+        scope: Scope::TuiLocal,
+        aliases: &[],
+    },
+    CommandSpec {
+        name: "/deny",
+        usage: "/deny <id>",
+        desc: "deny a pending agent tool call (Ctrl+N for the first)",
+        scope: Scope::TuiLocal,
+        aliases: &[],
+    },
+    CommandSpec {
         name: "/help",
         usage: "/help",
         desc: "show this help",

@@ -10,6 +10,7 @@
 //! of tool calls. The SSE panel is wired up so it starts working the day that lands.
 
 mod companion;
+mod presence_view;
 mod visual;
 
 use anyhow::{bail, Context, Result};
@@ -398,6 +399,9 @@ enum AppMsg {
     Tick,
     SseEvent(String),
     Turn(TurnOutcome),
+    /// A fresh `/presence/snapshot`; `None` when the daemon has none (older
+    /// version, or `[presence]` disabled).
+    Presence(Option<serde_json::Value>),
 }
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -886,6 +890,39 @@ fn companion_command(app: &mut App, input: &str) -> Option<(String, VisualMode)>
 
 /// How long a local state face stays on screen before settling back to
 /// guard — rest and doubt deserve a longer beat than a success.
+/// What a presence slash command asks for.
+enum PresenceCommand {
+    Show(String),
+    Answer(&'static str, String),
+}
+
+/// `/agents`, `/approve <id>`, `/deny <id>` (all `TuiLocal`).
+fn presence_command(app: &App, text: &str) -> Option<PresenceCommand> {
+    let mut words = text.split_whitespace();
+    let command = words.next()?;
+    let arg = words.next();
+    match command {
+        "/agents" => Some(PresenceCommand::Show(match &app.presence {
+            Some(snapshot) => crate::presence::cli::render_status(snapshot),
+            None => {
+                "No presence from this daemon (older version, or [presence] disabled).".to_string()
+            }
+        })),
+        "/approve" | "/deny" => Some(match arg {
+            Some(id) => PresenceCommand::Answer(
+                if command == "/approve" {
+                    "approve"
+                } else {
+                    "deny"
+                },
+                id.to_string(),
+            ),
+            None => PresenceCommand::Show(format!("Usage: {command} <approval id> — see /agents.")),
+        }),
+        _ => None,
+    }
+}
+
 fn settle_after(mode: VisualMode) -> Duration {
     match mode {
         VisualMode::Sleep => Duration::from_millis(4000),
@@ -1405,6 +1442,79 @@ struct App {
     picker: Option<ratatui_image::picker::Picker>,
     /// One cached protocol per native sprite, keyed by sprite name.
     sprites: std::collections::HashMap<&'static str, ratatui_image::protocol::StatefulProtocol>,
+    /// Host agents and pending approvals (`presence_view`); `None` until the
+    /// first snapshot, or for a daemon without presence.
+    presence: Option<serde_json::Value>,
+    /// Pending approval ids already announced in the transcript.
+    presence_seen: std::collections::HashSet<String>,
+}
+
+/// Fetches `/presence/snapshot` in the background; the answer arrives as
+/// `AppMsg::Presence`.
+fn spawn_presence_fetch(
+    tx: UnboundedSender<AppMsg>,
+    client: Client,
+    base_url: String,
+    jwt: String,
+) {
+    tokio::spawn(async move {
+        let snapshot = async {
+            let response = client
+                .get(format!(
+                    "{}/presence/snapshot",
+                    base_url.trim_end_matches('/')
+                ))
+                .header("x-bastion-token", &jwt)
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+                .ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            response.json::<serde_json::Value>().await.ok()
+        }
+        .await;
+        let _ = tx.send(AppMsg::Presence(snapshot));
+    });
+}
+
+/// Answers an approval (`approve`/`deny`); the daemon's answer is the new
+/// snapshot, delivered like a fetch. Failures land in the transcript.
+fn spawn_presence_action(
+    tx: UnboundedSender<AppMsg>,
+    client: Client,
+    base_url: String,
+    jwt: String,
+    action: &'static str,
+    id: String,
+) {
+    tokio::spawn(async move {
+        let result = client
+            .post(format!(
+                "{}/presence/action",
+                base_url.trim_end_matches('/')
+            ))
+            .header("x-bastion-token", &jwt)
+            .timeout(Duration::from_secs(5))
+            .json(&json!({ "action": action, "id": id }))
+            .send()
+            .await;
+        match result {
+            Ok(response) if response.status().is_success() => {
+                let _ = tx.send(AppMsg::Presence(response.json().await.ok()));
+            }
+            Ok(response) => {
+                let _ = tx.send(AppMsg::SseEvent(format!(
+                    "✘ {action} {id}: the daemon answered {}",
+                    response.status()
+                )));
+            }
+            Err(e) => {
+                let _ = tx.send(AppMsg::SseEvent(format!("✘ {action} {id}: {e}")));
+            }
+        }
+    });
 }
 
 fn spawn_key_reader(tx: UnboundedSender<AppMsg>) {
@@ -1656,6 +1766,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     if let Some(pet) = app.appearance.pet_label() {
         companion_parts.push(pet);
     }
+    if let Some(agents) = app.presence.as_ref().and_then(presence_view::summary) {
+        companion_parts.push(agents);
+    }
     if app.companion.game_enabled {
         companion_parts.push(format!(
             "{} · {}",
@@ -1664,15 +1777,28 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         ));
     }
     let companion_status = (!companion_parts.is_empty()).then(|| companion_parts.join(" · "));
+    let approval_bar = app.presence.as_ref().and_then(presence_view::approval_bar);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(identity_height),
             Constraint::Min(3),
+            Constraint::Length(u16::from(approval_bar.is_some())),
             Constraint::Length(suggestion_height(&app.input)),
             Constraint::Length(3),
         ])
         .split(area);
+    if let Some(bar) = &approval_bar {
+        f.render_widget(
+            Paragraph::new(bar.as_str()).style(
+                Style::default()
+                    .fg(ratatui::style::Color::Black)
+                    .bg(ratatui::style::Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            chunks[2],
+        );
+    }
 
     // O sprite via protocolo gráfico só vale para o mascote nativo; um pet
     // pack customizado continua desenhando frames de texto.
@@ -1802,7 +1928,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(app.appearance.muted()))
             .title(" ↑↓ select · Tab/Enter completes ");
-        f.render_widget(Paragraph::new(items).block(suggestion_block), chunks[2]);
+        f.render_widget(Paragraph::new(items).block(suggestion_block), chunks[3]);
     }
 
     let input_title =
@@ -1821,7 +1947,7 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let input = Paragraph::new(app.input.as_str())
         .style(Style::default().fg(app.appearance.text()))
         .block(input_block);
-    f.render_widget(input, chunks[3]);
+    f.render_widget(input, chunks[4]);
 
     // Fase 3.4: position from `app.cursor` (a byte offset), not always
     // end-of-string — char count of the slice UP TO the cursor is the
@@ -1829,8 +1955,8 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     // boundary, so this slice never panics).
     let cursor_chars = app.input[..app.cursor.min(app.input.len())].chars().count() as u16;
     let cursor_x =
-        (chunks[3].x + 1 + cursor_chars).min(chunks[3].x + chunks[3].width.saturating_sub(2));
-    f.set_cursor_position((cursor_x, chunks[3].y + 1));
+        (chunks[4].x + 1 + cursor_chars).min(chunks[4].x + chunks[4].width.saturating_sub(2));
+    f.set_cursor_position((cursor_x, chunks[4].y + 1));
 }
 
 async fn run_app(
@@ -1880,7 +2006,15 @@ async fn run_app(
         companion,
         picker,
         sprites: std::collections::HashMap::new(),
+        presence: None,
+        presence_seen: std::collections::HashSet::new(),
     };
+    spawn_presence_fetch(
+        tx.clone(),
+        client.clone(),
+        base_url.to_string(),
+        session.jwt.clone(),
+    );
 
     loop {
         terminal.draw(|f| draw(f, &mut app))?;
@@ -1903,6 +2037,29 @@ async fn run_app(
                     app.visual_mode = VisualMode::Guard;
                     app.settle_at = None;
                 }
+            }
+            AppMsg::Presence(snapshot) => {
+                if let Some(snapshot) = &snapshot {
+                    for notice in presence_view::notices(&mut app.presence_seen, snapshot) {
+                        app.lines.push(Line::System(notice));
+                    }
+                    // The companion raises its hand while a call waits.
+                    if presence_view::first_approval(snapshot).is_some() {
+                        app.visual_mode = VisualMode::Alert;
+                        app.settle_at = None;
+                    } else if app.visual_mode == VisualMode::Alert && app.settle_at.is_none() {
+                        app.settle_at = Some(Instant::now() + Duration::from_millis(800));
+                    }
+                }
+                app.presence = snapshot;
+            }
+            AppMsg::SseEvent(e) if presence_view::is_presence_event(&e) => {
+                spawn_presence_fetch(
+                    tx.clone(),
+                    client.clone(),
+                    base_url.to_string(),
+                    session.jwt.clone(),
+                );
             }
             AppMsg::SseEvent(e) => {
                 if let Some(mode) = visual::mode_for_event(&e) {
@@ -2050,6 +2207,22 @@ async fn run_app(
                                 }
                                 continue;
                             }
+                            if let Some(reply) = presence_command(&app, &text) {
+                                match reply {
+                                    PresenceCommand::Show(text) => {
+                                        app.lines.push(Line::Bastion(text))
+                                    }
+                                    PresenceCommand::Answer(action, id) => spawn_presence_action(
+                                        tx.clone(),
+                                        client.clone(),
+                                        base_url.to_string(),
+                                        session.jwt.clone(),
+                                        action,
+                                        id,
+                                    ),
+                                }
+                                continue;
+                            }
                             if let Some((response, mode)) = companion_command(&mut app, &text) {
                                 app.visual_mode = mode;
                                 app.settle_at = Some(Instant::now() + settle_after(mode));
@@ -2139,6 +2312,34 @@ async fn run_app(
                     }
                     KeyCode::End => {
                         app.cursor = app.input.len();
+                    }
+                    KeyCode::Char('y' | 'n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        let approve = key.code == KeyCode::Char('y');
+                        let target = app
+                            .presence
+                            .as_ref()
+                            .and_then(presence_view::first_approval)
+                            .map(|a| {
+                                (
+                                    a["id"].as_str().unwrap_or("").to_string(),
+                                    presence_view::approvable_here(a),
+                                )
+                            });
+                        match target {
+                            Some((id, _)) if id.is_empty() => {}
+                            Some((id, approvable)) if !approve || approvable => spawn_presence_action(
+                                tx.clone(),
+                                client.clone(),
+                                base_url.to_string(),
+                                session.jwt.clone(),
+                                if approve { "approve" } else { "deny" },
+                                id,
+                            ),
+                            Some((id, _)) => app.lines.push(Line::System(format!(
+                                "{id}: the call is too long to show whole here — review and approve it in the web app (or Ctrl+N to deny)."
+                            ))),
+                            None => {}
+                        }
                     }
                     KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         app.cursor = 0;

@@ -191,6 +191,17 @@ network you trust.
 The reference firmware for GeekMagic SmallTV boards lives in
 [`firmware/smalltv`](../../firmware/smalltv/README.md).
 
+## In the TUI
+
+The `bastion` terminal UI follows presence on its own: the companion line
+shows what host agents are doing ("2 agents · 1 working · 1 waiting"), and
+while an approval waits a highlighted bar shows the whole call and the
+companion raises its hand. `Ctrl+Y` approves and `Ctrl+N` denies the first
+pending approval — `Ctrl+Y` only when the call is shown whole
+(`input_complete`); otherwise review it in the web app. `/agents` prints the
+full status, `/approve <id>` and `/deny <id>` answer a specific one, and the
+transcript notes each approval as it arrives and when it is answered.
+
 ## Bastion mode for Claude Code
 
 The pack is a Claude Code plugin in [`packs/claude-code`](../../packs/claude-code/README.md).

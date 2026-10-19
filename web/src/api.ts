@@ -380,6 +380,10 @@ export interface PresenceAlert {
   det?: string;
   /** Unix seconds; only approvals expire. */
   exp?: number;
+  /** Approvals: the call's whole main input (owner snapshots only). */
+  input?: string;
+  /** Approvals: whether `input` is the whole call; approve only when true. */
+  input_complete?: boolean;
 }
 
 export interface PresencePet {

@@ -101,3 +101,9 @@ and the file cannot execute code or request authority.
 Use the bundled `bastion-pet-pack` skill to scaffold and validate a pack. An
 extension can ship the resulting `ui/pet.toml` as `Provided::Ui("pet")` with an
 empty permission set.
+
+## Agents and approvals
+
+The TUI also shows host agents in Bastion mode next to the companion, and an
+approval bar (`Ctrl+Y` / `Ctrl+N`, `/agents`) while a tool call waits for
+you — see [Presence](presence.md#in-the-tui).

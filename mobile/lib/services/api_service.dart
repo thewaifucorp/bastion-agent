@@ -155,6 +155,12 @@ class PresenceAlert {
   final String? det;
   final int? exp;
 
+  /// Approvals: the call's whole main input (owner snapshots only).
+  final String? input;
+
+  /// Approvals: whether [input] is the whole call; approve only when true.
+  final bool inputComplete;
+
   const PresenceAlert({
     required this.id,
     required this.kind,
@@ -162,6 +168,8 @@ class PresenceAlert {
     this.tool,
     this.det,
     this.exp,
+    this.input,
+    this.inputComplete = false,
   });
 
   factory PresenceAlert.fromJson(Map<String, dynamic> j) => PresenceAlert(
@@ -171,6 +179,8 @@ class PresenceAlert {
         tool: _asStr(j['tool']),
         det: _asStr(j['det']),
         exp: j['exp'] == null ? null : _asInt(j['exp']),
+        input: _asStr(j['input']),
+        inputComplete: j['input_complete'] == true,
       );
 }
 

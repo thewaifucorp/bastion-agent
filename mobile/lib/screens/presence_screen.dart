@@ -148,7 +148,7 @@ class _PresenceScreenState extends State<PresenceScreen> {
     final m = ScaffoldMessenger.of(context);
     m.clearMaterialBanners();
     _bannerId = a.id;
-    final what = [a.tool, a.det].whereType<String>().join(' · ');
+    final what = [a.tool, a.input ?? a.det].whereType<String>().join(' · ');
     m.showMaterialBanner(MaterialBanner(
       backgroundColor: BColors.panel,
       content: Text('Approval needed${what.isEmpty ? '' : ': $what'}',
@@ -159,7 +159,7 @@ class _PresenceScreenState extends State<PresenceScreen> {
           child: Text('DENY', style: BType.pixel(size: 9, color: BColors.danger)),
         ),
         TextButton(
-          onPressed: () => _decide(a.id, 'approve'),
+          onPressed: a.inputComplete ? () => _decide(a.id, 'approve') : null,
           child: Text('APPROVE', style: BType.pixel(size: 9, color: BColors.ok)),
         ),
       ],
@@ -426,9 +426,14 @@ class _ApprovalCard extends StatelessWidget {
           if (session != null && session!.isNotEmpty)
             Text(session!, style: BType.mono(size: 11, color: BColors.muted)),
           Text(alert.tool ?? 'tool', style: BType.pixel(size: 12)),
-          if (alert.det != null) ...[
+          if ((alert.input ?? alert.det) != null) ...[
             const SizedBox(height: 6),
-            Text(alert.det!, style: BType.mono(size: 13)),
+            Text(alert.input ?? alert.det!, style: BType.mono(size: 13)),
+          ],
+          if (!alert.inputComplete) ...[
+            const SizedBox(height: 4),
+            Text('Too long to show whole — approve where you can read it.',
+                style: BType.mono(size: 11, color: BColors.muted)),
           ],
           const SizedBox(height: 12),
           if (busy)
@@ -441,7 +446,7 @@ class _ApprovalCard extends StatelessWidget {
                     child: _ActionButton(
                         label: 'APPROVE',
                         color: BColors.ok,
-                        onTap: expired ? null : onApprove)),
+                        onTap: expired || !alert.inputComplete ? null : onApprove)),
                 const SizedBox(width: 10),
                 Expanded(
                     child: _ActionButton(

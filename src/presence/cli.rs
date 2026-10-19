@@ -26,10 +26,14 @@ pub fn render_status(snapshot: &Value) -> String {
     );
     let alerts = snapshot["alerts"].as_array().cloned().unwrap_or_default();
     for alert in &alerts {
+        // An approval shows the whole call, never only the display cut.
         let what = format!(
             "{} {}",
             alert["tool"].as_str().unwrap_or(""),
-            alert["det"].as_str().unwrap_or("")
+            alert["input"]
+                .as_str()
+                .or_else(|| alert["det"].as_str())
+                .unwrap_or("")
         );
         match alert["kind"].as_str() {
             Some("approval") => out.push_str(&format!(
