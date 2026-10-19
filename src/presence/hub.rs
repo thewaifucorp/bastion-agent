@@ -1027,7 +1027,7 @@ mod tests {
                     Some("/home/dev/project"),
                     "Bash",
                     Some(&json!({ "command": "git push origin main" })),
-                    None,
+                    Some("git push origin main"),
                     Duration::from_secs(5),
                 )
                 .await
