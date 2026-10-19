@@ -36,6 +36,12 @@ pub fn render_status(snapshot: &Value) -> String {
                 .unwrap_or("")
         );
         match alert["kind"].as_str() {
+            Some("approval") if alert["input_complete"] != Value::Bool(true) => out.push_str(&format!(
+                "  ! approval {} — {} … (too long to show whole: deny {} or answer it in the agent)\n",
+                alert["id"].as_str().unwrap_or("?"),
+                what.trim(),
+                alert["id"].as_str().unwrap_or("?"),
+            )),
             Some("approval") => out.push_str(&format!(
                 "  ! approval {} — {}  (bastion presence approve {} | deny {})\n",
                 alert["id"].as_str().unwrap_or("?"),
@@ -167,7 +173,7 @@ mod tests {
             "now": 1000, "host": "box", "persona": "ada",
             "sessions": [{ "id": "a1", "src": "claude-code", "name": "demo", "st": "waiting", "since": 940, "tool": "Bash", "det": "git push" }],
             "more": 2,
-            "alerts": [{ "id": "ap-3", "kind": "approval", "sid": "a1", "tool": "Bash", "det": "git push" }],
+            "alerts": [{ "id": "ap-3", "kind": "approval", "sid": "a1", "tool": "Bash", "det": "git push", "input_complete": true }],
             "today": { "turns": 4, "tools": 9, "errors": 0 }
         }));
         assert!(text.starts_with("Bastion on box · persona ada"));

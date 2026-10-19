@@ -140,7 +140,7 @@ fn main() -> anyhow::Result<()> {
         .build(&event_loop)?;
 
     let _webview = WebViewBuilder::new(&window)
-        .with_url(&config.app_url())
+        .with_url(config.app_url())
         .with_initialization_script(&init_script(&config))
         .build()?;
 

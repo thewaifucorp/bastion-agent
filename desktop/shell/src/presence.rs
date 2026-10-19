@@ -79,30 +79,35 @@ pub struct Alert {
     pub input_complete: bool,
 }
 
-/// Menu-safe text: control characters dropped, `&` (a menu accelerator
-/// marker on Windows) removed, whitespace collapsed.
+/// Menu-safe text that never hides anything: a control character shows as
+/// `⏎`, `&` (a menu accelerator marker on Windows) is escaped as `&&`.
 fn menu_text(text: &str) -> String {
-    text.chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .filter(|c| *c != '&')
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&&"),
+            c if c.is_control() => out.push('⏎'),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 impl Alert {
     /// Whether `det` shows the whole call. When it does not, the tray never
     /// offers a one-click Approve: the person reviews the full call first.
     pub fn fully_shown(&self) -> bool {
+        // Raw strings only: anything that needs normalizing to match is
+        // reviewed, never approved from the tray.
         self.input_complete
             && !self.input.is_empty()
-            && menu_text(&self.input) == menu_text(&self.det)
+            && self.input == self.det
+            && !self.input.chars().any(char::is_control)
     }
 
     /// `<tool> <det>`, the line shown for an approval, marked when cut.
     pub fn label(&self) -> String {
-        let label = menu_text(&format!("{} {}", self.tool, self.det));
+        let label = menu_text(format!("{} {}", self.tool, self.det).trim());
         if label.is_empty() {
             "approval".to_string()
         } else if self.fully_shown() {
@@ -442,12 +447,21 @@ mod tests {
         assert!(!alert.fully_shown());
         assert!(alert.label().ends_with("(truncated)"));
         let whole = Alert {
-            det: "ls\n&rm".into(),
-            input: "ls\n&rm".into(),
+            det: "ls && rm".into(),
+            input: "ls && rm".into(),
             ..alert
         };
         assert!(whole.fully_shown());
-        assert_eq!(whole.label(), "Bash ls rm");
+        assert_eq!(whole.label(), "Bash ls &&&& rm");
+        let hidden = Alert {
+            det: "ls\nrm".into(),
+            input: "ls\nrm".into(),
+            ..whole.clone()
+        };
+        assert!(
+            !hidden.fully_shown(),
+            "a line break is never approved blind"
+        );
         let unknown = Alert {
             input: String::new(),
             input_complete: false,

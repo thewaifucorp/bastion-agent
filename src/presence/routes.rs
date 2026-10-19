@@ -415,6 +415,16 @@ async fn action_handler(
                     format!("device:{}", d.id)
                 }
             };
+            // A call no surface can show whole is never approved from one:
+            // deny it here, or answer it in the host agent, which shows it.
+            if req.action == "approve"
+                && service.hub.approval_complete(caller.owner(), id) == Some(false)
+            {
+                return error(
+                    StatusCode::CONFLICT,
+                    "this call is too long to show whole — deny it, or answer it in the host agent",
+                );
+            }
             let resolution = if req.action == "approve" {
                 Resolution::Approve
             } else {

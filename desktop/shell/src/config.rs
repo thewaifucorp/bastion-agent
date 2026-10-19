@@ -66,6 +66,7 @@ impl ShellConfig {
         format!("{}/app", self.primary_url.trim_end_matches('/'))
     }
 
+    #[allow(dead_code)] // not wired yet; kept for the tray's status view
     pub fn primary_status_url(&self) -> String {
         format!("{}/devices/primary", self.primary_url.trim_end_matches('/'))
     }

@@ -182,7 +182,10 @@ pub fn clean_input(text: &str) -> String {
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
-    cut(flat.trim(), APPROVAL_INPUT_MAX)
+    // Runs of spaces collapse too: padding can never push part of the call
+    // out of a surface's view.
+    let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+    cut(&flat, APPROVAL_INPUT_MAX)
 }
 
 struct PendingApproval {
@@ -648,6 +651,16 @@ impl PresenceHub {
             }
         };
         (id, outcome)
+    }
+
+    /// Whether `owner`'s pending approval `id` carries its whole call
+    /// (`None`: no such approval for this owner).
+    pub fn approval_complete(&self, owner: &str, id: &str) -> Option<bool> {
+        self.lock()
+            .approvals
+            .get(id)
+            .filter(|p| owned_by(&p.alert.session_key, owner))
+            .map(|p| p.alert.input_complete)
     }
 
     /// Answers one of `owner`'s pending approvals. `by`: `owner` or

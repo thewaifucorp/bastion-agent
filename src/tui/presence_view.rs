@@ -58,7 +58,7 @@ pub(super) fn approval_bar(snapshot: &Value) -> Option<String> {
     let keys = if approvable_here(alert) {
         "Ctrl+Y approve · Ctrl+N deny"
     } else {
-        "call too long to show whole — review in the web app · Ctrl+N deny"
+        "too long to show whole: answer it in the agent · Ctrl+N deny"
     };
     Some(format!("⏳ Approval: {} — {keys}{more}", call_text(alert)))
 }

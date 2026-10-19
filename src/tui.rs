@@ -909,6 +909,20 @@ fn presence_command(app: &App, text: &str) -> Option<PresenceCommand> {
             }
         })),
         "/approve" | "/deny" => Some(match arg {
+            Some(id)
+                if command == "/approve"
+                    && app
+                        .presence
+                        .as_ref()
+                        .and_then(|snapshot| snapshot["alerts"].as_array())
+                        .into_iter()
+                        .flatten()
+                        .any(|a| a["id"] == id && !presence_view::approvable_here(a)) =>
+            {
+                PresenceCommand::Show(format!(
+                    "{id} is too long to show whole, so it can only be denied here — or answered in the agent itself."
+                ))
+            }
             Some(id) => PresenceCommand::Answer(
                 if command == "/approve" {
                     "approve"
@@ -1447,7 +1461,14 @@ struct App {
     presence: Option<serde_json::Value>,
     /// Pending approval ids already announced in the transcript.
     presence_seen: std::collections::HashSet<String>,
+    /// Whether the last frame showed the pending approval's call whole —
+    /// Ctrl+Y only approves what was actually on screen.
+    approval_bar_whole: bool,
 }
+
+/// At most this many terminal rows for the approval bar; a call that needs
+/// more is reviewed elsewhere, never approved from the bar.
+const APPROVAL_BAR_MAX_ROWS: usize = 6;
 
 /// Fetches `/presence/snapshot` in the background; the answer arrives as
 /// `AppMsg::Presence`.
@@ -1778,24 +1799,34 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     let companion_status = (!companion_parts.is_empty()).then(|| companion_parts.join(" · "));
     let approval_bar = app.presence.as_ref().and_then(presence_view::approval_bar);
+    // The bar wraps to show the whole call; rows counted in characters on
+    // the full width (the bar has no border).
+    let bar_rows = approval_bar.as_ref().map_or(0, |bar| {
+        let width = usize::from(area.width.max(1));
+        bar.chars().count().div_ceil(width)
+    });
+    app.approval_bar_whole = bar_rows > 0 && bar_rows <= APPROVAL_BAR_MAX_ROWS;
+    let bar_height = u16::try_from(bar_rows.min(APPROVAL_BAR_MAX_ROWS)).unwrap_or(1);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(identity_height),
             Constraint::Min(3),
-            Constraint::Length(u16::from(approval_bar.is_some())),
+            Constraint::Length(bar_height),
             Constraint::Length(suggestion_height(&app.input)),
             Constraint::Length(3),
         ])
         .split(area);
     if let Some(bar) = &approval_bar {
         f.render_widget(
-            Paragraph::new(bar.as_str()).style(
-                Style::default()
-                    .fg(ratatui::style::Color::Black)
-                    .bg(ratatui::style::Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Paragraph::new(bar.as_str())
+                .wrap(Wrap { trim: false })
+                .style(
+                    Style::default()
+                        .fg(ratatui::style::Color::Black)
+                        .bg(ratatui::style::Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
             chunks[2],
         );
     }
@@ -2008,6 +2039,7 @@ async fn run_app(
         sprites: std::collections::HashMap::new(),
         presence: None,
         presence_seen: std::collections::HashSet::new(),
+        approval_bar_whole: false,
     };
     spawn_presence_fetch(
         tx.clone(),
@@ -2327,16 +2359,20 @@ async fn run_app(
                             });
                         match target {
                             Some((id, _)) if id.is_empty() => {}
-                            Some((id, approvable)) if !approve || approvable => spawn_presence_action(
+                            Some((id, approvable))
+                                if !approve || (approvable && app.approval_bar_whole) =>
+                            {
+                                spawn_presence_action(
                                 tx.clone(),
                                 client.clone(),
                                 base_url.to_string(),
                                 session.jwt.clone(),
                                 if approve { "approve" } else { "deny" },
                                 id,
-                            ),
+                            );
+                            }
                             Some((id, _)) => app.lines.push(Line::System(format!(
-                                "{id}: the call is too long to show whole here — review and approve it in the web app (or Ctrl+N to deny)."
+                                "{id}: the call is not shown whole here — read it with /agents and answer it in the agent, or Ctrl+N to deny."
                             ))),
                             None => {}
                         }
