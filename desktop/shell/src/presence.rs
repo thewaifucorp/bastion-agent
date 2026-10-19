@@ -79,13 +79,21 @@ pub struct Alert {
     pub input_complete: bool,
 }
 
-/// Invisible formatting characters (zero-width, bidi, tags) — never part of
-/// a call approved from the tray.
+/// Characters that can make text read differently from what it is —
+/// default-ignorables and format characters (zero-width, bidi, variation
+/// selectors, fillers, tags), line/paragraph separators and combining
+/// marks — never part of a call approved from the tray. (The daemon also
+/// never marks a call with any of them complete.)
 fn is_invisible(c: char) -> bool {
     matches!(c as u32,
-        0x00AD | 0x061C | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E
-        | 0x2060..=0x2064 | 0x2066..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB
-        | 0xE0000..=0xE007F)
+        0x00AD | 0x034F | 0x0300..=0x036F | 0x0483..=0x0489 | 0x0591..=0x05BD
+        | 0x0600..=0x0605 | 0x061C | 0x06DD | 0x070F | 0x0890..=0x0891 | 0x08E2
+        | 0x115F..=0x1160 | 0x17B4..=0x17B5 | 0x180B..=0x180F
+        | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x200B..=0x200F
+        | 0x2028..=0x202E | 0x2060..=0x206F | 0x20D0..=0x20FF | 0x3164
+        | 0xFE00..=0xFE0F | 0xFE20..=0xFE2F | 0xFEFF | 0xFFA0 | 0xFFF0..=0xFFFB
+        | 0x110BD | 0x110CD | 0x13430..=0x1343F | 0x1BCA0..=0x1BCA3
+        | 0x1D173..=0x1D17A | 0xE0000..=0xE0FFF)
 }
 
 /// Menu-safe text that never hides anything: a control character shows as

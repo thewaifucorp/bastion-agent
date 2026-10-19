@@ -85,6 +85,15 @@ pub(super) fn wrap_exact(text: &str, width: usize) -> Vec<String> {
     rows
 }
 
+/// Whether every row really fits in `width` columns as the terminal will
+/// draw it. `wrap_exact` counts per character; a grapheme cluster (an emoji
+/// sequence, a base plus combining marks) can be wider than its characters
+/// add up to, and then the row would be cut on screen.
+pub(super) fn rows_fit(rows: &[String], width: usize) -> bool {
+    use unicode_width::UnicodeWidthStr;
+    rows.iter().all(|row| UnicodeWidthStr::width(row.as_str()) <= width)
+}
+
 /// A short "what agents are doing" piece for the companion status line.
 pub(super) fn summary(snapshot: &Value) -> Option<String> {
     let sessions = snapshot["sessions"].as_array()?;
@@ -178,6 +187,14 @@ mod tests {
         assert_eq!(wrap_exact("abcdef", 4), vec!["abcd", "ef"]);
         assert_eq!(wrap_exact("日本語", 4), vec!["日本", "語"]);
         assert_eq!(wrap_exact("", 4), vec![""]);
+    }
+
+    #[test]
+    fn rows_wider_than_they_count_are_not_whole() {
+        assert!(rows_fit(&wrap_exact("abcdef", 4), 4));
+        // A heart plus VS16 counts 1 column per character but draws 2.
+        let rows = wrap_exact("abc\u{2764}\u{FE0F}", 4);
+        assert!(!rows_fit(&rows, 4), "{rows:?}");
     }
 
     #[test]

@@ -1806,7 +1806,9 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
         .map(|bar| presence_view::wrap_exact(bar, usize::from(area.width)))
         .unwrap_or_default();
     let bar_rows = bar_lines.len();
-    app.approval_bar_whole = bar_rows > 0 && bar_rows <= APPROVAL_BAR_MAX_ROWS;
+    app.approval_bar_whole = bar_rows > 0
+        && bar_rows <= APPROVAL_BAR_MAX_ROWS
+        && presence_view::rows_fit(&bar_lines, usize::from(area.width));
     let bar_height = u16::try_from(bar_rows.min(APPROVAL_BAR_MAX_ROWS)).unwrap_or(1);
     let chunks = Layout::default()
         .direction(Direction::Vertical)

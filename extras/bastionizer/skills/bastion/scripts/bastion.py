@@ -43,9 +43,17 @@ HARNESS_TAGS = ("<command-", "<local-command", "<system-reminder", "<bash-",
 
 
 def home() -> Path:
+    """The Bastion home, private to its owner: memories, conversations and
+    personas are personal. Everything created inside it is owner-only too."""
+    os.umask(0o077)
     raw = os.environ.get("BASTION_HOME") or str(Path.home() / ".bastion")
     path = Path(raw).expanduser()
-    path.mkdir(parents=True, exist_ok=True)
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        if path.stat().st_mode & 0o077:
+            path.chmod(0o700)  # an existing home made before this rule
+    except OSError:
+        pass  # not ours to change (e.g. a shared mount); still usable
     return path
 
 
@@ -153,6 +161,12 @@ class Store:
         self.root = root
         self.path = root / "memory.db"
         self.conn = sqlite3.connect(str(self.path))
+        for f in (self.path, *self.path.parent.glob(self.path.name + "-*")):
+            try:
+                if f.stat().st_mode & 0o077:
+                    f.chmod(0o600)  # files made before the home was private
+            except OSError:
+                pass
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         try:
