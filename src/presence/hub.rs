@@ -1180,7 +1180,14 @@ mod tests {
         assert!(!is_invisible('a'));
         // Combining marks, variation selectors, fillers, separators and
         // other default-ignorables are invisible too; ordinary text is not.
-        for c in ['\u{0301}', '\u{FE0F}', '\u{3164}', '\u{2028}', '\u{034F}', '\u{E0100}'] {
+        for c in [
+            '\u{0301}',
+            '\u{FE0F}',
+            '\u{3164}',
+            '\u{2028}',
+            '\u{034F}',
+            '\u{E0100}',
+        ] {
             assert!(is_invisible(c), "{:04X}", c as u32);
         }
         for c in ['é', 'ç', '日', '-', ' ', '~'] {

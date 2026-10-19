@@ -91,7 +91,8 @@ pub(super) fn wrap_exact(text: &str, width: usize) -> Vec<String> {
 /// add up to, and then the row would be cut on screen.
 pub(super) fn rows_fit(rows: &[String], width: usize) -> bool {
     use unicode_width::UnicodeWidthStr;
-    rows.iter().all(|row| UnicodeWidthStr::width(row.as_str()) <= width)
+    rows.iter()
+        .all(|row| UnicodeWidthStr::width(row.as_str()) <= width)
 }
 
 /// A short "what agents are doing" piece for the companion status line.
