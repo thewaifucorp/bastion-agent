@@ -30,6 +30,11 @@ use self::context::ContextSources;
 use self::devices::{DeviceRecord, DeviceRegistry};
 use self::hub::{HostEvent, PresenceHub};
 
+/// A surface may ask for less than its caps, never more.
+fn query_max(cap: usize, asked: Option<usize>) -> usize {
+    asked.map_or(cap, |a| a.min(cap))
+}
+
 /// Where presence keeps its files: `$BASTION_DATA_DIR/presence`, else
 /// `~/.config/bastion/presence` (next to `companion.json`).
 pub fn presence_dir() -> PathBuf {
@@ -128,10 +133,17 @@ impl PresenceService {
     /// What a paired device is shown: its owner's snapshot, cut to its caps.
     /// Approvals' full inputs stay off devices: their byte caps are small,
     /// and approving from a device is off by default (`device_approvals`).
-    pub fn snapshot_for(&self, device: &DeviceRecord) -> Value {
+    pub fn snapshot_for(
+        &self,
+        device: &DeviceRecord,
+        max_sessions: Option<usize>,
+        max_bytes: Option<usize>,
+    ) -> Value {
         // Cut to bytes only after the inputs are gone, so they never cost a
         // device its session rows.
-        let mut snapshot = self.snapshot(&device.owner, device.caps.max_sessions, usize::MAX);
+        let max_sessions = query_max(device.caps.max_sessions, max_sessions);
+        let max_bytes = query_max(device.caps.max_bytes, max_bytes);
+        let mut snapshot = self.snapshot(&device.owner, max_sessions, usize::MAX);
         if let Some(alerts) = snapshot["alerts"].as_array_mut() {
             for alert in alerts {
                 if let Some(row) = alert.as_object_mut() {
@@ -139,7 +151,7 @@ impl PresenceService {
                 }
             }
         }
-        hub::trim_to_bytes(snapshot, device.caps.max_bytes)
+        hub::trim_to_bytes(snapshot, max_bytes)
     }
 
     /// Records a host event and lets the companion feel it: a session
@@ -170,7 +182,7 @@ impl PresenceService {
         devices::spawn_pusher(
             Arc::clone(&self.devices),
             self.hub.subscribe_changes(),
-            move |device| service.snapshot_for(device),
+            move |device| service.snapshot_for(device, None, None),
         );
     }
 }

@@ -168,6 +168,9 @@ struct Alert {
     /// [`APPROVAL_INPUT_MAX`]): what the person is actually approving,
     /// since `det` is cut for display. Owner snapshots only.
     input: Option<String>,
+    /// `input` is the whole call. False when the call was too long to keep
+    /// (or to check) — a surface must then not offer a blind approve.
+    input_complete: bool,
 }
 
 pub const APPROVAL_INPUT_MAX: usize = 2000;
@@ -569,6 +572,7 @@ impl PresenceHub {
                     det,
                     exp: None,
                     input: None,
+                    input_complete: false,
                 });
             }
         }
@@ -606,6 +610,7 @@ impl PresenceHub {
                 det,
                 exp: Some(now + wait.as_secs()),
                 input: full_input.map(clean_input).filter(|t| !t.is_empty()),
+                input_complete: full_input.is_some_and(|t| t.chars().count() <= APPROVAL_INPUT_MAX),
             };
             if let Some(session) = inner.sessions.get_mut(&key) {
                 session.state = SessionState::Waiting;
@@ -855,6 +860,9 @@ fn alert_json(a: &Alert) -> Value {
     if let Some(input) = &a.input {
         row["input"] = json!(input);
     }
+    if a.kind == AlertKind::Approval {
+        row["input_complete"] = json!(a.input_complete);
+    }
     row
 }
 
@@ -995,6 +1003,7 @@ mod tests {
                 assert_eq!(alert["kind"], "approval");
                 assert_eq!(alert["det"], "git push origin main");
                 assert_eq!(alert["input"], "git push origin main");
+                assert_eq!(alert["input_complete"], true);
                 assert_eq!(only_session(&s)["st"], "waiting");
                 break alert["id"].as_str().unwrap().to_string();
             }

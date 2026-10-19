@@ -116,15 +116,21 @@ struct SnapshotQuery {
     max_bytes: Option<usize>,
 }
 
-fn limits(caller: &Caller, query: &SnapshotQuery) -> (usize, usize) {
-    let (sessions, bytes) = match caller {
-        Caller::Owner(_) => (OWNER_MAX_SESSIONS, OWNER_MAX_BYTES),
-        Caller::Device(d) => (d.caps.max_sessions, d.caps.max_bytes),
-    };
-    (
-        query.max_sessions.map_or(sessions, |q| q.min(sessions)),
-        query.max_bytes.map_or(bytes, |q| q.min(bytes)),
-    )
+/// The one path every snapshot answer takes: the owner's full view, or a
+/// device's — cut to its caps and without approvals' full inputs.
+fn snapshot_for_caller(service: &PresenceService, caller: &Caller, query: &SnapshotQuery) -> Value {
+    match caller {
+        Caller::Owner(owner) => service.snapshot(
+            owner,
+            query
+                .max_sessions
+                .map_or(OWNER_MAX_SESSIONS, |q| q.min(OWNER_MAX_SESSIONS)),
+            query
+                .max_bytes
+                .map_or(OWNER_MAX_BYTES, |q| q.min(OWNER_MAX_BYTES)),
+        ),
+        Caller::Device(device) => service.snapshot_for(device, query.max_sessions, query.max_bytes),
+    }
 }
 
 async fn snapshot_handler(
@@ -133,8 +139,7 @@ async fn snapshot_handler(
     Query(query): Query<SnapshotQuery>,
 ) -> Response {
     let caller = tri!(caller(&state, &headers, "presence_snapshot_unauthorized"));
-    let (sessions, bytes) = limits(&caller, &query);
-    Json(state.service.snapshot(caller.owner(), sessions, bytes)).into_response()
+    Json(snapshot_for_caller(&state.service, &caller, &query)).into_response()
 }
 
 async fn event_handler(
@@ -461,8 +466,7 @@ async fn action_handler(
         }
         other => return error(StatusCode::BAD_REQUEST, format!("unknown action '{other}'")),
     }
-    let (sessions, bytes) = limits(&caller, &query);
-    Json(service.snapshot(caller.owner(), sessions, bytes)).into_response()
+    Json(snapshot_for_caller(service, &caller, &query)).into_response()
 }
 
 async fn devices_list_handler(State(state): State<PresenceState>, headers: HeaderMap) -> Response {
