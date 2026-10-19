@@ -1,5 +1,5 @@
 // HomeShell: the paired-state app shell. Owns the Scaffold + bottom nav and
-// keeps Chat/Cockpit/Config alive via IndexedStack (so SSE + scroll persist
+// keeps Chat/Cockpit/Presence/Config alive via IndexedStack (so SSE + scroll persist
 // across tab switches). Renders a subtle scanline overlay when FX are on.
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
@@ -9,6 +9,7 @@ import '../widgets/app_nav.dart';
 import 'chat_screen.dart';
 import 'cockpit_screen.dart';
 import 'config_screen.dart';
+import 'presence_screen.dart';
 
 class HomeShell extends StatefulWidget {
   final ApiService api;
@@ -39,6 +40,7 @@ class _HomeShellState extends State<HomeShell> {
               children: [
                 ChatScreen(api: widget.api, onAuthExpired: widget.onUnpair),
                 CockpitScreen(api: widget.api),
+                PresenceScreen(api: widget.api, onAuthExpired: widget.onUnpair),
                 ConfigScreen(api: widget.api, onUnpair: widget.onUnpair),
               ],
             ),

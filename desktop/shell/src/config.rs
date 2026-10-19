@@ -7,7 +7,8 @@
 //! {
 //!   "primary_url": "https://linux-box.tailnet.ts.net:8443",
 //!   "owner_token": "…",
-//!   "stop_command": ["bastion", "node", "stop"]
+//!   "stop_command": ["bastion", "node", "stop"],
+//!   "notifications": true
 //! }
 //! ```
 //!
@@ -15,7 +16,8 @@
 //! the shell only injects it into the WebView's localStorage so the embedded
 //! app starts signed in. `stop_command`, if set, is what the tray Stop item
 //! runs to cut the local node (BMD-15); by default the shell signals the
-//! running `bastion node run` process it started itself.
+//! running `bastion node run` process it started itself. `notifications`
+//! (default true) turns the native approval notifications off.
 
 use std::path::PathBuf;
 
@@ -36,6 +38,14 @@ pub struct ShellConfig {
     /// shell only shows the web app and does not run a node.
     #[serde(default)]
     pub node_command: Vec<String>,
+    /// Show a native notification for each new approval request. The tray
+    /// itself (tooltip, icon, Approve/Deny items) is unaffected.
+    #[serde(default = "default_true")]
+    pub notifications: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl ShellConfig {
@@ -56,6 +66,7 @@ impl ShellConfig {
         format!("{}/app", self.primary_url.trim_end_matches('/'))
     }
 
+    #[allow(dead_code)] // not wired yet; kept for the tray's status view
     pub fn primary_status_url(&self) -> String {
         format!("{}/devices/primary", self.primary_url.trim_end_matches('/'))
     }

@@ -1,4 +1,4 @@
-// AppNav: persistent bottom navigation (Chat / Cockpit / Config), style-aware.
+// AppNav: persistent bottom navigation (Chat / Cockpit / Presence / Config), style-aware.
 // Matches the mock: inline `glyph LABEL` per item, active = accent text + a
 // top indicator line, transparent background over the screen with a neon
 // hairline on top.
@@ -14,6 +14,7 @@ class AppNav extends StatelessWidget {
   static const _items = [
     ('◳', 'CHAT'),
     ('◈', 'COCKPIT'),
+    ('◉', 'PRESENCE'),
     ('⚙', 'CONFIG'),
   ];
 

@@ -1,0 +1,12 @@
+{
+  "name": "bastionizer",
+  "owner": { "name": "Bastion" },
+  "description": "The Bastionizer: skills that make an agent act as Bastion, no daemon.",
+  "plugins": [
+    {
+      "name": "bastionizer",
+      "source": "./",
+      "description": "Personas, local memory, reminders, self-written skills, Cabinet and a companion — no daemon."
+    }
+  ]
+}

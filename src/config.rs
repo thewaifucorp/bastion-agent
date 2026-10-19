@@ -128,6 +128,68 @@ pub struct BastionConfig {
     /// bastion-core alone, attributes under `bastion.*`.
     #[serde(default)]
     pub pricing: PricingConfig,
+    /// Optional `[presence]` table: the presence contract (snapshot, actions,
+    /// paired devices) and Bastion mode for host agents. See
+    /// `crate::presence` and `docs/en/presence.md`.
+    #[serde(default)]
+    pub presence: PresenceConfig,
+}
+
+/// `[presence]` — see `docs/en/presence.md`. Every field has a default, so a
+/// config file without the table mounts the routes with no tool rules: the
+/// host agent decides every tool call exactly as it would without Bastion.
+#[derive(Debug, Deserialize, Clone)]
+pub struct PresenceConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// How long a `remote` approval waits for an answer from a surface
+    /// before the host asks the person itself.
+    #[serde(default = "default_presence_approval_wait")]
+    pub approval_wait_secs: u64,
+    /// Record a `local_only` journal belief when a host turn ends.
+    #[serde(default = "default_true")]
+    pub journal: bool,
+    /// Cap for the context injected into a host agent.
+    #[serde(default = "default_presence_context_max_chars")]
+    pub context_max_chars: usize,
+    /// URL paired devices use to reach this daemon. Empty: derived from
+    /// `BASTION_WEBHOOK_ADDR` at pairing time.
+    #[serde(default)]
+    pub advertise_url: String,
+    /// Paired devices that declared a touch input may approve or deny. Off
+    /// by default: device traffic is plain HTTP on the local network, so
+    /// anyone who can sniff it could replay a device's token.
+    #[serde(default)]
+    pub device_approvals: bool,
+    /// Tool-call rules for host agents, first match wins.
+    #[serde(default)]
+    pub rules: Vec<crate::presence::policy::PresenceRule>,
+}
+
+impl Default for PresenceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            approval_wait_secs: default_presence_approval_wait(),
+            journal: true,
+            context_max_chars: default_presence_context_max_chars(),
+            advertise_url: String::new(),
+            device_approvals: false,
+            rules: Vec::new(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_presence_approval_wait() -> u64 {
+    45
+}
+
+fn default_presence_context_max_chars() -> usize {
+    6000
 }
 
 /// `[pricing]` (BUP-01/02). Budgets are checked against model prices from

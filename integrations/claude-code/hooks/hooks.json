@@ -1,0 +1,43 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "\"${BASTION_BIN:-bastion}\" hook claude-code", "timeout": 10 }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "\"${BASTION_BIN:-bastion}\" hook claude-code", "timeout": 10 }] }
+    ],
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "\"${BASTION_BIN:-bastion}\" hook claude-code", "timeout": 120 }] }
+    ],
+    "PermissionRequest": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "\"${BASTION_BIN:-bastion}\" hook claude-code", "async": true }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "\"${BASTION_BIN:-bastion}\" hook claude-code", "async": true }] }
+    ],
+    "PostToolUseFailure": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "\"${BASTION_BIN:-bastion}\" hook claude-code", "async": true }] }
+    ],
+    "Notification": [
+      { "hooks": [{ "type": "command", "command": "\"${BASTION_BIN:-bastion}\" hook claude-code", "async": true }] }
+    ],
+    "SubagentStart": [
+      { "hooks": [{ "type": "command", "command": "\"${BASTION_BIN:-bastion}\" hook claude-code", "async": true }] }
+    ],
+    "SubagentStop": [
+      { "hooks": [{ "type": "command", "command": "\"${BASTION_BIN:-bastion}\" hook claude-code", "async": true }] }
+    ],
+    "PreCompact": [
+      { "hooks": [{ "type": "command", "command": "\"${BASTION_BIN:-bastion}\" hook claude-code", "async": true }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "\"${BASTION_BIN:-bastion}\" hook claude-code", "async": true }] }
+    ],
+    "StopFailure": [
+      { "hooks": [{ "type": "command", "command": "\"${BASTION_BIN:-bastion}\" hook claude-code", "async": true }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "\"${BASTION_BIN:-bastion}\" hook claude-code", "async": true }] }
+    ]
+  }
+}

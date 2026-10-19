@@ -85,6 +85,9 @@ export default function App() {
   // bumped on companion.updated (A5 S5) so the Buddy view re-fetches after
   // a care action, an XP award, or a hook session event
   const [companionTick, setCompanionTick] = useState(0);
+  // bumped on presence.updated / approval.* / presence.persona so the Buddy
+  // view re-fetches the presence snapshot
+  const [presenceTick, setPresenceTick] = useState(0);
   const [streamGen, setStreamGen] = useState(0);
   const stopRef = useRef<(() => void) | null>(null);
 
@@ -120,6 +123,14 @@ export default function App() {
       }
       if (kind === "companion.updated") {
         setCompanionTick((t) => t + 1);
+      }
+      if (
+        kind === "presence.updated" ||
+        kind === "approval.requested" ||
+        kind === "approval.resolved" ||
+        kind === "presence.persona"
+      ) {
+        setPresenceTick((t) => t + 1);
       }
       // attention plumbing: sidebar badge follows task lifecycle events
       if (ev.task && typeof ev.task === "string") {
@@ -206,7 +217,13 @@ export default function App() {
           {route === "tasks" && <Tasks />}
           {route === "schedules" && <Schedules />}
           {route === "personas" && <Personas configTick={configTick} />}
-          {route === "buddy" && <Buddy configTick={companionTick} />}
+          {route === "buddy" && (
+            <Buddy
+              configTick={companionTick}
+              presenceTick={presenceTick}
+              live={conn === "live"}
+            />
+          )}
           {route === "providers" && <Providers configTick={configTick} />}
           {route === "models" && <Models configTick={configTick} />}
           {route === "backends" && (

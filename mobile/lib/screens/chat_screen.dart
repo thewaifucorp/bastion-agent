@@ -89,6 +89,8 @@ class _ChatScreenState extends State<ChatScreen> {
       onEvent: (event) {
         try {
           final data = jsonDecode(event) as Map<String, dynamic>;
+          final ev = data['event'] as String? ?? '';
+          if (ev.startsWith('presence.') || ev.startsWith('approval.')) return;
           final type = data['type'] as String? ?? 'event';
           if (type != 'mesh_sync') {
             setState(() => _messages.add(ChatMessage(event, _Sender.event)));

@@ -8,6 +8,64 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-19
+
+Bastion beyond its own console. **Presence** is one contract every surface
+reads and acts on — the TUI, the web app, the mobile app, the desktop tray
+and a desk device — and **Bastion mode** lets Claude Code work as your
+Bastion, with tool calls you approve from any of those surfaces. The
+**Bastionizer** does the opposite: no daemon at all, a set of skills that
+makes any agent act as Bastion.
+
+Minor, not patch: a new `[presence]` config section and new
+owner-authenticated `/presence/*` routes. Presence is on by
+default (`[presence] enabled = false` turns it off); with no
+`[[presence.rules]]` and no host plugin installed, nothing changes for
+existing setups. Paired devices approve nothing until
+`device_approvals = true`.
+
+### Added
+
+- **Bastionizer** (`extras/bastionizer`): makes any agent act as Bastion with no
+  daemon. Six agentskills-format skills (`bastion`, `bastion-personas`,
+  `bastion-memory`, `bastion-skill-forge`, `bastion-reminders`,
+  `bastion-cabinet`) over one standard-library Python CLI: personas in
+  Bastion's `SOUL.md` contract with keyword routing and weight history,
+  memory in SQLite + FTS5 with the memupalace knowledge graph and soft
+  forgetting, reminders with repeats and optional desktop notifications,
+  skills the agent writes, logs, versions and rolls back, Cabinet briefs, and
+  a status-line companion, and full-text search over past conversations
+  (`session search|show|list`). Also a Claude Code plugin (`bastionizer`) whose
+  hooks add the session brief and per-prompt routing, memories and due
+  reminders, and store each turn for session search. Data in `~/.bastion`; `local-only` memories never reach hooks.
+- **Presence** (`docs/en/presence.md`): one contract for every surface —
+  `GET /presence/snapshot` (compact, cut to a device's capacity),
+  `POST /presence/action` (approve, deny, persona, care, note) and
+  `presence.updated` / `approval.*` / `presence.persona` on `/events`.
+  Configured by `[presence]`; routes are owner-authenticated like
+  `/companion`, and paired devices get their own scoped token.
+- **Bastion mode for Claude Code** (`integrations/claude-code`): a plugin whose hooks
+  run `bastion hook claude-code`. Claude receives the active persona, core and
+  relevant memories and goals (egress-checked: `local_only` never leaves),
+  `[[presence.rules]]` decide its tool calls (`allow`/`deny`/`ask`/`remote`),
+  a `remote` rule waits for an approval from any surface, sessions feed the
+  companion, and each turn leaves a `local_only` journal belief.
+- `bastion presence status|persona|approve|deny|pair|devices|unpair`.
+- Presence devices: `bastion presence pair <ip> <code>`, snapshot push with a
+  heartbeat, and reference firmware for GeekMagic SmallTV Ultra (ESP8266) and
+  Pro (ESP32, touch to approve) in `firmware/smalltv`.
+- Web Buddy view and mobile app: sessions, approvals with countdown, persona
+  switch, devices.
+- Terminal UI: agents and approvals from presence — a highlighted bar shows
+  the whole pending call (Ctrl+Y approve, Ctrl+N deny; approve only when the
+  call is complete and fully on screen), `/agents`, `/approve`, `/deny`.
+- Desktop shell (tray): agent status, attention icon, notifications, and
+  Approve/Deny menus — or "Review in Bastion…" when a call can't be shown
+  whole.
+- CI: `firmware` job (PlatformIO) and `linux-binary` artifact for trying a
+  branch without a local build;
+  `bastionizer` job (Python 3.9 and 3.12).
+
 ## [0.4.0] — 2026-10-15
 
 Pins `bastion-core` at `v0.8.0` (`daa1560`): model pricing and metered calls

@@ -14,7 +14,10 @@ typedef OnAuthExpired = void Function();
 
 class SseService {
   static const _jwtKey = 'bastion_jwt';
-  static const _connectionId = 'bastion_events';
+
+  /// Distinct ids let several listeners share the /events feed.
+  final String _connectionId;
+  SseService({String connectionId = 'bastion_events'}) : _connectionId = connectionId;
 
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
   final SSEClient _sseClient = SSEClient();

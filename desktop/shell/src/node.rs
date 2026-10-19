@@ -36,6 +36,7 @@ impl NodeSupervisor {
         }
     }
 
+    #[allow(dead_code)] // not wired yet; kept for the tray's status view
     pub fn running(&self) -> bool {
         let mut guard = self.child.lock().unwrap_or_else(|p| p.into_inner());
         match guard.as_mut() {
