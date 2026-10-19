@@ -44,6 +44,27 @@ jobs:
       - run: cargo clippy --manifest-path desktop/uia/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path desktop/uia/Cargo.toml
 
+  # The desktop shell (tray + WebView) is its own package, outside the
+  # workspace. Visible on every run, but it does not gate the pipeline.
+  desktop-shell:
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/shell
+      - run: cargo clippy --manifest-path desktop/shell/Cargo.toml --all-targets -- -D warnings
+      - run: cargo build --manifest-path desktop/shell/Cargo.toml --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bastion-shell-windows
+          path: desktop/shell/target/release/bastion-shell.exe
+          retention-days: 14
+
   # Observability frontend A2: typecheck + build the web app. The rust job
   # deliberately does NOT depend on this — build.rs treats a missing
   # web/dist as a supported state.
