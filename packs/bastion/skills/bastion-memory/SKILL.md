@@ -71,7 +71,9 @@ B session show 3f9a2c1e#14             # the turns around a hit
 B session list                         # recent sessions, first prompt each
 ```
 
-Turns under a `local-only` persona are private, like memories. Hosts
+Turns said while a `local-only` persona was active are private, like
+memories; when that can't be told (a turn with no time, or from before the
+first persona switch), the turn is private too. Hosts
 without hooks can log turns with `B session add "<text>" --session <id>
 --role user|assistant`. `B session forget <id>` deletes a session;
 `B session prune --older 180d` deletes old turns. Something from a past

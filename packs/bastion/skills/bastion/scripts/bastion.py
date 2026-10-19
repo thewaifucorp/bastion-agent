@@ -112,6 +112,10 @@ CREATE TABLE IF NOT EXISTS turns (
     at          TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session, seq);
+CREATE TABLE IF NOT EXISTS persona_changes (
+    at          TEXT NOT NULL,
+    persona     TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS state (
     key         TEXT PRIMARY KEY,
     value       TEXT NOT NULL
@@ -852,17 +856,17 @@ def cmd_persona(args, root, store):
         soul.parent.mkdir(parents=True, exist_ok=True)
         soul.write_text(dump_frontmatter(meta) + "\n" + body.strip() + "\n", encoding="utf-8")
         if not active:
-            store.put("active_persona", slug)
+            set_active(store, slug)
         print(f"created {soul}")
     elif args.action == "route":
         p, score, why = route(personas, args.text, active)
         if p and args.use and p["slug"] != active:
-            store.put("active_persona", p["slug"])
+            set_active(store, p["slug"])
         data = {"persona": p["slug"] if p else None, "score": score, "why": why}
         emit(args, data, f"{p['slug']} ({why}, score {score})" if p else "no persona matches")
     elif args.action == "use":
         p = find_persona(personas, args.text)
-        store.put("active_persona", p["slug"])
+        set_active(store, p["slug"])
         print(f"active persona: {p['slug']}\n\n{p['body']}")
     elif args.action == "show":
         p = find_persona(personas, args.text or active or "")
@@ -1067,10 +1071,12 @@ def cmd_session(args, root, store):
         hits = turns_search(store, args.text, args.limit, args.include_private)
         emit(args, hits, "\n".join(fmt_turn(t) for t in hits) or "nothing found")
     elif args.action == "list":
+        inner = "" if args.include_private else "AND f.private = 0"
+        outer = "" if args.include_private else "WHERE t.private = 0"
         rows = [dict(r) for r in store.conn.execute(
             "SELECT session, MIN(at) AS started, MAX(at) AS ended, COUNT(*) AS turns, "
             "(SELECT text FROM turns f WHERE f.session = t.session AND f.role = 'user' "
-            " ORDER BY seq LIMIT 1) AS first FROM turns t GROUP BY session "
+            f" {inner} ORDER BY seq LIMIT 1) AS first FROM turns t {outer} GROUP BY session "
             "ORDER BY ended DESC LIMIT ?", (args.limit,)).fetchall()]
         emit(args, rows, "\n".join(
             f"{r['session'][:8]} {r['started'][:16]} {r['turns']} turns: "
@@ -1110,6 +1116,29 @@ def cmd_session(args, root, store):
         print(f"{cur.rowcount} turns older than {args.older or '180d'} deleted")
 
 
+def set_active(store: Store, slug: str) -> None:
+    """Makes `slug` the active persona and logs when, so a turn stored later
+    is attributed to the persona active when it was said."""
+    store.put("active_persona", slug)
+    store.conn.execute("INSERT INTO persona_changes(at, persona) VALUES(?, ?)",
+                       (iso(now()), slug))
+    store.conn.commit()
+
+
+def persona_at(store: Store, at) -> str | None:
+    """The persona active at time `at`, or None when unknown."""
+    if not at:
+        return None
+    try:
+        when = iso(parse_iso(str(at).replace("Z", "+00:00")))
+    except ValueError:
+        return None
+    row = store.conn.execute(
+        "SELECT persona FROM persona_changes WHERE at <= ? ORDER BY at DESC, rowid DESC LIMIT 1",
+        (when,)).fetchone()
+    return row[0] if row else None
+
+
 def persona_private(root: Path, store: Store, slug) -> bool:
     if not slug:
         return False
@@ -1146,9 +1175,12 @@ def cmd_hook(args, root, store):
         if offset > path.stat().st_size:
             offset = 0  # rewritten transcript: ids keep it from duplicating
         turns, offset = transcript_turns(path, offset)
-        persona = store.get("active_persona")
-        private = persona_private(root, store, persona)
+        local_only = {p["slug"] for p in load_personas(root, store) if p["tier"] == "local-only"}
         for t in turns:
+            persona = persona_at(store, t["at"])
+            # Fails closed: with any local-only persona around, a turn whose
+            # persona can't be told (no time, before the first switch) is private.
+            private = bool(local_only) and (persona is None or persona in local_only)
             turn_add(store, session, t["role"], t["text"], persona, private, t["id"], t["at"])
         store.conn.commit()
         store.put(key, offset)
@@ -1166,7 +1198,7 @@ def cmd_hook(args, root, store):
     out = []
     p, _, why = route(personas, prompt, active)
     if p and p["slug"] != active:
-        store.put("active_persona", p["slug"])
+        set_active(store, p["slug"])
         out.append(f"[bastion] switch to persona {p['slug']} ({why}). {p['description']}")
     for m in mem_search(store, prompt, p["slug"] if p else active, 3) if prompt else []:
         out.append(f"[bastion] memory: {m['content']}")

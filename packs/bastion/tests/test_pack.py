@@ -187,10 +187,11 @@ class PackTest(unittest.TestCase):
     def test_stop_hook_keeps_what_was_said_for_session_search(self) -> None:
         self.make_personas()
         transcript = Path(self.tmp.name) / "t.jsonl"
+        soon = bastion.iso(bastion.now() + timedelta(minutes=1))
         lines = [
-            {"type": "user", "uuid": "u1", "timestamp": "2026-10-19T10:00:00Z",
+            {"type": "user", "uuid": "u1", "timestamp": soon,
              "message": {"role": "user", "content": "how do I rotate the postgres password?"}},
-            {"type": "assistant", "uuid": "a1", "timestamp": "2026-10-19T10:00:05Z",
+            {"type": "assistant", "uuid": "a1", "timestamp": soon,
              "message": {"content": [{"type": "thinking", "thinking": "secret plan"},
                                      {"type": "text", "text": "Use ALTER ROLE then reload."},
                                      {"type": "tool_use", "name": "Bash", "input": {}}]}},
@@ -215,7 +216,8 @@ class PackTest(unittest.TestCase):
         self.assertIn("2 turns", self.run_cli("session", "list"))
         # The half-written last line is read once it is complete.
         with transcript.open("a") as f:
-            f.write('er", "uuid": "u2", "message": {"content": "and mysql?"}}\n')
+            f.write(f'er", "uuid": "u2", "timestamp": "{soon}", '
+                    '"message": {"content": "and mysql?"}}\n')
         self.run_cli("hook", "stop", stdin=event)
         self.assertIn("mysql", self.run_cli("session", "search", "mysql"))
 
@@ -223,9 +225,37 @@ class PackTest(unittest.TestCase):
         self.make_personas()
         self.run_cli("persona", "use", "saude")
         self.run_cli("session", "add", "my knee hurts", "--session", "s1", "--role", "user")
+        self.assertEqual(self.run_cli("session", "list").strip(), "no sessions yet")
         self.assertEqual(self.run_cli("session", "search", "knee").strip(), "nothing found")
         self.assertIn("knee", self.run_cli("session", "search", "knee", "--include-private"))
         self.assertIn("1 turns deleted", self.run_cli("session", "forget", "s1"))
+
+    def test_stop_hook_attributes_turns_by_time_and_fails_closed(self) -> None:
+        self.make_personas()  # work becomes active; backdate that to 2001
+        db = sqlite3.connect(Path(self.tmp.name) / "memory.db")
+        db.execute("UPDATE persona_changes SET at = '2001-01-01T00:00:00+00:00'")
+        db.commit()
+        db.close()
+        transcript = Path(self.tmp.name) / "t.jsonl"
+        lines = [
+            {"type": "user", "uuid": "w", "timestamp": "2005-01-01T00:00:00Z",
+             "message": {"content": "deploy notes alpha"}},
+            {"type": "user", "uuid": "old", "timestamp": "2000-01-01T00:00:00Z",
+             "message": {"content": "before any persona alpha"}},
+            {"type": "user", "uuid": "none", "message": {"content": "no time alpha"}},
+        ]
+        transcript.write_text("".join(json.dumps(x) + "\n" for x in lines))
+        # Switching to the local-only persona before the hook runs must not
+        # make the earlier work turn private, nor the unknown ones public.
+        self.run_cli("persona", "use", "saude")
+        self.run_cli("hook", "stop", stdin=json.dumps(
+            {"session_id": "s", "transcript_path": str(transcript)}))
+        hits = json.loads(self.run_cli("session", "search", "alpha", "--json"))
+        self.assertEqual([h["id"] for h in hits], ["w"])
+        self.assertEqual(hits[0]["persona"], "work")
+        listed = self.run_cli("session", "list")
+        self.assertIn("deploy notes", listed)
+        self.assertNotIn("before any persona", listed)
 
     def test_buddy_worries_about_overdue(self) -> None:
         self.run_cli("init", "--name", "Bit")
