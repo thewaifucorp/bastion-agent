@@ -18,9 +18,10 @@ for how that differs from the library crates it depends on).
   memory in SQLite + FTS5 with the memupalace knowledge graph and soft
   forgetting, reminders with repeats and optional desktop notifications,
   skills the agent writes, logs, versions and rolls back, Cabinet briefs, and
-  a status-line companion. Also a Claude Code plugin (`bastion-pack`) whose
+  a status-line companion, and full-text search over past conversations
+  (`session search|show|list`). Also a Claude Code plugin (`bastion-pack`) whose
   hooks add the session brief and per-prompt routing, memories and due
-  reminders. Data in `~/.bastion`; `local-only` memories never reach hooks.
+  reminders, and store each turn for session search. Data in `~/.bastion`; `local-only` memories never reach hooks.
 - **Presence** (`docs/en/presence.md`): one contract for every surface —
   `GET /presence/snapshot` (compact, cut to a device's capacity),
   `POST /presence/action` (approve, deny, persona, care, note) and

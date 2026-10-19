@@ -184,6 +184,49 @@ class PackTest(unittest.TestCase):
         self.assertIn("Lives in Lisbon", out)
         self.assertTrue((Path(self.tmp.name) / "bin" / "bastion.py").exists())
 
+    def test_stop_hook_keeps_what_was_said_for_session_search(self) -> None:
+        self.make_personas()
+        transcript = Path(self.tmp.name) / "t.jsonl"
+        lines = [
+            {"type": "user", "uuid": "u1", "timestamp": "2026-10-19T10:00:00Z",
+             "message": {"role": "user", "content": "how do I rotate the postgres password?"}},
+            {"type": "assistant", "uuid": "a1", "timestamp": "2026-10-19T10:00:05Z",
+             "message": {"content": [{"type": "thinking", "thinking": "secret plan"},
+                                     {"type": "text", "text": "Use ALTER ROLE then reload."},
+                                     {"type": "tool_use", "name": "Bash", "input": {}}]}},
+            {"type": "user", "uuid": "r1", "message": {"content": [
+                {"type": "tool_result", "content": "tool output"}]}},
+            {"type": "user", "uuid": "m1", "isMeta": True, "message": {"content": "meta"}},
+            {"type": "assistant", "uuid": "s1", "isSidechain": True,
+             "message": {"content": [{"type": "text", "text": "subagent chatter"}]}},
+            {"type": "user", "uuid": "c1",
+             "message": {"content": "<command-name>/clear</command-name>"}},
+        ]
+        transcript.write_text("".join(json.dumps(x) + "\n" for x in lines) + '{"type": "us')
+        event = json.dumps({"session_id": "sess-1234abcd", "transcript_path": str(transcript)})
+        self.run_cli("hook", "stop", stdin=event)
+        self.run_cli("hook", "stop", stdin=event)  # same transcript again: no duplicates
+        hits = json.loads(self.run_cli("session", "search", "postgres password", "--json"))
+        self.assertEqual([h["id"] for h in hits], ["u1"])
+        shown = self.run_cli("session", "show", "sess-123#1")
+        self.assertIn("ALTER ROLE", shown)
+        for absent in ("secret plan", "tool output", "meta", "subagent", "/clear"):
+            self.assertNotIn(absent, shown)
+        self.assertIn("2 turns", self.run_cli("session", "list"))
+        # The half-written last line is read once it is complete.
+        with transcript.open("a") as f:
+            f.write('er", "uuid": "u2", "message": {"content": "and mysql?"}}\n')
+        self.run_cli("hook", "stop", stdin=event)
+        self.assertIn("mysql", self.run_cli("session", "search", "mysql"))
+
+    def test_session_turns_under_a_local_only_persona_are_private(self) -> None:
+        self.make_personas()
+        self.run_cli("persona", "use", "saude")
+        self.run_cli("session", "add", "my knee hurts", "--session", "s1", "--role", "user")
+        self.assertEqual(self.run_cli("session", "search", "knee").strip(), "nothing found")
+        self.assertIn("knee", self.run_cli("session", "search", "knee", "--include-private"))
+        self.assertIn("1 turns deleted", self.run_cli("session", "forget", "s1"))
+
     def test_buddy_worries_about_overdue(self) -> None:
         self.run_cli("init", "--name", "Bit")
         self.assertTrue(self.run_cli("buddy").startswith("(^‿^) Bit L1"))

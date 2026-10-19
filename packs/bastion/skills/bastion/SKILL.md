@@ -69,6 +69,7 @@ improve skills. It's a status line, not a character to role-play.
 | Session context | `B brief` |
 | Personas | `B persona list · route · use · show · new · weight · check` |
 | Memory | `B mem add · search · recall · forget · graph · stats` |
+| Past conversations | `B session search · show · list · forget · prune` |
 | Reminders | `B remind add · due · list · done · snooze · notify` |
 | Skills you wrote | `B skill new · log · snapshot · commit · rollback · list · link` |
 | Cabinet | `B cabinet <persona> <persona> -q "<question>"` |

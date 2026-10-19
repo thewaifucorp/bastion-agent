@@ -18,7 +18,7 @@ aparelho de mesa, memória compartilhada).
 |---|---|
 | `bastion` | Quem ele é e o ciclo: rotear → lembrar → agir → guardar → aprender. Brief da sessão. |
 | `bastion-personas` | Criar, rotear, trocar e pesar personas (`SOUL.md`, mesmo contrato do Bastion). |
-| `bastion-memory` | Memórias em SQLite + FTS5 (BM25, importância, recência), grafo de conhecimento, esquecimento suave. |
+| `bastion-memory` | Memórias em SQLite + FTS5 (BM25, importância, recência), grafo de conhecimento, esquecimento suave; busca nas conversas antigas. |
 | `bastion-skill-forge` | Escreve uma skill depois de uma tarefa que deu certo; registra resultados; corrige e versiona skills que falharam. |
 | `bastion-reminders` | Lembretes, repetição, soneca, follow-ups proativos, notificação no desktop (opcional). |
 | `bastion-cabinet` | Personas deliberam sobre um trade-off, com dissenso preservado e recomendação ponderada. |

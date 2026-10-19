@@ -1,6 +1,6 @@
 ---
 name: bastion-memory
-description: Bastion's durable memory — store and search facts, preferences, decisions, events and lessons about the person in a local SQLite database with full-text search and a small knowledge graph. Use whenever the person tells you something worth knowing next time, and before answering anything personal.
+description: Bastion's durable memory — store and search facts, preferences, decisions, events and lessons about the person in a local SQLite database with full-text search and a small knowledge graph, and search past conversations. Use whenever the person tells you something worth knowing next time, before answering anything personal, and when they ask "what did we discuss about X".
 license: MIT
 metadata:
   version: "0.1.0"
@@ -56,6 +56,26 @@ B mem graph Ana                       # what's linked to an entity
 ```
 
 Use what you find without announcing "according to my memory" every time.
+
+## Past conversations
+
+Memories are what you chose to keep. Conversations are everything that was
+said: with the Claude Code plugin, a hook stores each turn (the person's
+prompts and your replies; not tool calls, tool output or thinking). Search
+them when the person says "we talked about this", or when memory has
+nothing and the answer may be in an old session:
+
+```bash
+B session search "postgres password"   # hits as <session>#<turn>
+B session show 3f9a2c1e#14             # the turns around a hit
+B session list                         # recent sessions, first prompt each
+```
+
+Turns under a `local-only` persona are private, like memories. Hosts
+without hooks can log turns with `B session add "<text>" --session <id>
+--role user|assistant`. `B session forget <id>` deletes a session;
+`B session prune --older 180d` deletes old turns. Something from a past
+conversation that will matter again: store it as a memory.
 
 ## Keeping it right
 

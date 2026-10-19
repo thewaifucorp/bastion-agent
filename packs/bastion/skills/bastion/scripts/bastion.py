@@ -34,6 +34,9 @@ VERSION = "0.1.0"
 TIERS = ("cloud-ok", "local-only")
 KINDS = ("fact", "preference", "decision", "event", "note", "lesson")
 HOOK_BUDGET = 1500  # chars a hook may add to the host agent's context
+TURN_MAX = 4000  # chars kept per conversation turn
+HARNESS_TAGS = ("<command-", "<local-command", "<system-reminder", "<bash-",
+                "<task-notification", "<user-prompt-submit-hook")
 
 
 # ---------------------------------------------------------------- home & db
@@ -98,6 +101,17 @@ CREATE TABLE IF NOT EXISTS weights (
     why         TEXT NOT NULL,
     at          TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS turns (
+    id          TEXT PRIMARY KEY,
+    session     TEXT NOT NULL,
+    seq         INTEGER NOT NULL,
+    role        TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    persona     TEXT,
+    private     INTEGER NOT NULL DEFAULT 0,
+    at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session, seq);
 CREATE TABLE IF NOT EXISTS state (
     key         TEXT PRIMARY KEY,
     value       TEXT NOT NULL
@@ -116,6 +130,16 @@ END;
 CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
     INSERT INTO memories_fts(memories_fts, rowid, content, tags)
     VALUES ('delete', old.rowid, old.content, old.tags);
+END;
+CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(
+    text, content='turns', content_rowid='rowid',
+    tokenize='unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER IF NOT EXISTS turns_ai AFTER INSERT ON turns BEGIN
+    INSERT INTO turns_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS turns_ad AFTER DELETE ON turns BEGIN
+    INSERT INTO turns_fts(turns_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
 END;
 """
 
@@ -560,6 +584,85 @@ SKILL_TEMPLATE = """# {title}
 """
 
 
+# ----------------------------------------------------------------- sessions
+
+
+def turn_add(store: Store, session: str, role: str, text: str, persona=None,
+             private=False, turn_id=None, at=None) -> bool:
+    """Stores one conversation turn; an id seen before is skipped."""
+    text = text.strip()
+    if not text:
+        return False
+    seq = store.conn.execute(
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM turns WHERE session=?", (session,)
+    ).fetchone()[0]
+    cur = store.conn.execute(
+        "INSERT OR IGNORE INTO turns(id, session, seq, role, text, persona, private, at) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (turn_id or "t-" + uuid.uuid4().hex[:10], session, seq, role, text[:TURN_MAX],
+         persona, int(private), at or iso(now())),
+    )
+    return cur.rowcount > 0
+
+
+def transcript_turns(path: Path, offset: int) -> tuple[list[dict], int]:
+    """User prompts and assistant replies from a Claude Code transcript, read
+    from byte `offset` on. Tool calls, tool results, thinking, subagents and
+    meta lines are left out: what was said, not how it was done."""
+    turns = []
+    with path.open("rb") as f:
+        f.seek(offset)
+        data = f.read()
+    end = data.rfind(b"\n") + 1  # a half-written last line waits for next time
+    for raw in data[:end].splitlines():
+        try:
+            line = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if line.get("type") not in ("user", "assistant") or line.get("isSidechain") \
+                or line.get("isMeta"):
+            continue
+        content = (line.get("message") or {}).get("content")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "\n".join(b.get("text", "") for b in content
+                             if isinstance(b, dict) and b.get("type") == "text")
+        else:
+            continue
+        if not text.strip() or text.lstrip().startswith(HARNESS_TAGS):
+            continue  # slash-command echoes, hook output, system reminders
+        turns.append({"id": line.get("uuid"), "role": line["type"], "text": text,
+                      "at": line.get("timestamp")})
+    return turns, offset + end
+
+
+def turns_search(store: Store, query: str, limit=5, include_private=False) -> list[dict]:
+    q = fts_query(query)
+    if not q:
+        return []
+    private = "" if include_private else "AND t.private = 0"
+    if store.fts:
+        rows = store.conn.execute(
+            "SELECT t.*, snippet(turns_fts, 0, '[', ']', '…', 16) AS snip FROM turns_fts "
+            f"JOIN turns t ON t.rowid = turns_fts.rowid WHERE turns_fts MATCH ? {private} "
+            "ORDER BY bm25(turns_fts) LIMIT ?", (q, limit)).fetchall()
+    else:
+        words = re.findall(r"\w+", query)[:8]
+        like = " OR ".join("t.text LIKE ?" for _ in words)
+        rows = store.conn.execute(
+            f"SELECT t.*, substr(t.text, 1, 160) AS snip FROM turns t WHERE ({like}) {private} "
+            "ORDER BY t.at DESC LIMIT ?", [*(f"%{w}%" for w in words), limit]).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fmt_turn(t: dict, full=False) -> str:
+    text = t["text"] if full else (t.get("snip") or t["text"][:160])
+    text = " ".join(text.split())
+    lock = " [private]" if t.get("private") else ""
+    return f"{t['session'][:8]}#{t['seq']} {t['at'][:16]} {t['role']}{lock}: {text}"
+
+
 # ---------------------------------------------------------------- companion
 
 FACES = {"happy": "(^‿^)", "neutral": "(•_•)", "worried": "(°□°)", "sleepy": "(-_-)zz"}
@@ -959,6 +1062,61 @@ def cmd_cabinet(args, root, store):
     print("\n".join(lines))
 
 
+def cmd_session(args, root, store):
+    if args.action == "search":
+        hits = turns_search(store, args.text, args.limit, args.include_private)
+        emit(args, hits, "\n".join(fmt_turn(t) for t in hits) or "nothing found")
+    elif args.action == "list":
+        rows = [dict(r) for r in store.conn.execute(
+            "SELECT session, MIN(at) AS started, MAX(at) AS ended, COUNT(*) AS turns, "
+            "(SELECT text FROM turns f WHERE f.session = t.session AND f.role = 'user' "
+            " ORDER BY seq LIMIT 1) AS first FROM turns t GROUP BY session "
+            "ORDER BY ended DESC LIMIT ?", (args.limit,)).fetchall()]
+        emit(args, rows, "\n".join(
+            f"{r['session'][:8]} {r['started'][:16]} {r['turns']} turns: "
+            f"{' '.join((r['first'] or '').split())[:80]}" for r in rows) or "no sessions yet")
+    elif args.action == "show":
+        # `abc12345` or `abc12345#14` (a hit from search): the turns around it.
+        ref, _, at = args.text.partition("#")
+        row = store.conn.execute(
+            "SELECT session FROM turns WHERE session LIKE ? LIMIT 1", (ref + "%",)
+        ).fetchone()
+        if not row:
+            raise SystemExit(f"no session {ref}")
+        center = int(at) if at.isdigit() else 1
+        lo = max(1, center - args.around) if at else 1
+        hi = center + args.around if at else lo + 2 * args.around
+        private = "" if args.include_private else "AND private = 0"
+        rows = [dict(r) for r in store.conn.execute(
+            f"SELECT * FROM turns WHERE session=? AND seq BETWEEN ? AND ? {private} ORDER BY seq",
+            (row[0], lo, hi)).fetchall()]
+        emit(args, rows, "\n\n".join(fmt_turn(t, full=True) for t in rows) or "nothing there")
+    elif args.action == "add":
+        if not args.session or args.role not in ("user", "assistant"):
+            raise SystemExit("session add TEXT --session ID --role user|assistant")
+        persona = store.get("active_persona")
+        turn_add(store, args.session, args.role, args.text, persona,
+                 args.private or persona_private(root, store, persona))
+        store.conn.commit()
+        print("logged")
+    elif args.action == "forget":
+        cur = store.conn.execute("DELETE FROM turns WHERE session LIKE ?", (args.text + "%",))
+        store.conn.commit()
+        print(f"{cur.rowcount} turns deleted")
+    elif args.action == "prune":
+        cutoff = iso(now() - parse_duration(args.older or "180d"))
+        cur = store.conn.execute("DELETE FROM turns WHERE at < ?", (cutoff,))
+        store.conn.commit()
+        print(f"{cur.rowcount} turns older than {args.older or '180d'} deleted")
+
+
+def persona_private(root: Path, store: Store, slug) -> bool:
+    if not slug:
+        return False
+    return any(p["slug"] == slug and p["tier"] == "local-only"
+               for p in load_personas(root, store))
+
+
 def cmd_buddy(args, root, store):
     if args.rename:
         pet = store.get("buddy", {"name": "Bastion", "xp": 0})
@@ -977,6 +1135,24 @@ def cmd_hook(args, root, store):
         event = json.load(sys.stdin) if not sys.stdin.isatty() else {}
     except json.JSONDecodeError:
         event = {}
+    if args.event == "stop":
+        # Keeps what was said this turn, for `session search`.
+        path = Path(str(event.get("transcript_path") or "")).expanduser()
+        session = str(event.get("session_id") or path.stem)
+        if not path.is_file():
+            return
+        key = f"transcript_offset:{path}"
+        offset = store.get(key, 0)
+        if offset > path.stat().st_size:
+            offset = 0  # rewritten transcript: ids keep it from duplicating
+        turns, offset = transcript_turns(path, offset)
+        persona = store.get("active_persona")
+        private = persona_private(root, store, persona)
+        for t in turns:
+            turn_add(store, session, t["role"], t["text"], persona, private, t["id"], t["at"])
+        store.conn.commit()
+        store.put(key, offset)
+        return
     if args.event == "session-start":
         pet = store.get("buddy")
         if pet is None:
@@ -1085,16 +1261,29 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_buddy)
 
+    s = sub.add_parser("session")
+    s.add_argument("action", choices=["search", "list", "show", "add", "forget", "prune"])
+    s.add_argument("text", nargs="?", default="")
+    s.add_argument("--session")
+    s.add_argument("--role", default="user")
+    s.add_argument("--around", type=int, default=3)
+    s.add_argument("--older", help="prune: 90d, 26w …")
+    s.add_argument("--private", action="store_true")
+    s.add_argument("--include-private", action="store_true")
+    s.add_argument("--limit", type=int, default=8)
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_session)
+
     s = sub.add_parser("hook")
-    s.add_argument("event", choices=["session-start", "prompt"])
+    s.add_argument("event", choices=["session-start", "prompt", "stop"])
     s.set_defaults(fn=cmd_hook)
     return ap
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.group in ("mem", "persona", "skill", "remind") and args.action not in (
-        "list", "recall", "stats", "check", "due", "notify"
+    if args.group in ("mem", "persona", "skill", "remind", "session") and args.action not in (
+        "list", "recall", "stats", "check", "due", "notify", "prune"
     ):
         needs = getattr(args, "text", None) if args.group != "skill" else args.name
         if not needs and not (args.group == "persona" and args.action in ("new", "show")):

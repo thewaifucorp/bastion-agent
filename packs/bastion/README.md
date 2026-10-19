@@ -20,14 +20,14 @@ run Bastion.
 |---|---|
 | `bastion` | Who it is and the loop: route → recall → act → remember → learn. Session brief. |
 | `bastion-personas` | Create, route, switch and weigh personas (`SOUL.md`, same contract as Bastion). |
-| `bastion-memory` | Memories in SQLite + FTS5 (BM25, importance, recency), a knowledge graph, soft forgetting. |
+| `bastion-memory` | Memories in SQLite + FTS5 (BM25, importance, recency), a knowledge graph, soft forgetting; full-text search over past conversations. |
 | `bastion-skill-forge` | Writes a skill after a task that worked; logs outcomes; patches and versions skills that failed. |
 | `bastion-reminders` | Reminders, repeats, snooze, proactive follow-ups, optional desktop notifications. |
 | `bastion-cabinet` | Personas deliberate on a trade-off, dissent kept, weighted recommendation. |
 
 ```
 ~/.bastion/
-├── memory.db              memories, graph, reminders, skill outcomes, weights, companion
+├── memory.db              memories, graph, conversations, reminders, skill outcomes, weights, companion
 ├── personas/<slug>/SOUL.md
 ├── skills/<name>/SKILL.md  skills the agent wrote (agentskills format)
 └── bin/bastion.py         stable copy of the CLI, for a status line or cron
@@ -44,7 +44,8 @@ claude plugin install bastion-pack@bastion-pack
 
 The plugin's hooks put the session brief in context at start and, on every
 prompt, route to a persona and add matching memories and due reminders
-(about 50 ms, at most 1.5 KB). Commands: `/bastion-pack:persona`,
+(about 50 ms, at most 1.5 KB); after each reply, an async hook stores what
+was said (prompts and replies, not tool output) for `session search`. Commands: `/bastion-pack:persona`,
 `/bastion-pack:remember`, `/bastion-pack:remind`, `/bastion-pack:cabinet`.
 
 Companion in the status line (`~/.claude/settings.json`), after the first
