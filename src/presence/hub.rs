@@ -175,12 +175,31 @@ struct Alert {
 
 pub const APPROVAL_INPUT_MAX: usize = 2000;
 
+/// Invisible formatting characters — zero-width, bidi overrides and
+/// isolates, word joiners, BOM, tag characters — that can make text read
+/// differently from what it is.
+pub fn is_invisible(c: char) -> bool {
+    matches!(c as u32,
+        0x00AD | 0x061C | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E
+        | 0x2060..=0x2064 | 0x2066..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB
+        | 0xE0000..=0xE007F)
+}
+
 /// Control characters (newlines and tabs included) become spaces, so an
-/// approval can never hide part of the call behind a line break.
+/// approval can never hide part of the call behind a line break; invisible
+/// formatting characters become a visible `�`.
 pub fn clean_input(text: &str) -> String {
     let flat: String = text
         .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
+        .map(|c| {
+            if c.is_control() {
+                ' '
+            } else if is_invisible(c) {
+                '\u{FFFD}'
+            } else {
+                c
+            }
+        })
         .collect();
     // Runs of spaces collapse too: padding can never push part of the call
     // out of a surface's view.
@@ -613,7 +632,11 @@ impl PresenceHub {
                 det,
                 exp: Some(now + wait.as_secs()),
                 input: full_input.map(clean_input).filter(|t| !t.is_empty()),
-                input_complete: full_input.is_some_and(|t| t.chars().count() <= APPROVAL_INPUT_MAX),
+                // Complete only when kept whole and free of invisible
+                // characters (shown as `�`, so the person sees the call is odd).
+                input_complete: full_input.is_some_and(|t| {
+                    t.chars().count() <= APPROVAL_INPUT_MAX && !t.chars().any(is_invisible)
+                }),
             };
             if let Some(session) = inner.sessions.get_mut(&key) {
                 session.state = SessionState::Waiting;
@@ -1137,6 +1160,13 @@ mod tests {
         let reopened = PresenceHub::new(tx, "h".into(), Some(path));
         assert_eq!(reopened.persona(OWNER).as_deref(), Some("ada"));
         assert_eq!(reopened.persona("bob"), None);
+    }
+
+    #[test]
+    fn invisible_characters_are_shown_and_never_complete() {
+        assert_eq!(clean_input("git\u{202E}push  \n x"), "git\u{FFFD}push x");
+        assert!(is_invisible('\u{200B}'));
+        assert!(!is_invisible('a'));
     }
 
     #[test]

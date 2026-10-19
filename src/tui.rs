@@ -1799,12 +1799,13 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
     let companion_status = (!companion_parts.is_empty()).then(|| companion_parts.join(" · "));
     let approval_bar = app.presence.as_ref().and_then(presence_view::approval_bar);
-    // The bar wraps to show the whole call; rows counted in characters on
-    // the full width (the bar has no border).
-    let bar_rows = approval_bar.as_ref().map_or(0, |bar| {
-        let width = usize::from(area.width.max(1));
-        bar.chars().count().div_ceil(width)
-    });
+    // The bar shows the whole call on as many rows as it takes, hard-wrapped
+    // by display width and drawn row by row, so "whole on screen" is exact.
+    let bar_lines = approval_bar
+        .as_ref()
+        .map(|bar| presence_view::wrap_exact(bar, usize::from(area.width)))
+        .unwrap_or_default();
+    let bar_rows = bar_lines.len();
     app.approval_bar_whole = bar_rows > 0 && bar_rows <= APPROVAL_BAR_MAX_ROWS;
     let bar_height = u16::try_from(bar_rows.min(APPROVAL_BAR_MAX_ROWS)).unwrap_or(1);
     let chunks = Layout::default()
@@ -1817,16 +1818,19 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
             Constraint::Length(3),
         ])
         .split(area);
-    if let Some(bar) = &approval_bar {
+    if !bar_lines.is_empty() {
+        let shown: Vec<RLine> = bar_lines
+            .iter()
+            .take(APPROVAL_BAR_MAX_ROWS)
+            .map(|row| RLine::from(row.as_str()))
+            .collect();
         f.render_widget(
-            Paragraph::new(bar.as_str())
-                .wrap(Wrap { trim: false })
-                .style(
-                    Style::default()
-                        .fg(ratatui::style::Color::Black)
-                        .bg(ratatui::style::Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
+            Paragraph::new(shown).style(
+                Style::default()
+                    .fg(ratatui::style::Color::Black)
+                    .bg(ratatui::style::Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             chunks[2],
         );
     }

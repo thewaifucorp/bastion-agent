@@ -63,6 +63,28 @@ pub(super) fn approval_bar(snapshot: &Value) -> Option<String> {
     Some(format!("⏳ Approval: {} — {keys}{more}", call_text(alert)))
 }
 
+/// Hard-wraps `text` into rows of at most `width` terminal columns, by
+/// display width. The TUI draws exactly these rows (no word wrap of its
+/// own), so what it counts as shown is what is on screen.
+pub(super) fn wrap_exact(text: &str, width: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthChar;
+    let width = width.max(1);
+    let mut rows = vec![String::new()];
+    let mut used = 0;
+    for c in text.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w > width && used > 0 {
+            rows.push(String::new());
+            used = 0;
+        }
+        if let Some(row) = rows.last_mut() {
+            row.push(c);
+        }
+        used += w;
+    }
+    rows
+}
+
 /// A short "what agents are doing" piece for the companion status line.
 pub(super) fn summary(snapshot: &Value) -> Option<String> {
     let sessions = snapshot["sessions"].as_array()?;
@@ -149,6 +171,13 @@ mod tests {
         let bar = approval_bar(&cut).unwrap();
         assert!(!bar.contains("Ctrl+Y"), "no blind approve: {bar}");
         assert!(approval_bar(&snapshot(json!([]))).is_none());
+    }
+
+    #[test]
+    fn exact_wrap_counts_wide_characters() {
+        assert_eq!(wrap_exact("abcdef", 4), vec!["abcd", "ef"]);
+        assert_eq!(wrap_exact("日本語", 4), vec!["日本", "語"]);
+        assert_eq!(wrap_exact("", 4), vec![""]);
     }
 
     #[test]

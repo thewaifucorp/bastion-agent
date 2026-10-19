@@ -79,6 +79,15 @@ pub struct Alert {
     pub input_complete: bool,
 }
 
+/// Invisible formatting characters (zero-width, bidi, tags) — never part of
+/// a call approved from the tray.
+fn is_invisible(c: char) -> bool {
+    matches!(c as u32,
+        0x00AD | 0x061C | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E
+        | 0x2060..=0x2064 | 0x2066..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB
+        | 0xE0000..=0xE007F)
+}
+
 /// Menu-safe text that never hides anything: a control character shows as
 /// `⏎`, `&` (a menu accelerator marker on Windows) is escaped as `&&`.
 fn menu_text(text: &str) -> String {
@@ -87,6 +96,7 @@ fn menu_text(text: &str) -> String {
         match c {
             '&' => out.push_str("&&"),
             c if c.is_control() => out.push('⏎'),
+            c if is_invisible(c) => out.push('\u{FFFD}'),
             c => out.push(c),
         }
     }
@@ -102,7 +112,10 @@ impl Alert {
         self.input_complete
             && !self.input.is_empty()
             && self.input == self.det
-            && !self.input.chars().any(char::is_control)
+            && !self
+                .input
+                .chars()
+                .any(|c| c.is_control() || is_invisible(c))
     }
 
     /// `<tool> <det>`, the line shown for an approval, marked when cut.
