@@ -1,6 +1,6 @@
-"""Bastion pack CLI tests. Standard library only:
+"""Bastionizer CLI tests. Standard library only:
 
-    python3 -m unittest discover -s packs/bastion/tests
+    python3 -m unittest discover -s extras/bastionizer/tests
 """
 
 from __future__ import annotations
@@ -21,13 +21,17 @@ sys.path.insert(0, str(SCRIPTS))
 import bastion  # noqa: E402
 
 
-class PackTest(unittest.TestCase):
+class BastionizerTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["BASTION_HOME"] = self.tmp.name
+        self.home = os.environ.get("HOME")
+        os.environ["HOME"] = self.tmp.name  # no real ~/.claude settings leak in
         os.environ.pop("BASTION_SKILLS_DIR", None)
 
     def tearDown(self) -> None:
+        if self.home is not None:
+            os.environ["HOME"] = self.home
         self.tmp.cleanup()
 
     def run_cli(self, *argv: str, stdin: str | None = None) -> str:
@@ -47,7 +51,7 @@ class PackTest(unittest.TestCase):
                      "--keywords", "code,deploy,meeting", "--weight", "0.7",
                      "--objectives", "ship", "--goals", "tests pass", "--scope", "no money")
         self.run_cli("persona", "new", "--name", "Saúde", "--description", "Health",
-                     "--keywords", "sleep,gym,dor", "--tier", "local-only",
+                     "--keywords", "sleep,slept,gym,dor", "--tier", "local-only",
                      "--objectives", "rest", "--goals", "7h", "--scope", "no diagnosis")
 
     # -------------------------------------------------------- frontmatter
@@ -256,6 +260,21 @@ class PackTest(unittest.TestCase):
         listed = self.run_cli("session", "list")
         self.assertIn("deploy notes", listed)
         self.assertNotIn("before any persona", listed)
+
+    def test_hooks_step_aside_when_the_daemon_plugin_is_on(self) -> None:
+        self.make_personas()
+        project = Path(self.tmp.name) / "proj"
+        (project / ".claude").mkdir(parents=True)
+        (project / ".claude" / "settings.json").write_text(
+            json.dumps({"enabledPlugins": {"bastion@bastion": True}}))
+        event = {"cwd": str(project), "prompt": "deploy the code"}
+        out = self.run_cli("hook", "prompt", stdin=json.dumps(event))
+        self.assertEqual(out, "")
+        self.assertIn("stays quiet", self.run_cli("hook", "session-start", stdin=json.dumps(event)))
+        (project / ".claude" / "settings.local.json").write_text(
+            json.dumps({"enabledPlugins": {"bastion@bastion": False}}))
+        event["prompt"] = "slept badly"
+        self.assertIn("saude", self.run_cli("hook", "prompt", stdin=json.dumps(event)))
 
     def test_buddy_worries_about_overdue(self) -> None:
         self.run_cli("init", "--name", "Bit")

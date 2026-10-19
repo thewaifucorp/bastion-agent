@@ -1,6 +1,6 @@
-# Pack do Bastion (sem daemon)
+# Bastionizer (sem daemon)
 
-O pack é um conjunto de skills que faz qualquer agente (Claude Code, Codex, …)
+O Bastionizer é um conjunto de skills que faz qualquer agente (Claude Code, Codex, …)
 agir como o Bastion **sem rodar o Bastion**: personas por área da vida,
 memória local, lembretes, skills que o próprio agente escreve e melhora,
 Cabinet e um companion na status line. Tudo fica em `~/.bastion`
@@ -8,7 +8,7 @@ Cabinet e um companion na status line. Tudo fica em `~/.bastion`
 padrão (SQLite com FTS5 já vem nela). Sem servidor, sem processo em segundo
 plano, sem rede.
 
-É diferente do [plugin do Claude Code](../../packs/claude-code/README.md), que
+É diferente do [plugin do Claude Code](../../integrations/claude-code/README.md), que
 liga o Claude Code a um daemon do Bastion rodando (aprovações pelo celular,
 aparelho de mesa, memória compartilhada).
 
@@ -28,8 +28,8 @@ aparelho de mesa, memória compartilhada).
 Claude Code (skills + hooks + comandos):
 
 ```bash
-claude plugin marketplace add /caminho/para/bastion-agent/packs/bastion
-claude plugin install bastion-pack@bastion-pack
+claude plugin marketplace add /caminho/para/bastion-agent/extras/bastionizer
+claude plugin install bastionizer@bastionizer
 ```
 
 Companion na status line (`~/.claude/settings.json`), depois da primeira sessão:
@@ -38,15 +38,15 @@ Companion na status line (`~/.claude/settings.json`), depois da primeira sessão
 { "statusLine": { "type": "command", "command": "python3 ~/.bastion/bin/bastion.py buddy" } }
 ```
 
-Outro agente: copie as seis pastas de `packs/bastion/skills/` para a pasta de
+Outro agente: copie as seis pastas de `extras/bastionizer/skills/` para a pasta de
 skills dele, lado a lado (elas acham o CLI em `../bastion/scripts/bastion.py`).
 
 ## Privacidade
 
 Personas são `cloud-ok` ou `local-only`. Memórias de uma persona `local-only`
 são privadas: os hooks nunca as injetam e a busca as esconde, a não ser que
-você peça. O pack não escolhe o modelo do agente: se ele roda na nuvem, o que
+você peça. O Bastionizer não escolhe o modelo do agente: se ele roda na nuvem, o que
 o agente lê vai para lá. Não guarde segredos na memória, nas personas nem nas
 skills.
 
-Detalhes, comandos e limites: [packs/bastion/README.md](../../packs/bastion/README.md).
+Detalhes, comandos e limites: [extras/bastionizer/README.md](../../extras/bastionizer/README.md).

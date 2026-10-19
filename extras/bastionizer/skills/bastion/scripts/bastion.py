@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bastion pack CLI: makes any agent act as Bastion, with no daemon.
+"""Bastionizer CLI: makes any agent act as Bastion, with no daemon.
 
 Everything lives under ``$BASTION_HOME`` (default ``~/.bastion``):
 
@@ -704,7 +704,7 @@ def brief(root: Path, store: Store, budget: int | None = None) -> str:
     """What an agent reads at session start to act as Bastion."""
     personas = load_personas(root, store)
     active = store.get("active_persona")
-    lines = [f"[bastion] pack {VERSION}, home {root}"]
+    lines = [f"[bastion] bastionizer {VERSION}, home {root}"]
     if personas:
         lines.append("Personas (act as the active one; route with `persona route`):")
         for p in personas:
@@ -917,7 +917,7 @@ def cmd_skill(args, root, store):
         if not args.description:
             raise SystemExit("skill new needs --description (when to use it, in one line)")
         meta = {"name": name, "description": args.description,
-                "metadata": {"version": "1", "author": "bastion-pack",
+                "metadata": {"version": "1", "author": "bastionizer",
                              "persona": args.persona or store.get("active_persona") or ""}}
         title = name.replace("-", " ").capitalize()
         body = SKILL_TEMPLATE.format(title=title, when=args.description)
@@ -1158,12 +1158,39 @@ def cmd_buddy(args, root, store):
          f"{s['face']} {s['name']} L{s['level']} · {active}{due}")
 
 
+def daemon_plugin_on(cwd: str | None) -> bool:
+    """Whether Claude Code also has the daemon's `bastion` plugin enabled
+    (user, project or local settings). Both would inject a persona and
+    memories into the same prompt, so the Bastionizer steps aside."""
+    if os.environ.get("BASTIONIZER_FORCE"):
+        return False
+    places = [Path.home() / ".claude" / "settings.json"]
+    if cwd:
+        places += [Path(cwd) / ".claude" / "settings.json",
+                   Path(cwd) / ".claude" / "settings.local.json"]
+    enabled = False
+    for place in places:  # later files override earlier ones
+        try:
+            plugins = json.loads(place.read_text(encoding="utf-8")).get("enabledPlugins") or {}
+        except (OSError, ValueError, AttributeError):
+            continue
+        for name, on in plugins.items():
+            if name.split("@")[0] == "bastion":
+                enabled = bool(on)
+    return enabled
+
+
 def cmd_hook(args, root, store):
     """Claude Code hooks (stdin = hook JSON; stdout = added context)."""
     try:
         event = json.load(sys.stdin) if not sys.stdin.isatty() else {}
     except json.JSONDecodeError:
         event = {}
+    if daemon_plugin_on(event.get("cwd")):
+        if args.event == "session-start":
+            print("[bastion] The daemon's Bastion plugin is on, so the Bastionizer stays "
+                  "quiet: use one or the other (BASTIONIZER_FORCE=1 overrides).")
+        return
     if args.event == "stop":
         # Keeps what was said this turn, for `session search`.
         path = Path(str(event.get("transcript_path") or "")).expanduser()
@@ -1220,7 +1247,7 @@ def cmd_hook(args, root, store):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="bastion.py", description="Bastion pack (no daemon)")
+    ap = argparse.ArgumentParser(prog="bastion.py", description="Bastionizer (no daemon)")
     ap.add_argument("--version", action="version", version=VERSION)
     sub = ap.add_subparsers(dest="group", required=True)
 
@@ -1327,7 +1354,7 @@ def main(argv: list[str] | None = None) -> int:
         args.fn(args, root, store)
     finally:
         store.conn.close()
-        if os.environ.get("BASTION_PACK_TIMING"):
+        if os.environ.get("BASTIONIZER_TIMING"):
             print(f"[{(time.monotonic() - started) * 1000:.0f} ms]", file=sys.stderr)
     return 0
 

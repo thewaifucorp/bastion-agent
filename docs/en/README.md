@@ -17,7 +17,7 @@ Welcome. These guides describe the code in this repository—not an older hosted
 - [Observability](observability.md) — the `/ui` dashboard, `/events` vocabulary, and `/credential`.
 - [Terminal companion](companion.md) — themes, animated pets, care, progression, and extension packs.
 - [Presence and Bastion mode](presence.md) — the snapshot/action contract, approvals from any surface, desk devices, and the Claude Code pack.
-- [Bastion pack](../../packs/bastion/README.md) — skills that make any agent act as Bastion with no daemon: personas, local memory, reminders, self-written skills, Cabinet, companion.
+- [Bastionizer](../../extras/bastionizer/README.md) — skills that make any agent act as Bastion with no daemon: personas, local memory, reminders, self-written skills, Cabinet, companion.
 - [Devices](devices.md) — one brain across your machines: primary, nodes, replica, promotion.
 - [Mobile companion](mobile-app.md) — build and pair the Flutter client.
 - [FAQ](faq.md) — common operational questions.

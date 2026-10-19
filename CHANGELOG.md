@@ -10,7 +10,7 @@ for how that differs from the library crates it depends on).
 
 ### Added
 
-- **Bastion pack** (`packs/bastion`): makes any agent act as Bastion with no
+- **Bastionizer** (`extras/bastionizer`): makes any agent act as Bastion with no
   daemon. Six agentskills-format skills (`bastion`, `bastion-personas`,
   `bastion-memory`, `bastion-skill-forge`, `bastion-reminders`,
   `bastion-cabinet`) over one standard-library Python CLI: personas in
@@ -19,7 +19,7 @@ for how that differs from the library crates it depends on).
   forgetting, reminders with repeats and optional desktop notifications,
   skills the agent writes, logs, versions and rolls back, Cabinet briefs, and
   a status-line companion, and full-text search over past conversations
-  (`session search|show|list`). Also a Claude Code plugin (`bastion-pack`) whose
+  (`session search|show|list`). Also a Claude Code plugin (`bastionizer`) whose
   hooks add the session brief and per-prompt routing, memories and due
   reminders, and store each turn for session search. Data in `~/.bastion`; `local-only` memories never reach hooks.
 - **Presence** (`docs/en/presence.md`): one contract for every surface —
@@ -28,7 +28,7 @@ for how that differs from the library crates it depends on).
   `presence.updated` / `approval.*` / `presence.persona` on `/events`.
   Configured by `[presence]`; routes are owner-authenticated like
   `/companion`, and paired devices get their own scoped token.
-- **Bastion mode for Claude Code** (`packs/claude-code`): a plugin whose hooks
+- **Bastion mode for Claude Code** (`integrations/claude-code`): a plugin whose hooks
   run `bastion hook claude-code`. Claude receives the active persona, core and
   relevant memories and goals (egress-checked: `local_only` never leaves),
   `[[presence.rules]]` decide its tool calls (`allow`/`deny`/`ask`/`remote`),

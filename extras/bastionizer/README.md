@@ -1,4 +1,4 @@
-# Bastion pack
+# Bastionizer
 
 Skills that make any agent act as Bastion, with **no daemon**: personas for
 the areas of your life, a local memory, reminders, skills the agent writes
@@ -10,9 +10,11 @@ is part of it). No server, no background process, no network.
 
 This is different from the [Claude Code plugin](../claude-code/), which
 connects Claude Code to a running Bastion daemon (approvals from your
-phone, the desk device, shared memory). Use the pack when you want the
+phone, the desk device, shared memory). Use the Bastionizer when you want the
 Bastion way of working without running Bastion; use the plugin when you
 run Bastion.
+Install one or the other: when the daemon's `bastion` plugin is enabled, the
+Bastionizer's hooks stay quiet (`BASTIONIZER_FORCE=1` overrides).
 
 ## What's inside
 
@@ -38,15 +40,15 @@ run Bastion.
 ### Claude Code (plugin: skills + hooks + commands)
 
 ```bash
-claude plugin marketplace add /path/to/bastion-agent/packs/bastion
-claude plugin install bastion-pack@bastion-pack
+claude plugin marketplace add /path/to/bastion-agent/extras/bastionizer
+claude plugin install bastionizer@bastionizer
 ```
 
 The plugin's hooks put the session brief in context at start and, on every
 prompt, route to a persona and add matching memories and due reminders
 (about 50 ms, at most 1.5 KB); after each reply, an async hook stores what
-was said (prompts and replies, not tool output) for `session search`. Commands: `/bastion-pack:persona`,
-`/bastion-pack:remember`, `/bastion-pack:remind`, `/bastion-pack:cabinet`.
+was said (prompts and replies, not tool output) for `session search`. Commands: `/bastionizer:persona`,
+`/bastionizer:remember`, `/bastionizer:remind`, `/bastionizer:cabinet`.
 
 Companion in the status line (`~/.claude/settings.json`), after the first
 session has run:
@@ -61,8 +63,8 @@ Copy the six folders under `skills/` into the agent's skills directory, keeping
 them side by side (they find the CLI at `../bastion/scripts/bastion.py`):
 
 ```bash
-cp -r packs/bastion/skills/* ~/.codex/skills/        # Codex
-cp -r packs/bastion/skills/* ~/.claude/skills/       # Claude Code without the plugin
+cp -r extras/bastionizer/skills/* ~/.codex/skills/        # Codex
+cp -r extras/bastionizer/skills/* ~/.claude/skills/       # Claude Code without the plugin
 ```
 
 Agents without a skills directory: put the `bastion` skill's text in the
@@ -73,7 +75,7 @@ skill tells it to.
 ## Try it
 
 ```bash
-B="python3 packs/bastion/skills/bastion/scripts/bastion.py"
+B="python3 extras/bastionizer/skills/bastion/scripts/bastion.py"
 $B init --name Bit
 $B persona new --name Work --description "Code and career" --keywords "code,deploy,meeting" \
   --objectives "ship" --goals "tests pass" --scope "no money talk"
@@ -83,13 +85,13 @@ $B brief
 $B buddy
 ```
 
-Tests: `python3 -m unittest discover -s packs/bastion/tests`.
+Tests: `python3 -m unittest discover -s extras/bastionizer/tests`.
 
 ## Privacy
 
 Personas are `cloud-ok` or `local-only`. Memories filed under a `local-only`
 persona are private: hooks never inject them and search hides them unless
-asked. The pack can't choose which model the host agent uses; if the host
+asked. The Bastionizer can't choose which model the host agent uses; if the host
 runs a cloud model, what the agent reads goes to it. Keep secrets out of
 memory, personas and skills.
 
@@ -100,6 +102,6 @@ memory, personas and skills.
 - Routing is keyword-based: tune a persona's `trigger_keywords` when it
   picks the wrong one.
 - Memory search is lexical (FTS5), not semantic. A Bastion install has
-  semantic memory; the pack keeps zero dependencies.
+  semantic memory; the Bastionizer keeps zero dependencies.
 - On Windows, call `python` or `py` instead of `python3` in the hooks and
   status line.

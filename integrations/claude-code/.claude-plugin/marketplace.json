@@ -1,7 +1,7 @@
 {
   "name": "bastion",
   "owner": { "name": "Bastion" },
-  "description": "Bastion packs for host agents.",
+  "description": "Bastionizers for host agents.",
   "plugins": [
     {
       "name": "bastion",

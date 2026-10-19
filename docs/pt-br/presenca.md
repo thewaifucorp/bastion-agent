@@ -12,7 +12,7 @@ canal de chat. Tem três partes:
 - **Superfícies**: um registro de aparelhos pareados, cada um com o próprio
   token de escopo limitado.
 
-O **modo Bastion** é construído em cima disso: um pack instalado em outro
+O **modo Bastion** é construído em cima disso: um plugin instalado em outro
 agente de código (o Claude Code primeiro) transforma esse agente num Bastion.
 A identidade, as personas, o modelo de memória, o companion e as regras são do
 Bastion; o agente hospedeiro roda o modelo e as ferramentas.
@@ -75,7 +75,7 @@ O firmware de referência para o GeekMagic SmallTV (Ultra e Pro) está em
 ## Modo Bastion no Claude Code
 
 ```bash
-claude plugin marketplace add ./packs/claude-code
+claude plugin marketplace add ./integrations/claude-code
 claude plugin install bastion@bastion
 ```
 
@@ -90,5 +90,5 @@ claude plugin install bastion@bastion
 
 Comandos: `/bastion:status`, `/bastion:persona <nome>`,
 `/bastion:approve <id>`, `/bastion:deny <id>`. Com o daemon parado, todo hook
-sai em silêncio e o Claude Code funciona exatamente como sem o pack. Detalhes
-de instalação, tokens e MCP em [packs/claude-code](../../packs/claude-code/README.md).
+sai em silêncio e o Claude Code funciona exatamente como sem o plugin. Detalhes
+de instalação, tokens e MCP em [integrations/claude-code](../../integrations/claude-code/README.md).

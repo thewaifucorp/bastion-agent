@@ -35,14 +35,14 @@ exits silently and Claude Code behaves exactly as without the plugin.
 ## Install
 
 ```bash
-claude plugin marketplace add /path/to/bastion-agent/packs/claude-code
+claude plugin marketplace add /path/to/bastion-agent/integrations/claude-code
 claude plugin install bastion@bastion
 ```
 
 To try it without installing:
 
 ```bash
-claude --plugin-dir /path/to/bastion-agent/packs/claude-code
+claude --plugin-dir /path/to/bastion-agent/integrations/claude-code
 ```
 
 ### Memory tools (optional)

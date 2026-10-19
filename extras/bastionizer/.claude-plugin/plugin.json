@@ -1,5 +1,5 @@
 {
-  "name": "bastion-pack",
+  "name": "bastionizer",
   "version": "0.1.0",
   "description": "Make Claude Code act as Bastion with no daemon: personas per life area, local SQLite memory, reminders, self-written skills, Cabinet and a status-line companion.",
   "author": { "name": "Bastion" },

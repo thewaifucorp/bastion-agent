@@ -10,7 +10,7 @@ three parts:
   persona, care for the companion, or leave a note on a device.
 - **Surfaces**: a registry of paired devices, each with its own scoped token.
 
-**Bastion mode** builds on it: a pack installed into another coding agent
+**Bastion mode** builds on it: a plugin installed into another coding agent
 (Claude Code first) turns that agent into a Bastion. The identity, personas,
 memory model, companion and rules are Bastion's; the host agent runs the model
 and the tools. See [Bastion mode for Claude Code](#bastion-mode-for-claude-code).
@@ -123,7 +123,7 @@ A device token may send `approve`/`deny` (only with `device_approvals = true`
 and a device that declared `touch`) and `care`. Everything else needs the
 owner token.
 
-## Host agent routes (used by the pack)
+## Host agent routes (used by the plugin)
 
 | route | body | answer |
 |---|---|---|
@@ -204,10 +204,10 @@ transcript notes each approval as it arrives and when it is answered.
 
 ## Bastion mode for Claude Code
 
-The pack is a Claude Code plugin in [`packs/claude-code`](../../packs/claude-code/README.md).
+The plugin lives in [`integrations/claude-code`](../../integrations/claude-code/README.md).
 
 ```bash
-claude plugin marketplace add ./packs/claude-code
+claude plugin marketplace add ./integrations/claude-code
 claude plugin install bastion@bastion
 ```
 
@@ -229,4 +229,4 @@ goals. Slash commands: `/bastion:status`, `/bastion:persona <name>`,
 
 Enforcement reaches as far as the host's hooks do. In Claude Code a
 `PreToolUse` decision is binding. When the daemon is not running, every hook
-exits silently and Claude Code behaves exactly as without the pack.
+exits silently and Claude Code behaves exactly as without the plugin.

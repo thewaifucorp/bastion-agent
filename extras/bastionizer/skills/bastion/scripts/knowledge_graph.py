@@ -72,7 +72,7 @@ class KnowledgeGraph:
     Supports bitemporal model: valid_from / valid_to columns on entities and
     relations (D-15/MUPL-03). All reads filter valid_to IS NULL by default.
 
-    The pack keeps it in the same file as its memories (``memory.db``).
+    The Bastionizer keeps it in the same file as its memories (``memory.db``).
     """
 
     def __init__(self, sqlite_path: str) -> None:
