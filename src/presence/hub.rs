@@ -175,14 +175,25 @@ struct Alert {
 
 pub const APPROVAL_INPUT_MAX: usize = 2000;
 
-/// Invisible formatting characters — zero-width, bidi overrides and
-/// isolates, word joiners, BOM, tag characters — that can make text read
-/// differently from what it is.
+/// Characters that can make text read differently from what it is: every
+/// default-ignorable code point and format character (zero-width, bidi
+/// overrides and isolates, word joiners, BOM, variation selectors, fillers,
+/// tags), line and paragraph separators, and anything else that takes no
+/// column on screen (combining marks). Control characters are handled on
+/// their own.
 pub fn is_invisible(c: char) -> bool {
+    use unicode_width::UnicodeWidthChar;
+    if c.is_control() {
+        return false;
+    }
     matches!(c as u32,
-        0x00AD | 0x061C | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E
-        | 0x2060..=0x2064 | 0x2066..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB
-        | 0xE0000..=0xE007F)
+        0x00AD | 0x034F | 0x0600..=0x0605 | 0x061C | 0x06DD | 0x070F
+        | 0x0890..=0x0891 | 0x08E2 | 0x115F..=0x1160 | 0x17B4..=0x17B5
+        | 0x180B..=0x180F | 0x200B..=0x200F | 0x2028..=0x202E
+        | 0x2060..=0x206F | 0x3164 | 0xFE00..=0xFE0F | 0xFEFF | 0xFFA0
+        | 0xFFF0..=0xFFFB | 0x110BD | 0x110CD | 0x13430..=0x1343F
+        | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A | 0xE0000..=0xE0FFF)
+        || c.width() == Some(0)
 }
 
 /// Control characters (newlines and tabs included) become spaces, so an
@@ -1167,6 +1178,22 @@ mod tests {
         assert_eq!(clean_input("git\u{202E}push  \n x"), "git\u{FFFD}push x");
         assert!(is_invisible('\u{200B}'));
         assert!(!is_invisible('a'));
+        // Combining marks, variation selectors, fillers, separators and
+        // other default-ignorables are invisible too; ordinary text is not.
+        for c in [
+            '\u{0301}',
+            '\u{FE0F}',
+            '\u{3164}',
+            '\u{2028}',
+            '\u{034F}',
+            '\u{E0100}',
+        ] {
+            assert!(is_invisible(c), "{:04X}", c as u32);
+        }
+        for c in ['é', 'ç', '日', '-', ' ', '~'] {
+            assert!(!is_invisible(c), "{c}");
+        }
+        assert_eq!(clean_input("rm\u{0338} -rf"), "rm\u{FFFD} -rf");
     }
 
     #[test]

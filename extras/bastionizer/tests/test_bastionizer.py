@@ -289,6 +289,17 @@ class BastionizerTest(unittest.TestCase):
             "SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({"memories", "reminders", "entities", "relations"} <= tables)
 
+    @unittest.skipIf(os.name != "posix", "POSIX permissions")
+    def test_home_and_database_are_private(self) -> None:
+        home = Path(self.tmp.name)
+        home.chmod(0o755)
+        self.run_cli("mem", "add", "x")
+        self.assertEqual(home.stat().st_mode & 0o777, 0o700)
+        self.assertEqual((home / "memory.db").stat().st_mode & 0o777, 0o600)
+        self.run_cli("persona", "new", "--name", "Work", "--keywords", "code")
+        soul = home / "personas" / "work" / "SOUL.md"
+        self.assertEqual(soul.stat().st_mode & 0o077, 0)
+
     def test_naive_times_are_local(self) -> None:
         dt = bastion.parse_iso("2030-01-01 10:00")
         self.assertIsNotNone(dt.tzinfo)
