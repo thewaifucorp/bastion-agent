@@ -253,6 +253,10 @@ async fn approval_handler(
                     req.cwd.as_deref(),
                     &req.tool_name,
                     input.as_ref(),
+                    match &rule_input {
+                        policy::RuleInput::Full(text) => Some(text.as_str()),
+                        _ => None,
+                    },
                     wait,
                 )
                 .await;

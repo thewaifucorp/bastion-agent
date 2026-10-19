@@ -53,17 +53,29 @@ fn init_script(config: &ShellConfig) -> String {
     }
 }
 
-/// The tray entry for one pending approval: a submenu with Approve and Deny.
+/// The tray entry for one pending approval: a submenu with Approve (or,
+/// when the shown call is cut, "Review in Bastion…", which opens the window
+/// where the full call is visible) and Deny.
 struct PendingApproval {
     alert_id: String,
     submenu: Submenu,
     approve: MenuId,
+    review_only: bool,
     deny: MenuId,
 }
 
 fn add_approval(menu: &Menu, alert: &presence::Alert) -> anyhow::Result<PendingApproval> {
     let submenu = Submenu::new(alert.label(), true);
-    let approve = MenuItem::new("Approve", true, None);
+    let review_only = !alert.fully_shown();
+    let approve = MenuItem::new(
+        if review_only {
+            "Review in Bastion…"
+        } else {
+            "Approve"
+        },
+        true,
+        None,
+    );
     let deny = MenuItem::new("Deny", true, None);
     submenu.append(&approve)?;
     submenu.append(&deny)?;
@@ -73,6 +85,7 @@ fn add_approval(menu: &Menu, alert: &presence::Alert) -> anyhow::Result<PendingA
         alert_id: alert.id.clone(),
         submenu,
         approve: approve.id().clone(),
+        review_only,
         deny: deny.id().clone(),
     })
 }
@@ -189,6 +202,12 @@ fn main() -> anyhow::Result<()> {
             } else if menu_event.id == quit_id {
                 supervisor_for_loop.stop();
                 *control_flow = ControlFlow::Exit;
+            } else if pending
+                .iter()
+                .any(|p| p.review_only && menu_event.id == p.approve)
+            {
+                window.set_visible(true);
+                window.set_focus();
             } else if let Some((action, entry)) = pending.iter().find_map(|p| {
                 if menu_event.id == p.approve {
                     Some(("approve", p))

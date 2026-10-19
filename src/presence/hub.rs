@@ -164,6 +164,22 @@ struct Alert {
     tool: Option<String>,
     det: Option<String>,
     exp: Option<u64>,
+    /// An approval's whole main input (control characters dropped, at most
+    /// [`APPROVAL_INPUT_MAX`]): what the person is actually approving,
+    /// since `det` is cut for display. Owner snapshots only.
+    input: Option<String>,
+}
+
+pub const APPROVAL_INPUT_MAX: usize = 2000;
+
+/// Control characters (newlines and tabs included) become spaces, so an
+/// approval can never hide part of the call behind a line break.
+pub fn clean_input(text: &str) -> String {
+    let flat: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    cut(flat.trim(), APPROVAL_INPUT_MAX)
 }
 
 struct PendingApproval {
@@ -552,6 +568,7 @@ impl PresenceHub {
                     tool,
                     det,
                     exp: None,
+                    input: None,
                 });
             }
         }
@@ -570,6 +587,7 @@ impl PresenceHub {
         cwd: Option<&str>,
         tool: &str,
         input: Option<&Value>,
+        full_input: Option<&str>,
         wait: Duration,
     ) -> (String, ApprovalOutcome) {
         let now = now_secs();
@@ -587,6 +605,7 @@ impl PresenceHub {
                 tool: Some(cut(tool, NAME_LEN)),
                 det,
                 exp: Some(now + wait.as_secs()),
+                input: full_input.map(clean_input).filter(|t| !t.is_empty()),
             };
             if let Some(session) = inner.sessions.get_mut(&key) {
                 session.state = SessionState::Waiting;
@@ -833,12 +852,15 @@ fn alert_json(a: &Alert) -> Value {
     if let Some(exp) = a.exp {
         row["exp"] = json!(exp);
     }
+    if let Some(input) = &a.input {
+        row["input"] = json!(input);
+    }
     row
 }
 
 /// Drops sessions from the end (the least urgent) until the serialized
 /// snapshot fits; the dropped ones are counted in `more`.
-fn trim_to_bytes(mut snapshot: Value, max_bytes: usize) -> Value {
+pub fn trim_to_bytes(mut snapshot: Value, max_bytes: usize) -> Value {
     loop {
         let size = serde_json::to_vec(&snapshot).map(|b| b.len()).unwrap_or(0);
         if size <= max_bytes {
@@ -961,6 +983,7 @@ mod tests {
                     Some("/home/dev/project"),
                     "Bash",
                     Some(&json!({ "command": "git push origin main" })),
+                    None,
                     Duration::from_secs(5),
                 )
                 .await
@@ -971,6 +994,7 @@ mod tests {
             if let Some(alert) = s["alerts"].as_array().and_then(|a| a.first()) {
                 assert_eq!(alert["kind"], "approval");
                 assert_eq!(alert["det"], "git push origin main");
+                assert_eq!(alert["input"], "git push origin main");
                 assert_eq!(only_session(&s)["st"], "waiting");
                 break alert["id"].as_str().unwrap().to_string();
             }
@@ -1003,6 +1027,7 @@ mod tests {
                     "s-1",
                     None,
                     "Bash",
+                    None,
                     None,
                     Duration::from_millis(300),
                 )
@@ -1038,6 +1063,7 @@ mod tests {
                 "s-1",
                 None,
                 "Bash",
+                None,
                 None,
                 Duration::from_millis(20),
             )

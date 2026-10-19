@@ -126,12 +126,20 @@ impl PresenceService {
     }
 
     /// What a paired device is shown: its owner's snapshot, cut to its caps.
+    /// Approvals' full inputs stay off devices: their byte caps are small,
+    /// and approving from a device is off by default (`device_approvals`).
     pub fn snapshot_for(&self, device: &DeviceRecord) -> Value {
-        self.snapshot(
-            &device.owner,
-            device.caps.max_sessions,
-            device.caps.max_bytes,
-        )
+        // Cut to bytes only after the inputs are gone, so they never cost a
+        // device its session rows.
+        let mut snapshot = self.snapshot(&device.owner, device.caps.max_sessions, usize::MAX);
+        if let Some(alerts) = snapshot["alerts"].as_array_mut() {
+            for alert in alerts {
+                if let Some(row) = alert.as_object_mut() {
+                    row.remove("input");
+                }
+            }
+        }
+        hub::trim_to_bytes(snapshot, device.caps.max_bytes)
     }
 
     /// Records a host event and lets the companion feel it: a session

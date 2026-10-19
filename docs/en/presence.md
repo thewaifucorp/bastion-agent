@@ -75,6 +75,11 @@ counted in `more`; alerts are kept first).
 ```
 
 - `st`: `working` | `waiting` (needs the person) | `idle` | `done` | `error`.
+- `alerts[].input` (approvals, owner snapshots only): the call's whole main
+  input, control characters flattened, at most 2000 characters. `det` is cut
+  for display; a surface that lets the person approve shows `input`, and the
+  desktop tray offers no one-click Approve when `det` is not the whole call.
+  Device snapshots never carry it.
 - `alerts[].kind`: `approval` (resolvable from any surface with
   `POST /presence/action`), `question` (the host is asking at the computer),
   `error` (a turn ended with an error).
