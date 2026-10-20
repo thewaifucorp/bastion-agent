@@ -8,6 +8,24 @@ for how that differs from the library crates it depends on).
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-10-20
+
+Security fixes from the review of 0.5.0. Patch: nothing to change on upgrade.
+
+### Security
+
+- **Approvals never carry hidden characters.** The invisible-character check
+  now covers every default-ignorable and format code point, line and
+  paragraph separators, and anything zero-width (combining marks, variation
+  selectors). A call containing any of them is never `input_complete`, so no
+  surface can approve it; the desktop tray's check uses the same list.
+- **TUI approval bar is exact.** It counts as showing the whole call only if
+  every wrapped row's drawn width fits the terminal, so an emoji sequence
+  wider than its characters can't push part of a call off screen.
+- **Bastionizer home is private.** `~/.bastion` is created `0700` with
+  owner-only files inside; an existing home and `memory.db` are tightened on
+  the next run. Bastionizer 0.1.1.
+
 ## [0.5.0] — 2026-10-19
 
 Bastion beyond its own console. **Presence** is one contract every surface

@@ -30,7 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from knowledge_graph import KnowledgeGraph  # noqa: E402
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 TIERS = ("cloud-ok", "local-only")
 KINDS = ("fact", "preference", "decision", "event", "note", "lesson")
 HOOK_BUDGET = 1500  # chars a hook may add to the host agent's context
